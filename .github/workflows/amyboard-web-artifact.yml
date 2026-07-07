@@ -1,0 +1,33 @@
+name: AMYboard web stage artifact
+
+# Fork-local helper: build amyboardweb/stage/ (same steps as the release web
+# job, minus the Vercel deploy) and upload it as an artifact, so the site can
+# be served locally with WASM built from this branch's amy pin.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install web build deps
+        run: pip install numpy
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.22
+      - name: Build amyboardweb stage/
+        run: |
+          cd tulip/amyboardweb
+          python3 dev.py --build-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amyboard-web-stage
+          if-no-files-found: error
+          path: tulip/amyboardweb/stage/
