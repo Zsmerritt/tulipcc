@@ -324,9 +324,16 @@ function _knob_log_clear_synth(synth) {
 function reset_synth_in_sketch(synth) {
   synth = Number(synth);
   if (!Number.isInteger(synth) || synth < 1 || synth > 16) return;
+  // MPE is a channel-routing property, not part of the patch — changing the
+  // sound (Clear / preset load / re-activate) keeps the zone as it was.
+  var mpe = mpe_state_for_channel(synth);
   _knob_log_clear_synth(synth);
   send_amy_message_in_sketch('i' + synth + 'ic255', { synth: synth });
   send_amy_message_in_sketch('i' + synth + 'K257iv6', { synth: synth });
+  if (mpe.enabled) {
+    // Re-log only: the zone is still active live, the clear just dropped its line.
+    send_amy_message_in_sketch('i' + synth + 'iE' + MPE_MEMBERS + ',' + mpe.bend, { synth: synth, silent: true });
+  }
 }
 window.reset_synth_in_sketch = reset_synth_in_sketch;
 
@@ -336,10 +343,62 @@ window.reset_synth_in_sketch = reset_synth_in_sketch;
 function remove_synth_from_sketch(synth) {
   synth = Number(synth);
   if (!Number.isInteger(synth) || synth < 1 || synth > 16) return;
+  var had_mpe = mpe_state_for_channel(synth).enabled;
   _knob_log_clear_synth(synth);
   send_amy_message_in_sketch('i' + synth + 'iv0', { synth: synth });
+  // The synth is gone; turn its MPE zone off live (the E line just left the log).
+  if (had_mpe) amy_add_log_message('i' + synth + 'iE0Z');
+  if (typeof window.sync_mpe_ui === 'function') window.sync_mpe_ui();
 }
 window.remove_synth_from_sketch = remove_synth_from_sketch;
+
+// ── MPE (MIDI Polyphonic Expression) ────────────────────────────────────────
+// One knob-log line per zone master channel: i<ch>E<members>,<bend_semitones>.
+// Enabling MPE on channel 1 (lower zone) or 16 (upper zone) makes notes on all
+// the other channels play that channel's synth, each note with its own pitch
+// bend, pressure (ext0 coefficient), and slide/CC74 (ext1 coefficient). The
+// knob log is the source of truth, and the boot default is MPE off, so
+// disabling REMOVES the line rather than persisting an i<ch>E0.
+var MPE_MEMBERS = 15;            // claim every member channel; controllers rotate across all of them
+var MPE_DEFAULT_BEND_RANGE = 48; // semitones, the MPE spec default
+
+var _MPE_LINE_RE = /^i(\d+)iE([\d.]+)(?:,([\d.]+))?/;
+
+// Current MPE state for a channel, derived from the knob log.
+function mpe_state_for_channel(ch) {
+  ch = Number(ch);
+  var state = { enabled: false, bend: MPE_DEFAULT_BEND_RANGE };
+  window.knob_log.forEach(function(entry) {
+    if (!entry || !entry.line) return;
+    var m = _MPE_LINE_RE.exec(entry.line);
+    if (m && Number(m[1]) === ch) {
+      state.enabled = parseInt(m[2], 10) > 0;
+      if (m[3] && parseFloat(m[3]) > 0) state.bend = parseFloat(m[3]);
+    }
+  });
+  return state;
+}
+window.mpe_state_for_channel = mpe_state_for_channel;
+
+// Enable/disable the MPE zone mastered by a channel: live send + knob-log entry
+// (or entry removal), following the synth-level slider's funnel.
+function set_mpe_for_channel(ch, enabled, bend) {
+  ch = Number(ch);
+  if (!Number.isInteger(ch) || ch < 1 || ch > 16) return;
+  bend = Number(bend);
+  if (!Number.isFinite(bend) || bend <= 0) bend = MPE_DEFAULT_BEND_RANGE;
+  if (enabled) {
+    send_amy_message_in_sketch('i' + ch + 'iE' + MPE_MEMBERS + ',' + bend, { synth: ch });
+  } else {
+    // Structural key i<ch>E#,# matches however the line was written (UI or sketch).
+    send_amy_message_in_sketch('', {
+      key: _knob_log_struct_key('i' + ch + 'iE' + MPE_MEMBERS + ',' + MPE_DEFAULT_BEND_RANGE),
+      remove: true, silent: true,
+    });
+    amy_add_log_message('i' + ch + 'iE0Z');
+  }
+}
+window.set_mpe_for_channel = set_mpe_for_channel;
 
 // Record every set CC mapping for a channel into the log (silent). Knob VALUES
 // are recorded automatically when send_all_knob_values() replays them through
@@ -500,6 +559,7 @@ function set_knobs_from_sketch() {
   }
   var cb = document.getElementById('channel-active-checkbox');
   if (cb) cb.checked = !!active[Number(window.current_synth || 1)];
+  if (typeof window.sync_mpe_ui === 'function') window.sync_mpe_ui();
   _last_synced_editor_block = block;  // log is now in sync with this block
 }
 window.set_knobs_from_sketch = set_knobs_from_sketch;
