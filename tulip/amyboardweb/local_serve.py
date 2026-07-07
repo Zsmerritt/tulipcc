@@ -92,13 +92,29 @@ def build_stage():
     print("[local] Build done.")
 
 
+class LocalHandler(dev.DevHandler):
+    # Windows Python maps MIME types from the registry, which has no entry for
+    # .mjs — Chrome then refuses to execute module scripts served as
+    # text/plain (loadMicroPython never defines). Pin the types we need.
+    extensions_map = {
+        **getattr(dev.DevHandler, "extensions_map", {}),
+        ".mjs": "text/javascript",
+        ".js": "text/javascript",
+        ".wasm": "application/wasm",
+    }
+
+
 if __name__ == "__main__":
     os.chdir(dev.SCRIPT_DIR)
-    build_stage()
+    if "--serve-only" in sys.argv:
+        # Serve whatever is already in stage/ (e.g. a CI-built artifact) untouched.
+        print("[local] --serve-only: skipping stage/ build.")
+    else:
+        build_stage()
     if "--build-only" in sys.argv:
         raise SystemExit(0)
     from http.server import HTTPServer
-    httpd = HTTPServer(("", dev.PORT), dev.DevHandler)
+    httpd = HTTPServer(("", dev.PORT), LocalHandler)
     print(f"[local] Serving http://localhost:{dev.PORT}/  (Ctrl-C to stop)")
     try:
         httpd.serve_forever()
