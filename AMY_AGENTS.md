@@ -237,9 +237,12 @@ message — no `loop()` code, no callback.
 ## MPE controllers: one `mpe=` kwarg on the zone synth — never per-channel synths or callbacks
 
 For MPE (Seaboard, LinnStrument, Osmose...) make **one** synth on channel 1 and give it an
-MPE zone: `amy.send(synth=1, mpe="7,48")` (7 member channels 2-8, ±48-semitone per-note
-bend; `mpe="0"` turns it off). Notes on the member channels all play synth 1, and each
-note's pitch bend, pressure (0xD0), and slide (CC74) apply **per-note inside the engine**.
+MPE zone: `amy.send(synth=1, mpe="15,48")` (all 15 member channels 2-16, ±48-semitone
+per-note bend; `mpe="0"` turns it off). **Always claim all 15 members** — controllers
+rotate notes across every member channel, so a narrower zone silently drops notes and
+lets channel 10 fall through to the drum synth. Notes on the member channels all play
+synth 1, and each note's pitch bend, pressure (0xD0), and slide (CC74) apply **per-note
+inside the engine**.
 **Do not** set up a synth per member channel, and **don't** poll bend/pressure in
 `midi.add_callback` — the engine already routes them.
 
@@ -249,7 +252,7 @@ slide/CC74 = `'ext1'` (per-note bend uses the normal `'bend'` coefficient).
 ```python
 import amy
 amy.send(synth=1, patch=0, num_voices=10)   # the MPE zone synth
-amy.send(synth=1, mpe="7,48")
+amy.send(synth=1, mpe="15,48")
 amy.send(synth=1, amp={'vel': 1, 'ext0': 0.5})                 # pressure -> level
 amy.send(synth=1, filter_freq={'const': 600, 'note': 1, 'ext1': 2})  # slide -> filter
 

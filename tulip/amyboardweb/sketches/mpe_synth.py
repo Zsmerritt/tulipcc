@@ -6,9 +6,11 @@ import amy
 
 # A 10-voice analog-style pad on synth 1, the MPE zone master.
 amy.send(synth=1, patch=0, num_voices=10)
-# Lower MPE zone: notes on member channels 2-8 all play this synth,
-# each with its own pitch bend (+/-48 semitones), pressure, and slide.
-amy.send(synth=1, mpe="7,48")
+# Lower MPE zone with ALL 15 member channels (2-16): MPE controllers default
+# to rotating notes across every member channel, so claiming fewer channels
+# drops notes (and lets channel 10 fall through to the GM drum synth).
+# Each note gets its own pitch bend (+/-48 semitones), pressure, and slide.
+amy.send(synth=1, mpe="15,48")
 # Per-note expression arrives via the ext0/ext1 control coefficients:
 # pressure (ext0) opens up the level, slide/CC74 (ext1) opens the filter.
 amy.send(synth=1, amp={'vel': 1, 'ext0': 0.5})
