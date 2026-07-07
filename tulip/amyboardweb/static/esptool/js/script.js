@@ -22,7 +22,8 @@ const noReset = document.getElementById("noReset");
 // sites (amyboard-pr-<N>.vercel.app) bundle their own firmware under /firmware
 // on the same origin, so a preview can only ever flash that PR's build.
 const FIRMWARE_BASES = {
-    release: "https://github.com/shorepine/tulipcc/releases/download/amyboard",
+    // MPE fork: flash the rolling 'amyboard' release built from Zsmerritt/tulipcc.
+    release: "https://github.com/Zsmerritt/tulipcc/releases/download/amyboard",
     pr:      "/firmware",
 };
 

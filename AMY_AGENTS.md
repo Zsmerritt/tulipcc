@@ -234,6 +234,31 @@ message — no `loop()` code, no callback.
 
 ---
 
+## MPE controllers: one `mpe=` kwarg on the zone synth — never per-channel synths or callbacks
+
+For MPE (Seaboard, LinnStrument, Osmose...) make **one** synth on channel 1 and give it an
+MPE zone: `amy.send(synth=1, mpe="7,48")` (7 member channels 2-8, ±48-semitone per-note
+bend; `mpe="0"` turns it off). Notes on the member channels all play synth 1, and each
+note's pitch bend, pressure (0xD0), and slide (CC74) apply **per-note inside the engine**.
+**Do not** set up a synth per member channel, and **don't** poll bend/pressure in
+`midi.add_callback` — the engine already routes them.
+
+Per-note expression reaches the patch as ctrl coefficients: pressure = `'ext0'`,
+slide/CC74 = `'ext1'` (per-note bend uses the normal `'bend'` coefficient).
+
+```python
+import amy
+amy.send(synth=1, patch=0, num_voices=10)   # the MPE zone synth
+amy.send(synth=1, mpe="7,48")
+amy.send(synth=1, amp={'vel': 1, 'ext0': 0.5})                 # pressure -> level
+amy.send(synth=1, filter_freq={'const': 600, 'note': 1, 'ext1': 2})  # slide -> filter
+
+def loop():
+    pass
+```
+
+> Source of truth: `tulip/amyboardweb/sketches/mpe_synth.py`; MPE section of `amy/docs/midi.md`.
+
 ## Polyphony & note stealing are automatic: `num_voices` sets them; `num_voices=1` is monophonic
 
 The synth allocates and steals voices for you as MIDI notes arrive — you never track
