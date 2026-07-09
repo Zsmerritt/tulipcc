@@ -83,7 +83,11 @@ jobs:
             core.info(`event=${ev} pr=${num} amy=${isAmy} sha=${amySha || '-'}`);
 
       # Fail fast on a missing/mis-scoped token, before the ~15-min build.
+      # fork-local: non-fatal so the firmware build + artifact upload still run
+      # on forks without the upstream VERCEL_TOKEN (only the Vercel web preview
+      # needs it, and that step comes after the firmware artifacts are uploaded).
       - name: Verify Vercel token can access the team
+        continue-on-error: true
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
