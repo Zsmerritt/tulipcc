@@ -197,23 +197,33 @@ void midi_local(uint8_t * bytes, uint16_t len) {
 }
 
 extern bool midi_has_out;
-extern void send_usb_midi_out(uint8_t * data, uint16_t len);
+extern void send_usb_midi_out(uint8_t * data, uint16_t len, int device);
+extern void usb_broadcast_midi_out(uint8_t * data, uint16_t len);
 
-void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
-    // check if we have USB HOST midi, which is handled by Tulip only - not AMYBOARD or TDECK
+// device: -1 = broadcast to all USB-MIDI devices + AMY (default, back-compatible);
+//          0 = primary USB-MIDI device only; 1.. = one specific extra device only.
+// A targeted device send does NOT also go to AMY, so routing a note to a board
+// doesn't double-play it on the Tulip's own synth.
+void tulip_send_midi_out_device(uint8_t* buf, uint16_t len, int device) {
 #ifdef ESP_PLATFORM
 #ifndef TDECK
 #ifndef AMYBOARD
-    if(midi_has_out) {
-        send_usb_midi_out(buf, len);
+    if(device < 0) {
+        usb_broadcast_midi_out(buf, len);
+    } else {
+        send_usb_midi_out(buf, len, device);
     }
 #endif
 #endif
 #endif
 #ifndef AMY_IS_EXTERNAL
-    // Also send out via AMY
-    amy_external_midi_output(buf, len);
+    if(device < 0) amy_external_midi_output(buf, len);
 #endif
+}
+
+// Back-compatible entry point (broadcast + AMY), used by existing callers.
+void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
+    tulip_send_midi_out_device(buf, len, -1);
 }
 
 #ifndef AMY_IS_EXTERNAL

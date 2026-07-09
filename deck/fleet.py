@@ -71,14 +71,19 @@ def _unison_cb(v):
 
 
 def _rescan(e):
-    # Best-effort discovery. Tulip's own AMY layer currently intercepts the
-    # AMYboard SysEx reply, so auto-count needs the companion sketch / a
-    # firmware hook -- until then, add boards manually. Ping anyway.
+    # Size the fleet to the USB-MIDI devices the host has claimed (needs firmware
+    # with tulip.num_midi_devices; older firmware reports 1).
     try:
-        tulip.midi_out(bytes([0xF0, 0x00, 0x03, 0x45, 0x7A, 0x49, 0x5A, 0xF7]))
-    except Exception:
-        pass
-    dk.toast(_s['screen'], "Ping sent -- add boards below for now", dk.PURPLE)
+        n = tulip.num_midi_devices()
+    except (AttributeError, Exception):
+        n = 0
+    if n > 0:
+        deckcfg.ensure_count(1 + n)   # Tulip + one instance per detected device
+        _restart_router()
+        _rebuild()
+        dk.toast(_s['screen'], "Found %d MIDI device(s)" % n, dk.GREEN)
+    else:
+        dk.toast(_s['screen'], "No USB-MIDI devices found -- add boards manually", dk.ORANGE)
 
 
 def _rebuild():

@@ -170,6 +170,37 @@ int64_t last_inter_trigger_ms = 0;
 usb_transfer_t *MIDIOut = NULL;
 usb_transfer_t *MIDIIn[MIDI_IN_BUFFERS] = { NULL };
 
+// --- Fleet: additional USB-MIDI devices (Tulip host -> multiple AMYboards) ---
+// The first-claimed MIDI device keeps the existing single-device path above and
+// is "device 0". Further MIDI devices are claimed here (output only) so each can
+// be addressed independently: tulip.midi_out(bytes, device=N), 0=primary, 1..=extra.
+// Kept contiguous (compacted on disconnect) so index N maps to extra slot N-1.
+#define MAX_EXTRA_MIDI 3
+usb_device_handle_t extra_midi_handle[MAX_EXTRA_MIDI] = { 0 };
+uint8_t extra_midi_intf[MAX_EXTRA_MIDI] = { 0 };
+usb_transfer_t *extra_MIDIOut[MAX_EXTRA_MIDI] = { NULL };
+int extra_midi_count = 0;
+static int extra_claiming_slot = -1;  // slot being set up during the current enumeration
+
+// Total MIDI-out devices available now (primary + extras). Exposed to Python.
+int usb_num_midi_out_devices() {
+    return (midi_has_out ? 1 : 0) + extra_midi_count;
+}
+
+// The OUT transfer for a device index (0 = primary, 1.. = extra), or NULL.
+static usb_transfer_t * midi_out_xfer_for(int device) {
+    if (device <= 0) return MIDIOut;
+    if (device - 1 < extra_midi_count) return extra_MIDIOut[device - 1];
+    return NULL;
+}
+
+void send_usb_midi_out(uint8_t * data, uint16_t len, int device);  // fwd decl
+// Send to every USB-MIDI device (primary + extras). NULL/absent devices skip.
+void usb_broadcast_midi_out(uint8_t * data, uint16_t len) {
+    send_usb_midi_out(data, len, 0);
+    for (int i = 0; i < extra_midi_count; i++) send_usb_midi_out(data, len, i + 1);
+}
+
 
 // This identifies a mouse HID report packet for a standard "boot" mouse. 
 typedef struct {
@@ -255,9 +286,9 @@ bool check_interface_desc_MIDI(const void *p, usb_device_handle_t Device_Handle)
     return false;
 }
 
-void midi_out_transfer() {
-    //fprintf(stderr, "sending %d bytes to midi\n", MIDIOut->num_bytes);
-    esp_err_t err = usb_host_transfer_submit(MIDIOut);
+void midi_out_transfer(usb_transfer_t *xfer) {
+    if (xfer == NULL) return;
+    esp_err_t err = usb_host_transfer_submit(xfer);
     // Don't exit until you get the callback
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (err != ESP_OK) {
@@ -265,14 +296,15 @@ void midi_out_transfer() {
     }
 }
 
-void send_single_midi_out_packet(uint8_t * data) { // 4 bytes
-    MIDIOut->data_buffer[0] = data[0];
-    MIDIOut->data_buffer[1] = data[1];
-    MIDIOut->data_buffer[2] = data[2];
-    MIDIOut->data_buffer[3] = data[3];
-    MIDIOut->num_bytes = 4;
-    //fprintf(stderr, "sending midi out packet %02x %02x %02x %02x\n", data[0], data[1], data[2], data[3]);
-    midi_out_transfer();
+void send_single_midi_out_packet(uint8_t * data, int device) { // 4 bytes
+    usb_transfer_t *x = midi_out_xfer_for(device);
+    if (x == NULL) return;  // no such device / no OUT endpoint
+    x->data_buffer[0] = data[0];
+    x->data_buffer[1] = data[1];
+    x->data_buffer[2] = data[2];
+    x->data_buffer[3] = data[3];
+    x->num_bytes = 4;
+    midi_out_transfer(x);
 }
 
 uint8_t usb_sysex_flag=0;
@@ -280,10 +312,12 @@ uint8_t usb_sysex_flag=0;
 uint8_t usb_sysex_buffer[MAX_USB_SYSEX_BYTES];
 uint16_t usb_sysex_len = 0;
 
-void usb_emit_sysex() {
+void usb_emit_sysex(int device) {
     // send any sysex out
     uint8_t data[64];
     uint8_t packet_count = 0;
+    usb_transfer_t *x = midi_out_xfer_for(device);
+    if(x == NULL) { usb_sysex_len = 0; return; }
 
     if(usb_sysex_len) {
         uint16_t i=0;
@@ -314,19 +348,20 @@ void usb_emit_sysex() {
             }
             packet_count++;
             if(packet_count==16) {
-                for(uint16_t j=0;j<64;j++) { MIDIOut->data_buffer[j] = data[j]; data[j]=0; }
-                MIDIOut->num_bytes = 64;
-                midi_out_transfer();
+                for(uint16_t j=0;j<64;j++) { x->data_buffer[j] = data[j]; data[j]=0; }
+                x->num_bytes = 64;
+                midi_out_transfer(x);
                 packet_count = 0;
             }
         }
-        for(uint16_t j=0;j<packet_count*4;j++) { MIDIOut->data_buffer[j] = data[j]; }
-        MIDIOut->num_bytes = packet_count*4;
-        midi_out_transfer();
+        for(uint16_t j=0;j<packet_count*4;j++) { x->data_buffer[j] = data[j]; }
+        x->num_bytes = packet_count*4;
+        midi_out_transfer(x);
     }
 }
 
-void send_usb_midi_out(uint8_t * data, uint16_t len) {
+void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
+    if(midi_out_xfer_for(device) == NULL) return;  // no such device
     // we have to discern code_index from data. basically a reverse version of our MIDI input parser.
     uint8_t usb_midi_packet[4] = {0,0,0,0};
     uint8_t usb_midi_message_slot = 0;
@@ -336,7 +371,7 @@ void send_usb_midi_out(uint8_t * data, uint16_t len) {
             usb_sysex_buffer[usb_sysex_len++] = byte;
             if(byte == 0xF7) {
                 usb_sysex_flag = 0;
-                usb_emit_sysex();
+                usb_emit_sysex(device);
                 usb_sysex_len = 0;
             }
         } else {
@@ -346,7 +381,7 @@ void send_usb_midi_out(uint8_t * data, uint16_t len) {
                 if(byte == 0xF4 || byte == 0xF5 || byte == 0xF6 || byte == 0xF9 ||  byte == 0xF8 ||
                     byte == 0xFA || byte == 0xFB || byte == 0xFC || byte == 0xFD || byte == 0xFE || byte == 0xFF) {
                     usb_midi_packet[0] = 0x05; // single byte system common message
-                    send_single_midi_out_packet(usb_midi_packet);
+                    send_single_midi_out_packet(usb_midi_packet, device);
                     i = len+1;
                 }  else if(byte == 0xF0) {
                     usb_sysex_buffer[usb_sysex_len++] = 0xF0;
@@ -366,17 +401,17 @@ void send_usb_midi_out(uint8_t * data, uint16_t len) {
                     } else {
                         usb_midi_packet[3] = byte;
                         usb_midi_message_slot = 0;
-                        send_single_midi_out_packet(usb_midi_packet);
+                        send_single_midi_out_packet(usb_midi_packet, device);
                     }
                 // a 1 byte data message
                 } else if (status == 0xC0 || status == 0xD0) {
                     usb_midi_packet[0] = (status >> 4);
                     usb_midi_packet[2] = byte;
-                    send_single_midi_out_packet(usb_midi_packet);
+                    send_single_midi_out_packet(usb_midi_packet, device);
                     i = len+1;
                 } else if (usb_midi_packet[1] == 0xF3 || usb_midi_packet[1] == 0xF1) {
                     usb_midi_packet[0] = 0x02; // special
-                    send_single_midi_out_packet(usb_midi_packet);
+                    send_single_midi_out_packet(usb_midi_packet, device);
                     i = len+1;
                 }
             }
@@ -445,6 +480,47 @@ void prepare_endpoint_midi(const void *p) {
     midi_ready = midi_has_in && midi_has_out;
 }
 
+// Claim a MIDI interface on a *second or later* device (the primary is already
+// taken) into the next free extra slot. Output only.
+bool check_extra_midi_interface(const void *p, usb_device_handle_t Device_Handle) {
+    const usb_intf_desc_t *intf = (const usb_intf_desc_t *)p;
+    if ((intf->bInterfaceClass == USB_CLASS_AUDIO) &&
+            (intf->bInterfaceSubClass == 3) && (intf->bInterfaceProtocol == 0)) {
+        if (extra_midi_count >= MAX_EXTRA_MIDI) return false;
+        if (Device_Handle == Device_Handle_midi) return false;  // that's the primary
+        int slot = extra_midi_count;  // pending; committed once its OUT endpoint is set up
+        esp_err_t err = usb_host_interface_claim(Client_Handle, Device_Handle,
+                intf->bInterfaceNumber, intf->bAlternateSetting);
+        if (err != ESP_OK) { fprintf(stderr, "extra midi claim failed: 0x%x\n", err); return false; }
+        extra_midi_handle[slot] = Device_Handle;
+        extra_midi_intf[slot] = intf->bInterfaceNumber;
+        extra_claiming_slot = slot;
+        fprintf(stderr, "Claiming an EXTRA MIDI device (slot %d)!\n", slot);
+        return true;
+    }
+    return false;
+}
+
+void prepare_extra_midi_endpoint(const void *p, int slot) {
+    const usb_ep_desc_t *endpoint = (const usb_ep_desc_t *)p;
+    if ((endpoint->bmAttributes & USB_BM_ATTRIBUTES_XFERTYPE_MASK) != USB_BM_ATTRIBUTES_XFER_BULK) return;
+    if (endpoint->bEndpointAddress & USB_B_ENDPOINT_ADDRESS_EP_DIR_MASK) {
+        return;  // MIDI-IN on an extra device: we only route OUT to boards for now
+    }
+    if (extra_MIDIOut[slot] == NULL) {
+        esp_err_t err = usb_host_transfer_alloc(endpoint->wMaxPacketSize, 0, &extra_MIDIOut[slot]);
+        if (err != ESP_OK) { extra_MIDIOut[slot] = NULL;
+            fprintf(stderr, "extra midi OUT alloc err: 0x%x\n", err); return; }
+    }
+    extra_MIDIOut[slot]->device_handle = extra_midi_handle[slot];
+    extra_MIDIOut[slot]->bEndpointAddress = endpoint->bEndpointAddress;
+    extra_MIDIOut[slot]->callback = midi_out_transfer_cb;
+    extra_MIDIOut[slot]->context = NULL;
+    extra_MIDIOut[slot]->flags |= USB_TRANSFER_FLAG_ZERO_PACK;
+    if (slot == extra_midi_count) extra_midi_count++;  // commit the slot
+    fprintf(stderr, "Extra MIDI slot %d ready; total extras: %d\n", slot, extra_midi_count);
+}
+
 void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_handle_t);
 
 
@@ -493,6 +569,24 @@ void _client_event_callback(const usb_host_client_event_msg_t *event_msg, void *
                 midi_has_out = false;
                 err = usb_host_device_close(Client_Handle, Device_Handle_midi);
                 if (err != ESP_OK) fprintf(stderr,"usb_host_device_close err: 0x%x\n", err);
+            }
+            for (int i = 0; i < extra_midi_count; i++) {
+                if ((uint32_t)extra_midi_handle[i] == (uint32_t)event_msg->dev_gone.dev_hdl) {
+                    usb_host_interface_release(Client_Handle, extra_midi_handle[i], extra_midi_intf[i]);
+                    if (extra_MIDIOut[i]) { usb_host_transfer_free(extra_MIDIOut[i]); extra_MIDIOut[i] = NULL; }
+                    usb_host_device_close(Client_Handle, extra_midi_handle[i]);
+                    // compact so device indices stay contiguous
+                    for (int j = i; j < extra_midi_count - 1; j++) {
+                        extra_midi_handle[j] = extra_midi_handle[j+1];
+                        extra_midi_intf[j]   = extra_midi_intf[j+1];
+                        extra_MIDIOut[j]     = extra_MIDIOut[j+1];
+                    }
+                    extra_midi_count--;
+                    extra_midi_handle[extra_midi_count] = 0;
+                    extra_MIDIOut[extra_midi_count] = NULL;
+                    fprintf(stderr, "Extra MIDI device gone; remaining extras: %d\n", extra_midi_count);
+                    break;
+                }
             }
             if (keyboard_claimed && (uint32_t)Device_Handle_kb == (uint32_t)event_msg->dev_gone.dev_hdl) {
                 err = usb_host_interface_release(Client_Handle, Device_Handle_kb, Interface_Number_kb);
@@ -900,6 +994,7 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
     uint8_t bLength;
     int indent = 1;
     int last_descriptor = -1;
+    extra_claiming_slot = -1;  // reset for this device's enumeration
     for (int i = 0; i < config_desc->wTotalLength; i+=bLength, p+=bLength) {
         bLength = *p;
         if ((i + bLength) <= config_desc->wTotalLength) {
@@ -922,6 +1017,7 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
                             || (last_descriptor == USB_B_DESCRIPTOR_TYPE_ENDPOINT)) --indent;
                     show_interface_desc(p, indent++);
                     if(!midi_claimed) { check_interface_desc_MIDI(p, Device_Handle); }
+                    else { check_extra_midi_interface(p, Device_Handle); }
                     if(!keyboard_claimed) { check_interface_desc_boot_keyboard(p, Device_Handle); }
                     if(!mouse_claimed) { check_interface_desc_boot_mouse(p, Device_Handle); }
                     last_descriptor = bDescriptorType;
@@ -936,6 +1032,9 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
                     }
                     if (midi_claimed && !midi_ready) {
                         prepare_endpoint_midi(p);
+                    }
+                    if (extra_claiming_slot >= 0) {
+                        prepare_extra_midi_endpoint(p, extra_claiming_slot);
                     }
                     last_descriptor = bDescriptorType;
                     break;

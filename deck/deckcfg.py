@@ -27,11 +27,13 @@ def default_instance(index):
         name, kind, ch = 'Tulip', 'internal', 1
     else:
         name, kind, ch = 'Board ' + chr(64 + index), 'amyboard', 1 + index
+    # device = USB-MIDI device index for firmware per-device output. Boards map
+    # to the USB-MIDI devices in order: Board A -> device 0, Board B -> device 1.
+    # (None on the internal Tulip instance, which plays via its own AMY synth.)
+    device = None if index == 0 else index - 1
     return {
         'name': name, 'kind': kind, 'id': None, 'enabled': True,
-        # channel = MIDI channel; device = USB-MIDI device index (once the
-        # firmware supports per-device output; 0/None = the single claimed device)
-        'channel': ch, 'device': None, 'patch': 0, 'num_voices': 10,
+        'channel': ch, 'device': device, 'patch': 0, 'num_voices': 10,
         'mpe': False, 'mpe_members': 15, 'mpe_bend': 48, 'mpe_expression': True,
     }
 
