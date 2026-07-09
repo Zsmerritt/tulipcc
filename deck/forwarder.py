@@ -32,22 +32,34 @@ def _amyboard_channels(cfg):
 
 
 # --- low level board note helpers (channel is 1-16) ---
-def _board_note_on(channel, note, vel):
+def _emit(data, device=None):
+    # Send to a specific USB-MIDI device once the firmware supports it; fall
+    # back to the single-device broadcast on current firmware.
+    if device is not None:
+        try:
+            tulip.midi_out(bytes(data), device)
+            return
+        except TypeError:
+            pass
+    tulip.midi_out(bytes(data))
+
+
+def _board_note_on(channel, note, vel, device=None):
     c = (channel - 1) & 0x0F
-    tulip.midi_out((0x90 | c, int(note) & 0x7F, int(vel * 127) & 0x7F))
+    _emit((0x90 | c, int(note) & 0x7F, int(vel * 127) & 0x7F), device)
 
 
-def _board_note_off(channel, note):
+def _board_note_off(channel, note, device=None):
     c = (channel - 1) & 0x0F
-    tulip.midi_out((0x80 | c, int(note) & 0x7F, 0))
+    _emit((0x80 | c, int(note) & 0x7F, 0), device)
 
 
-def _board_bend_cents(channel, cents, semitone_range=2):
+def _board_bend_cents(channel, cents, device=None, semitone_range=2):
     # Static per-board detune via pitch bend (14-bit, center 8192).
     c = (channel - 1) & 0x0F
     frac = max(-1.0, min(1.0, (cents / 100.0) / semitone_range))
     val = int(8192 + frac * 8191)
-    tulip.midi_out((0xE0 | c, val & 0x7F, (val >> 7) & 0x7F))
+    _emit((0xE0 | c, val & 0x7F, (val >> 7) & 0x7F), device)
 
 
 # --- Stack engine: internal AMY + boards playing one shared profile ---
@@ -71,7 +83,7 @@ class _StackEngine:
         # apply static per-board detune offsets if unison detune is on
         if self.detune.get('enabled'):
             for idx, i in enumerate(self._boards()):
-                _board_bend_cents(i['channel'], self._offset(idx))
+                _board_bend_cents(i['channel'], self._offset(idx), i.get('device'))
 
     def _boards(self):
         return [i for i in self.instances if i.get('kind') == 'amyboard']
@@ -87,39 +99,35 @@ class _StackEngine:
         # -spread .. +spread evenly
         return -spread + (2 * spread) * (idx / (n - 1)) if n > 1 else 0
 
+    def _play(self, inst, note, vel, off):
+        # returns a target tuple (kind, out_note, channel, device)
+        if inst.get('kind') == 'internal':
+            if self.internal is not None:
+                self.internal.note_on(note + off / 100.0, vel)
+            return ('internal', note, None, None)
+        _board_note_on(inst['channel'], note, vel, inst.get('device'))  # pre-bent
+        return ('board', note, inst['channel'], inst.get('device'))
+
     def note_on(self, note, vel):
         targets = []
         if self.detune.get('enabled'):
             # unison: every instance plays, each detuned
             for idx, inst in enumerate(self.instances):
-                off = self._offset(idx)
-                if inst.get('kind') == 'internal':
-                    if self.internal is not None:
-                        self.internal.note_on(note + off / 100.0, vel)
-                    targets.append(('internal', note))
-                else:
-                    _board_note_on(inst['channel'], note, vel)  # board pre-bent
-                    targets.append(('board:%d' % inst['channel'], note))
+                targets.append(self._play(inst, note, vel, self._offset(idx)))
         else:
-            # round-robin: one instance takes this note
+            # round-robin: one instance takes this note (max polyphony)
             inst = self.instances[_state['rr'] % len(self.instances)]
             _state['rr'] += 1
-            if inst.get('kind') == 'internal':
-                if self.internal is not None:
-                    self.internal.note_on(note, vel)
-                targets.append(('internal', note))
-            else:
-                _board_note_on(inst['channel'], note, vel)
-                targets.append(('board:%d' % inst['channel'], note))
+            targets.append(self._play(inst, note, vel, 0))
         return targets
 
     def note_off(self, targets):
-        for kind, out_note in targets:
+        for kind, out_note, channel, device in targets:
             if kind == 'internal':
                 if self.internal is not None:
                     self.internal.note_off(out_note)
-            elif kind.startswith('board:'):
-                _board_note_off(int(kind.split(':')[1]), out_note)
+            else:
+                _board_note_off(channel, out_note, device)
 
 
 def _route(m):
@@ -129,9 +137,9 @@ def _route(m):
     ch = (m[0] & 0x0F) + 1
 
     if _state['mode'] == 'multi':
-        # forward messages destined for an AMYboard channel
+        # forward messages destined for an AMYboard channel to that board's device
         if ch in _state['boards']:
-            tulip.midi_out(bytes(m))
+            _emit(m, _state['board_dev'].get(ch))
         return
 
     # stack mode
@@ -155,6 +163,9 @@ def start():
     cfg = deckcfg.load()
     _state['mode'] = cfg.get('mode', 'multi')
     _state['boards'] = _amyboard_channels(cfg)
+    _state['board_dev'] = {i['channel']: i.get('device')
+                           for i in cfg['instances']
+                           if i.get('kind') == 'amyboard' and i.get('enabled', True)}
     _state['notes'] = {}
     _state['rr'] = 0
     # the channel the player uses in stack mode = the internal instance channel

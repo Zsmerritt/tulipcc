@@ -18,7 +18,7 @@ PATH = '/user/deck_config.json'
 _state = {}
 
 # --- an instance is one AMY: the internal Tulip synth, or an AMYboard ---
-_INSTANCE_KEYS = ('name', 'kind', 'id', 'enabled', 'channel', 'patch',
+_INSTANCE_KEYS = ('name', 'kind', 'id', 'enabled', 'channel', 'device', 'patch',
                   'num_voices', 'mpe', 'mpe_members', 'mpe_bend', 'mpe_expression')
 
 
@@ -29,7 +29,9 @@ def default_instance(index):
         name, kind, ch = 'Board ' + chr(64 + index), 'amyboard', 1 + index
     return {
         'name': name, 'kind': kind, 'id': None, 'enabled': True,
-        'channel': ch, 'patch': 0, 'num_voices': 10,
+        # channel = MIDI channel; device = USB-MIDI device index (once the
+        # firmware supports per-device output; 0/None = the single claimed device)
+        'channel': ch, 'device': None, 'patch': 0, 'num_voices': 10,
         'mpe': False, 'mpe_members': 15, 'mpe_bend': 48, 'mpe_expression': True,
     }
 

@@ -12,10 +12,34 @@ Two performance modes, full per-board control, optional unison detune.
   **no "send to device N"** in firmware (`tulip_send_midi_out` takes bytes only).
 - **MIDI-in has no source id** (`tulip_midi_input_hook(data, len, is_sysex)`),
   so we can't tell which cable a message came from.
-- **Conclusion: all addressing is by MIDI channel.** Each board must listen on
-  its own channel and ignore the rest. A board that also needs deep parameter
-  control (not just patch) needs a **companion sketch** that maps channel-scoped
-  CCs / SysEx to AMY params. This is our unit of "full control".
+- **BIG ONE: the firmware claims a single USB-MIDI device.** `usb_host.c` keeps
+  one global `Device_Handle_midi` + one `MIDIOut` endpoint, overwritten on every
+  MIDI enumeration (usb_host.c:130/170/247). So with two AMYboards on a hub only
+  the last-enumerated one is reachable for output. **Multi-board over USB needs
+  firmware work regardless of MPE** (see "Multi-device USB" below).
+- A board that needs deep parameter control (not just patch) needs a **companion
+  sketch** that maps channel-scoped CCs / SysEx to AMY params -- our unit of
+  "full control".
+
+## Multi-device USB (firmware) -- the real enabler, and the MPE fix
+
+To reach N boards (and to give each a full 16-channel space for its own MPE
+zone), extend the USB-MIDI host to track and address devices individually:
+
+- `usb_host.c`: arrays `Device_Handle_midi[]`, `MIDIOut[]`, `MIDIIn[]`; claim
+  each MIDI interface into a free slot instead of overwriting; a per-device
+  `tulip_send_midi_out(buf, len, device_index)`.
+- `modtulip.c`: expose `tulip.midi_out(bytes, device=N)` (default = all/first).
+- Deck: each instance carries a `device` index; the forwarder emits per device.
+  Already plumbed -- `forwarder._emit(data, device)` uses the 2-arg form and
+  falls back to broadcast on today's single-device firmware.
+
+Result: each AMYboard = its own 16 MIDI channels = **per-board MPE**, no channel
+collisions. This is "advertise multiple connections" done host-side. USB cable
+numbers (CN) only help a single multi-port device, not separate boards.
+
+Interim (no firmware): one board reachable, so MPE = Tulip's own AMY + that one
+board; "one MPE instrument at a time".
 - MPE needs the MPE firmware (present in your fork; not on the stock board).
 - I2C is audio-in today; control-over-I2C is future firmware work. USB for now.
 

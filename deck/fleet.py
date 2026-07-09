@@ -106,17 +106,23 @@ def _rebuild():
         "when detune is on).", color=dk.MUTED, font=dk.FONT_S,
         w=tulip.screen_size()[0] - 96)
 
-    # Instances
+    # Instances. In Stack mode the player always uses the Tulip's channel and we
+    # fan out internally, so per-instance channels are hidden there.
+    stack = cfg['mode'] == 'stack'
     for i, inst in enumerate(cfg['instances']):
         r = dk.row(body, h=76)
         left = lv.obj(r)
-        left.set_size(360, 56)
+        left.set_size(500, 56)
         dk._flat(left, bg=dk.SURFACE)
         left.set_style_bg_opa(lv.OPA.TRANSP, 0)
         dk.label(left, inst.get('name', 'Inst %d' % i), 0, 4, color=dk.TEXT, font=dk.FONT_M)
         dk.label(left, inst.get('kind', ''), 0, 32, color=dk.MUTED, font=dk.FONT_S)
-        dk.stepper(r, inst.get('channel', 1), 1, 16, _inst_channel_cb(i),
-            fmt="Channel %d", w=230)
+        if stack:
+            dk.label(r, "voice in the stack" if i else "input + voice",
+                color=dk.MUTED, font=dk.FONT_S)
+        else:
+            dk.stepper(r, inst.get('channel', 1), 1, 16, _inst_channel_cb(i),
+                fmt="Channel %d", w=230)
 
     g2 = dk.hgroup(dk.row(body), w=440, h=48)
     dk.button(g2, lv.SYMBOL.PLUS + " Add board", w=180, h=48, bg=dk.GREEN,
