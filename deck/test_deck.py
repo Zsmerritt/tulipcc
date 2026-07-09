@@ -226,6 +226,32 @@ def test_stack_round_robin_cycles_instances(deck):
     assert forwarder._state['rr'] == start + 3
 
 
+def test_prioritize_boards_uses_boards_only(deck):
+    deckcfg, forwarder = deck
+    deckcfg.ensure_count(3)                 # Tulip + Board A + Board B
+    deckcfg.set_mode('stack')
+    deckcfg.set_detune('enabled', False)
+    deckcfg.set('prioritize_boards', True)
+    forwarder.start()
+    for n in range(60, 66):
+        forwarder._route((0x90, n, 100))
+    kinds = set(t[0] for tg in forwarder._state['notes'].values() for t in tg)
+    assert kinds == {'board'}               # Tulip AMY offloaded when boards present
+
+
+def test_priority_even_includes_tulip(deck):
+    deckcfg, forwarder = deck
+    deckcfg.ensure_count(2)                 # Tulip + Board A
+    deckcfg.set_mode('stack')
+    deckcfg.set_detune('enabled', False)
+    deckcfg.set('prioritize_boards', False)
+    forwarder.start()
+    for n in range(60, 64):
+        forwarder._route((0x90, n, 100))
+    kinds = set(t[0] for tg in forwarder._state['notes'].values() for t in tg)
+    assert 'internal' in kinds              # even mode also uses the Tulip AMY
+
+
 def test_multi_mode_forwards_only_board_channels(deck):
     deckcfg, forwarder = deck
     deckcfg.ensure_count(2)          # Tulip ch1 + Board A ch2

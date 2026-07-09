@@ -70,6 +70,12 @@ def _unison_cb(v):
     _restart_router()
 
 
+def _set_prio(boards):
+    deckcfg.set('prioritize_boards', boards)
+    _restart_router()
+    _rebuild()
+
+
 def _rescan(e):
     # Size the fleet to the USB-MIDI devices the host has claimed (needs firmware
     # with tulip.num_midi_devices; older firmware reports 1).
@@ -79,9 +85,14 @@ def _rescan(e):
         n = 0
     if n > 0:
         deckcfg.ensure_count(1 + n)   # Tulip + one instance per detected device
+        try:
+            import amyfleet
+            amyfleet.enroll_from_config()   # assign each board its channel (needs companion sketch)
+        except Exception as ex:
+            print("fleet: enroll failed:", ex)
         _restart_router()
         _rebuild()
-        dk.toast(_s['screen'], "Found %d MIDI device(s)" % n, dk.GREEN)
+        dk.toast(_s['screen'], "Found + enrolled %d device(s)" % n, dk.GREEN)
     else:
         dk.toast(_s['screen'], "No USB-MIDI devices found -- add boards manually", dk.ORANGE)
 
@@ -140,6 +151,16 @@ def _rebuild():
     dk.button(g2, lv.SYMBOL.MINUS + " Remove", w=150, h=48, bg=dk.SURFACE2,
         font=dk.FONT_S, cb=lambda e: _remove_board())
     dk.button(g2, lv.SYMBOL.REFRESH, w=80, h=48, bg=dk.SURFACE2, cb=_rescan)
+
+    # Voice priority (stack round-robin): prefer boards (offload) or spread evenly
+    prio = cfg.get('prioritize_boards', True)
+    r = dk.row(body)
+    dk.label(r, "Voice priority", color=dk.TEXT)
+    g3 = dk.hgroup(r, w=280, h=52)
+    dk.button(g3, "Boards", w=132, h=52, bg=(dk.ACCENT if prio else dk.SURFACE2),
+        cb=lambda e: _set_prio(True))
+    dk.button(g3, "Even", w=132, h=52, bg=(dk.ACCENT if not prio else dk.SURFACE2),
+        cb=lambda e: _set_prio(False))
 
     # Detune (stack mode only)
     if cfg['mode'] == 'stack':

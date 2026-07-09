@@ -49,6 +49,7 @@ DEFAULTS = {
     # fleet
     'mode': 'multi',           # 'multi' | 'stack'
     'active_instance': 0,
+    'prioritize_boards': True, # stack round-robin fills AMYboards before the Tulip AMY
     'detune': {'enabled': False, 'spread_cents': 8, 'unison_voices': 3},
 }
 

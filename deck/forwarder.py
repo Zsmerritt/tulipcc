@@ -71,6 +71,11 @@ class _StackEngine:
         # a managed internal synth (not bound to the input channel, so Tulip's
         # default handler won't double-play it)
         self.unison = max(1, self.detune.get('unison_voices', 3))
+        # Voice priority: when boards are present and prioritize_boards is set,
+        # round-robin allocates to the AMYboards first (their own SoCs do the
+        # synthesis, offloading the Tulip and freeing display bandwidth). The
+        # internal Tulip AMY is used only if there are no boards.
+        self.prio_boards = cfg.get('prioritize_boards', True)
         self.internal = None
         for i in self.instances:
             if i.get('kind') == 'internal':
@@ -117,8 +122,10 @@ class _StackEngine:
                     self.internal.note_on(pn, vel)
                     targets.append(('internal', pn, None, None))
         else:
-            # round-robin: one instance takes this note (max polyphony)
-            inst = self.instances[_state['rr'] % len(self.instances)]
+            # round-robin: one instance takes this note (max polyphony).
+            boards = self._boards()
+            alloc = boards if (self.prio_boards and boards) else self.instances
+            inst = alloc[_state['rr'] % len(alloc)]
             _state['rr'] += 1
             if inst.get('kind') == 'internal':
                 if self.internal is not None:
