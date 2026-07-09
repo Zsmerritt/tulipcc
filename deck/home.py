@@ -25,6 +25,7 @@ def _reset():
 _BUILTIN = [
     ("Instrument",   "run",  "instrument",   dk.ACCENT),
     ("MPE",          "run",  "mpe",          dk.PURPLE),
+    ("Fleet",        "run",  "fleet",        dk.TEAL),
     ("Drums",        "run",  "drums",        dk.ACCENT),
     ("Voices",       "run",  "voices",       dk.TEAL),
     ("Files",        "run",  "files",        dk.GREEN),

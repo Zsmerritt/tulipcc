@@ -67,6 +67,7 @@ _MENU = [
     (lv.SYMBOL.HOME,      "Home"),
     (lv.SYMBOL.AUDIO,     "Instrument"),
     (lv.SYMBOL.SETTINGS,  "MPE"),
+    (lv.SYMBOL.LIST,      "Fleet"),
     (lv.SYMBOL.SETTINGS,  "Settings"),
     (lv.SYMBOL.DIRECTORY, "Files"),
     (lv.SYMBOL.AUDIO,     "Voices"),
@@ -80,6 +81,7 @@ _MENU = [
 ]
 
 _RUN = {"Home": "home", "Instrument": "instrument", "MPE": "mpe",
+        "Fleet": "fleet",
         "Settings": "settings", "Files": "files", "Voices": "voices",
         "Juno-6": "juno6", "Drums": "drums", "Wordpad": "wordpad",
         "Tulip World": "worldui"}

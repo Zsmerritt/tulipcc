@@ -44,6 +44,13 @@ def _boot():
     except Exception as e:
         print("deck: ui_patch failed:", e)
 
+    # MIDI fleet router (Tulip + AMYboards).
+    try:
+        import forwarder
+        forwarder.start()
+    except Exception as e:
+        print("deck: forwarder failed:", e)
+
     # Touch calibration (adjust with run('calibrate') or Settings).
     try:
         tulip.touch_delta(1, 1, 0.8)
