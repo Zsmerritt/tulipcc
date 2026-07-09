@@ -105,6 +105,27 @@ def run(screen):
     dk.label(r, "Menu button size", color=dk.TEXT)
     dk.slider(r, cfg.get('ui_btn', 60), 40, 104, w=360, cb=_uiscale_cb, color=dk.TEAL)
 
+    # --- Rendering (smoother UI) ---
+    r = dk.row(body, h=92)
+    col = lv.obj(r)
+    col.set_size(500, 60)
+    col.set_style_border_width(0, 0)
+    col.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    col.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
+    dk.label(col, "Smooth UI (partial buffer)", color=dk.TEXT, font=dk.FONT_M)
+    dk.label(col, "cleaner touch updates; small memory cost", color=dk.MUTED, font=dk.FONT_S)
+    pb = dk.button(r, "On" if cfg.get('render_partial') else "Off", w=120, h=52,
+        bg=(dk.GREEN if cfg.get('render_partial') else dk.SURFACE2))
+    pb.add_event_cb(_render_cb('render_partial', pb, _apply_partial), lv.EVENT.CLICKED, None)
+
+    r = dk.row(body)
+    dk.label(r, "V-sync (tear-free)", color=dk.TEXT)
+    vs = dk.button(r, "On" if cfg.get('render_vsync', True) else "Off", w=120, h=52,
+        bg=(dk.GREEN if cfg.get('render_vsync', True) else dk.SURFACE2))
+    vs.add_event_cb(_render_cb('render_vsync', vs, _apply_vsync), lv.EVENT.CLICKED, None)
+
     # --- System actions ---
     r = dk.row(body)
     dk.label(r, "System", color=dk.TEXT)
@@ -118,6 +139,30 @@ def run(screen):
 
     screen.handle_keyboard = True
     screen.present()
+
+
+def _apply_partial(v):
+    try:
+        tulip.display_partial(1 if v else 0)
+    except Exception:
+        pass
+
+
+def _apply_vsync(v):
+    try:
+        tulip.display_vsync(1 if v else 0)
+    except Exception:
+        pass
+
+
+def _render_cb(key, btn, apply_fn):
+    def cb(e):
+        v = not deckcfg.get(key, key == 'render_vsync')
+        deckcfg.set(key, v)
+        btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
+        btn.get_child(0).set_text("On" if v else "Off")
+        apply_fn(v)   # live
+    return cb
 
 
 def _uiscale_cb(e):

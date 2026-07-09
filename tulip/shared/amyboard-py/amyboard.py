@@ -708,7 +708,86 @@ def run_sketch():
     if hasattr(sketch, 'loop'):
         _start_sketch_loop(sketch.loop)
 
+    # Tulip Deck: install the durable fleet listener (no-op unless enrolled).
+    try:
+        _deck_listener_install()
+    except Exception as e:
+        tulip.stderr_write("deck listener install failed: %s" % e)
+
     cd(tulip.root_dir() + "user")
+
+
+# --- Tulip Deck durable fleet listener ------------------------------------
+# Baked into firmware so it survives sketch edits, wipes and factory reset. If
+# the board has been enrolled (a channel stored in NVS), it listens on that
+# channel for Program Change -> patch and a CC map -> AMY params, independent of
+# whatever sketch is loaded. Unenrolled boards are completely unaffected.
+_deck_installed = False
+
+
+def _deck_channel():
+    try:
+        import esp32
+        return esp32.NVS('deck').get_i32('ch')
+    except Exception:
+        pass
+    try:
+        return int(open(tulip.root_dir() + 'user/deck_channel').read().strip())
+    except Exception:
+        return 0   # 0 = not enrolled
+
+
+def deck_set_channel(ch):
+    """Enroll this board: store its listening channel durably and (re)install.
+    Called by the Tulip during enrollment via the control-API zP."""
+    ch = max(1, min(16, int(ch)))
+    try:
+        import esp32
+        n = esp32.NVS('deck')
+        n.set_i32('ch', ch)
+        n.commit()
+    except Exception:
+        pass
+    try:
+        open(tulip.root_dir() + 'user/deck_channel', 'w').write(str(ch))
+    except Exception:
+        pass
+    _deck_listener_install(force=True)
+
+
+def _deck_listener_install(force=False):
+    global _deck_installed
+    ch = _deck_channel()
+    if not ch:
+        return
+    import amy, midi, synth
+    # a synth on our channel so the default MIDI handler plays note on/off
+    midi.config.add_synth(synth.PatchSynth(patch=0, num_voices=8), channel=ch)
+
+    def _deck_cb(m):
+        if not m:
+            return
+        status = m[0] & 0xF0
+        mch = (m[0] & 0x0F) + 1
+        if mch != _deck_channel():
+            return
+        if status == 0xC0:                     # Program Change -> patch
+            s = midi.config.get_synth(mch)
+            if s is not None:
+                s.program_change(m[1])
+        elif status == 0xB0 and len(m) > 2:    # Control Change -> params
+            v = m[2] / 127.0
+            try:
+                if m[1] == 74:
+                    amy.send(synth=mch, filter_freq=100.0 + v * 6000.0)
+                elif m[1] == 71:
+                    amy.send(synth=mch, resonance=0.1 + v * 8.0)
+            except Exception:
+                pass
+
+    if not _deck_installed:
+        midi.add_callback(_deck_cb)
+        _deck_installed = True
 
 
 def _start_sketch_loop(loop_fn):

@@ -17,9 +17,14 @@ def _zp(code):
 
 
 def enroll(device, channel):
-    """Assign `channel` to the AMYboard at USB `device` and restart its sketch."""
-    tulip.midi_out(_zp("open('/user/deck_channel','w').write('%d')" % int(channel)), device)
-    tulip.midi_out(_zp("import amyboard; amyboard.restart_sketch()"), device)
+    """Assign `channel` to the AMYboard at USB `device`, durably.
+
+    On firmware with the deck listener, deck_set_channel stores the channel in
+    NVS (survives sketch wipes / factory reset) and installs the listener live.
+    On older firmware this line no-ops harmlessly; deploy the companion sketch
+    (deck/amyboard_companion) as a fallback there.
+    """
+    tulip.midi_out(_zp("import amyboard; amyboard.deck_set_channel(%d)" % int(channel)), device)
 
 
 def enroll_from_config():

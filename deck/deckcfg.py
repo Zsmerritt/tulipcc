@@ -43,6 +43,8 @@ DEFAULTS = {
     'brightness': 5,
     'tfb_font': 0,
     'ui_btn': 60,
+    'render_partial': False,  # buffered partial rendering (smoother touch UI)
+    'render_vsync': True,     # gate the partial-mode copy to vsync (tear-free)
     'wifi_ssid': '',
     'wifi_pass': '',
     'setup_done': False,
@@ -257,7 +259,9 @@ def apply(cfg=None):
         cfg = load()
     for fn in (lambda: amy.volume(cfg.get('volume', 4)),
                lambda: tulip.brightness(cfg.get('brightness', 5)),
-               lambda: tulip.tfb_font(cfg.get('tfb_font', 0))):
+               lambda: tulip.tfb_font(cfg.get('tfb_font', 0)),
+               lambda: tulip.display_vsync(1 if cfg.get('render_vsync', True) else 0),
+               lambda: tulip.display_partial(1 if cfg.get('render_partial', False) else 0)):
         try:
             fn()
         except Exception:

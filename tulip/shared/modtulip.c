@@ -352,6 +352,28 @@ STATIC mp_obj_t tulip_num_midi_devices(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_num_midi_devices_obj, tulip_num_midi_devices);
 
+// --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
+extern void display_set_partial(int);
+extern void display_set_vsync(int);
+extern int display_get_partial(void);
+extern int display_get_vsync(void);
+
+// tulip.display_partial([on]) -- buffered partial rendering: cleaner single-
+// element (touch) updates. Returns the current state.
+STATIC mp_obj_t tulip_display_partial(size_t n_args, const mp_obj_t *args) {
+    if(n_args > 0) display_set_partial(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_partial());
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_partial_obj, 0, 1, tulip_display_partial);
+
+// tulip.display_vsync([on]) -- gate the partial-mode copy to vsync (tear-free
+// vs lower latency). Only has an effect when display_partial is on.
+STATIC mp_obj_t tulip_display_vsync(size_t n_args, const mp_obj_t *args) {
+    if(n_args > 0) display_set_vsync(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_vsync());
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_vsync_obj, 0, 1, tulip_display_vsync);
+
 
 // Send a message on the "local bus", as if it was received from physical midi in
 STATIC mp_obj_t tulip_midi_local(size_t n_args, const mp_obj_t *args) {
@@ -1717,6 +1739,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) }, 
