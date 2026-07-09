@@ -50,7 +50,8 @@ def _discover_user():
     except OSError:
         return apps
     deck_modules = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
-                    'welcome', 'deckui', 'deckcfg', 'ui_patch')
+                    'welcome', 'deckui', 'deckcfg', 'ui_patch', 'fleet',
+                    'forwarder', 'amyfleet')
     for entry in entries:
         if entry.startswith('.'):
             continue
