@@ -353,24 +353,37 @@ STATIC mp_obj_t tulip_num_midi_devices(void) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_num_midi_devices_obj, tulip_num_midi_devices);
 
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
+// display.c provides these only on boards with the main LVGL LCD -- not on
+// AMYBOARD/TDECK, which don't compile display.c. Keep the Python functions
+// defined everywhere (so the module table is valid) but no-op where absent.
+#if !defined(AMYBOARD) && !defined(TDECK)
 extern void display_set_partial(int);
 extern void display_set_vsync(int);
 extern int display_get_partial(void);
 extern int display_get_vsync(void);
+#endif
 
 // tulip.display_partial([on]) -- buffered partial rendering: cleaner single-
 // element (touch) updates. Returns the current state.
 STATIC mp_obj_t tulip_display_partial(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK)
     if(n_args > 0) display_set_partial(mp_obj_get_int(args[0]));
     return mp_obj_new_int(display_get_partial());
+#else
+    return mp_obj_new_int(0);
+#endif
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_partial_obj, 0, 1, tulip_display_partial);
 
 // tulip.display_vsync([on]) -- gate the partial-mode copy to vsync (tear-free
 // vs lower latency). Only has an effect when display_partial is on.
 STATIC mp_obj_t tulip_display_vsync(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK)
     if(n_args > 0) display_set_vsync(mp_obj_get_int(args[0]));
     return mp_obj_new_int(display_get_vsync());
+#else
+    return mp_obj_new_int(0);
+#endif
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_vsync_obj, 0, 1, tulip_display_vsync);
 
