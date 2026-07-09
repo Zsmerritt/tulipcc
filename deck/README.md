@@ -26,7 +26,7 @@ need to re-flash or re-edit frozen files. The frozen `ui.py` is left untouched;
 | `mpe.py` | Enable/disable MPE and edit members, bend range, zone and per-note expression. |
 | `files.py` | Touch file browser for `/user` — Run / Edit / Delete. |
 | `welcome.py` | First-boot onboarding (shown once). |
-| `ui_patch.py` | Runtime patch: bigger task-bar switch/quit buttons + launcher menu with the deck apps. |
+| `ui_patch.py` | Runtime patch: Home-as-root task bar (no quit button on Home; apps quit back to Home), bigger switch/quit buttons + launcher menu with the deck apps. |
 | `boot.py` | Startup glue. Wrapped so a failure can never block the REPL. |
 
 ## Deploy
@@ -47,8 +47,17 @@ Everything the apps change is stored in `/user/deck_config.json` and re-applied
 by `boot.py` on the next boot. Delete that file to reset to defaults. To re-run
 onboarding: `run('welcome')`.
 
-## Switching to the terminal
+## Home is the root; the REPL is a "Terminal" app
 
-The deck boots into Home. Tap **Terminal** (or the shuffle button in the
-top-right, or `control-Tab`) to reach the Python REPL; switch back the same way.
-The REPL is always running and can't be quit.
+The deck boots into **Home**, and Home is the structural root: it has no
+power/quit button (you don't close the root), and quitting any other app — via
+its power button or `control-Q` — returns to **Home**, not the REPL.
+
+The Python REPL keeps running (everything depends on it) but is now just a
+switchable **Terminal** app. Reach it from Home's **Terminal** tile (or the
+shuffle button / `control-Tab`); get back via the REPL task bar's **Home**
+button, its launcher menu's **Home** entry, or `control-Tab`. The REPL still
+can't be quit — and neither can Home — so there's always a way to both.
+
+This is done at runtime in `ui_patch.py` (monkeypatching the frozen `ui.py`),
+so it survives `tulip.upgrade()`.

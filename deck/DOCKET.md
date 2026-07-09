@@ -2,7 +2,11 @@
 
 Parked items, not yet started. Captured from bench sessions.
 
-## 1. Make Home the REAL root (relegate the REPL to a "Terminal" app)
+## 1. Make Home the REAL root (relegate the REPL to a "Terminal" app) — DONE
+
+Implemented in `ui_patch.py` (Home has no quit button; apps quit back to Home
+falling back to the REPL; the REPL/Terminal gets a Home button). See the
+"Home is the root" section of `README.md`. Original notes below.
 
 Today the built-in REPL `UIScreen` is the structural root: it can't be quit, and
 the power/quit button on any app (incl. Home) returns to the REPL — so the REPL

@@ -94,6 +94,112 @@ def _install_hw_mocks():
     return sent
 
 
+def _install_ui_mocks():
+    """Fake ui + lvgl so ui_patch imports and its task-bar/quit patches run.
+
+    Mirrors just enough of the frozen ui.UIScreen (firmware) for the deck's
+    Home-as-root monkeypatch to exercise: draw_task_bar draws a quit button on
+    apps / a launcher on the repl, and screen_quit_callback cleans up then
+    presents ui.repl_screen (which the patch retargets at Home).
+    """
+    class _NS:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    lv = types.ModuleType('lvgl')
+    lv.SYMBOL = _NS(CLOSE='x', HOME='home', AUDIO='audio', SETTINGS='set',
+                    LIST='list', DIRECTORY='dir', NEXT='next', FILE='file',
+                    KEYBOARD='kb', POWER='pwr', SHUFFLE='shuf', WIFI='wifi')
+    lv.PART = _NS(MAIN=0)
+    lv.ALIGN = _NS(TOP_RIGHT=1, BOTTOM_RIGHT=2, OUT_LEFT_MID=3)
+    lv.EVENT = _NS(CLICKED=1, VALUE_CHANGED=2)
+    lv.TEXT_ALIGN = _NS(CENTER=1)
+    lv.font_montserrat_24 = object()
+    lv.font_montserrat_18 = object()
+    lv.font_montserrat_12 = object()
+
+    class _Label:
+        def set_style_text_font(self, *a): pass
+        def set_text(self, *a): pass
+        def set_style_text_align(self, *a): pass
+        def center(self): pass
+
+    class _Button:
+        def __init__(self):
+            self.deleted = False
+            self._label = _Label()
+        def delete(self): self.deleted = True
+        def set_width(self, *a): pass
+        def set_height(self, *a): pass
+        def set_style_bg_color(self, *a): pass
+        def set_style_radius(self, *a): pass
+        def align_to(self, *a): pass
+        def add_event_cb(self, *a): pass
+        def get_child(self, i): return self._label
+
+    lv.button = lambda parent=None: _Button()
+    lv.label = lambda parent=None: _Label()
+    sys.modules['lvgl'] = lv
+
+    ui = types.ModuleType('ui')
+    ui.running_apps = {}
+    ui.current_app_string = 'repl'
+    ui.repl_screen = None
+    ui.lv_launcher = None
+    ui.keyboard = lambda: None
+    ui.launcher = lambda *a, **k: None
+    ui.pal_to_lv = lambda pal: pal
+
+    class UIScreen:
+        first_run = False
+
+        def __init__(self, name):
+            self.name = name
+            self.group = object()
+            self.quit_button = None
+            self.alttab_button = None
+            self.launcher_button = None
+            self.home_button = None
+            self.running = True
+            self.presented = 0
+            ui.running_apps[name] = self
+
+        def draw_task_bar(self):        # firmware-like original
+            if self.name != 'repl':
+                self.quit_button = _Button()
+            else:
+                self.launcher_button = _Button()
+
+        def screen_quit_callback(self, e):   # firmware-like original
+            if self.name != 'repl':
+                self.running = False
+                try:
+                    del ui.running_apps[self.name]
+                except KeyError:
+                    pass
+                ui.repl_screen.present()
+
+        def present(self):
+            ui.current_app_string = self.name
+            self.presented += 1
+
+    ui.UIScreen = UIScreen
+    sys.modules['ui'] = ui
+    return ui, lv
+
+
+@pytest.fixture
+def uipatch():
+    """ui_patch imported against the ui/lvgl mocks, with apply() installed."""
+    _install_hw_mocks()
+    ui, lv = _install_ui_mocks()
+    sys.modules.pop('ui_patch', None)
+    ui_patch = importlib.import_module('ui_patch')
+    ui_patch._installed = False
+    ui_patch.apply()
+    return ui, ui_patch
+
+
 @pytest.fixture
 def deck(tmp_path):
     """Fresh deckcfg + forwarder with hardware mocked and a temp config file."""
@@ -268,3 +374,66 @@ def _install_and_reset_sent():
     sent = sys.modules['tulip']._sent
     sent.clear()
     return sent
+
+
+# --- ui_patch: Home-as-root task bar + quit routing ---
+def test_quit_target_and_hide_helpers(uipatch):
+    _, ui_patch = uipatch
+    # the root has no quit button; other apps (incl. the repl) keep one
+    assert ui_patch._should_hide_quit('home') is True
+    assert ui_patch._should_hide_quit('drums') is False
+    assert ui_patch._should_hide_quit('repl') is False
+    # normal apps return to Home, falling back to the repl if Home isn't running
+    assert ui_patch._quit_target('drums', {'repl': 1, 'home': 1, 'drums': 1}) == 'home'
+    assert ui_patch._quit_target('drums', {'repl': 1, 'drums': 1}) == 'repl'
+    # neither the root nor the repl may be quit
+    assert ui_patch._quit_target('home', {'repl': 1, 'home': 1}) is None
+    assert ui_patch._quit_target('repl', {'repl': 1}) is None
+
+
+def test_home_task_bar_has_no_quit_button(uipatch):
+    ui, _ = uipatch
+    home = ui.UIScreen('home')
+    home.draw_task_bar()                       # patched
+    assert home.quit_button is None            # root: power button stripped
+    drums = ui.UIScreen('drums')
+    drums.draw_task_bar()                       # patched
+    assert drums.quit_button is not None       # ordinary apps keep it
+
+
+def test_repl_task_bar_gets_home_button(uipatch):
+    ui, _ = uipatch
+    repl = ui.UIScreen('repl')
+    repl.draw_task_bar()                        # patched
+    assert repl.home_button is not None         # Terminal has a way back to Home
+
+
+def test_quitting_app_returns_to_home(uipatch):
+    ui, _ = uipatch
+    repl = ui.UIScreen('repl'); ui.repl_screen = repl
+    home = ui.UIScreen('home')
+    drums = ui.UIScreen('drums')
+    drums.screen_quit_callback(None)            # patched
+    assert 'drums' not in ui.running_apps       # firmware cleanup still ran
+    assert home.presented == 1                  # landed on Home
+    assert repl.presented == 0                  # not the REPL
+    assert ui.repl_screen is repl               # module global restored
+
+
+def test_quitting_app_falls_back_to_repl_without_home(uipatch):
+    ui, _ = uipatch
+    repl = ui.UIScreen('repl'); ui.repl_screen = repl
+    drums = ui.UIScreen('drums')                # no Home running
+    drums.screen_quit_callback(None)
+    assert repl.presented == 1                   # nothing orphaned
+
+
+def test_root_and_repl_cannot_be_quit(uipatch):
+    ui, _ = uipatch
+    repl = ui.UIScreen('repl'); ui.repl_screen = repl
+    home = ui.UIScreen('home')
+    home.screen_quit_callback(None)             # root: no-op
+    assert 'home' in ui.running_apps
+    assert repl.presented == 0
+    repl.screen_quit_callback(None)             # repl: no-op
+    assert 'repl' in ui.running_apps
