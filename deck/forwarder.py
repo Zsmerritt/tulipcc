@@ -70,64 +70,80 @@ class _StackEngine:
         self.instances = [i for i in cfg['instances'] if i.get('enabled', True)]
         # a managed internal synth (not bound to the input channel, so Tulip's
         # default handler won't double-play it)
+        self.unison = max(1, self.detune.get('unison_voices', 3))
         self.internal = None
         for i in self.instances:
             if i.get('kind') == 'internal':
                 try:
                     import synth as _synth
-                    self.internal = _synth.PatchSynth(
-                        patch=i.get('patch', 0),
-                        num_voices=i.get('num_voices', 10))
+                    # give the internal AMY enough polyphony for unison chords
+                    nv = i.get('num_voices', 10)
+                    if self.detune.get('enabled'):
+                        nv = min(64, max(nv, self.unison * 4))
+                    self.internal = _synth.PatchSynth(patch=i.get('patch', 0),
+                                                      num_voices=nv)
                 except Exception as e:
                     print("forwarder: internal synth failed:", e)
         # apply static per-board detune offsets if unison detune is on
         if self.detune.get('enabled'):
-            for idx, i in enumerate(self._boards()):
-                _board_bend_cents(i['channel'], self._offset(idx), i.get('device'))
+            boards = self._boards()
+            for idx, i in enumerate(boards):
+                _board_bend_cents(i['channel'], self._spread(idx, len(boards)),
+                                  i.get('device'))
 
     def _boards(self):
         return [i for i in self.instances if i.get('kind') == 'amyboard']
 
-    def _offset(self, idx):
-        # symmetric cents spread across N sources
-        d = self.detune
-        per = d.get('per_instance')
-        if per and idx < len(per):
-            return per[idx]
-        spread = d.get('spread_cents', 8)
-        n = max(1, len(self.instances))
-        # -spread .. +spread evenly
-        return -spread + (2 * spread) * (idx / (n - 1)) if n > 1 else 0
-
-    def _play(self, inst, note, vel, off):
-        # returns a target tuple (kind, out_note, channel, device)
-        if inst.get('kind') == 'internal':
-            if self.internal is not None:
-                self.internal.note_on(note + off / 100.0, vel)
-            return ('internal', note, None, None)
-        _board_note_on(inst['channel'], note, vel, inst.get('device'))  # pre-bent
-        return ('board', note, inst['channel'], inst.get('device'))
+    def _spread(self, k, total):
+        # symmetric cents offset for voice k of total (k=0..total-1)
+        if total <= 1:
+            return 0.0
+        s = self.detune.get('spread_cents', 8)
+        return -s + (2.0 * s) * (k / (total - 1))
 
     def note_on(self, note, vel):
+        # returns targets: list of (kind, played_note, channel, device)
         targets = []
         if self.detune.get('enabled'):
-            # unison: every instance plays, each detuned
-            for idx, inst in enumerate(self.instances):
-                targets.append(self._play(inst, note, vel, self._offset(idx)))
+            # unison: `unison_voices` detuned voices on the internal AMY (float
+            # notes), plus one detuned layer per enabled board.
+            boards = self._boards()
+            for inst in boards:
+                _board_note_on(inst['channel'], note, vel, inst.get('device'))
+                targets.append(('board', note, inst['channel'], inst.get('device')))
+            if self.internal is not None:
+                for k in range(self.unison):
+                    pn = note + self._spread(k, self.unison) / 100.0
+                    self.internal.note_on(pn, vel)
+                    targets.append(('internal', pn, None, None))
         else:
             # round-robin: one instance takes this note (max polyphony)
             inst = self.instances[_state['rr'] % len(self.instances)]
             _state['rr'] += 1
-            targets.append(self._play(inst, note, vel, 0))
+            if inst.get('kind') == 'internal':
+                if self.internal is not None:
+                    self.internal.note_on(note, vel)
+                targets.append(('internal', note, None, None))
+            else:
+                _board_note_on(inst['channel'], note, vel, inst.get('device'))
+                targets.append(('board', note, inst['channel'], inst.get('device')))
         return targets
 
     def note_off(self, targets):
-        for kind, out_note, channel, device in targets:
+        for kind, played_note, channel, device in targets:
             if kind == 'internal':
                 if self.internal is not None:
-                    self.internal.note_off(out_note)
+                    self.internal.note_off(played_note)
             else:
-                _board_note_off(channel, out_note, device)
+                _board_note_off(channel, played_note, device)
+
+    def release(self):
+        if self.internal is not None:
+            try:
+                self.internal.release()
+            except Exception:
+                pass
+            self.internal = None
 
 
 def _route(m):
@@ -175,6 +191,10 @@ def start():
             internal = i
             break
     _state['stack_in'] = internal.get('channel', 1)
+    # release a previous stack engine's synth so switching modes / restarting
+    # doesn't leak voices and exhaust AMY's oscillators.
+    if _state.get('stack') is not None:
+        _state['stack'].release()
     _state['stack'] = _StackEngine(cfg) if _state['mode'] == 'stack' else None
 
     if not _state.get('registered'):

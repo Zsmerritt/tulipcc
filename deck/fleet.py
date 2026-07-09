@@ -65,6 +65,11 @@ def _spread_cb(e):
     _restart_router()
 
 
+def _unison_cb(v):
+    deckcfg.set_detune('unison_voices', v)
+    _restart_router()
+
+
 def _rescan(e):
     # Best-effort discovery. Tulip's own AMY layer currently intercepts the
     # AMYboard SysEx reply, so auto-count needs the companion sketch / a
@@ -152,6 +157,20 @@ def _rebuild():
         _s['spreadlbl'] = dk.label(col, "%d cents" % det.get('spread_cents', 8),
             color=dk.MUTED, font=dk.FONT_S)
         dk.slider(r, det.get('spread_cents', 8), 0, 50, w=360, cb=_spread_cb, color=dk.TEAL)
+
+        r = dk.row(body, h=92)
+        col2 = lv.obj(r)
+        col2.set_size(360, 60)
+        col2.set_style_border_width(0, 0)
+        col2.set_style_bg_opa(lv.OPA.TRANSP, 0)
+        col2.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        col2.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+        col2.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
+        dk.label(col2, "Unison voices", color=dk.TEXT, font=dk.FONT_M)
+        dk.label(col2, "detuned voices per note (on the Tulip AMY)",
+            color=dk.MUTED, font=dk.FONT_S)
+        dk.stepper(r, det.get('unison_voices', 3), 1, 16, _unison_cb,
+            fmt="%d voices", w=230)
 
     for idx, b in enumerate(_s.get('selbtns', [])):
         pass

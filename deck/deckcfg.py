@@ -47,7 +47,7 @@ DEFAULTS = {
     # fleet
     'mode': 'multi',           # 'multi' | 'stack'
     'active_instance': 0,
-    'detune': {'enabled': False, 'spread_cents': 8, 'voices_per_instance': 1},
+    'detune': {'enabled': False, 'spread_cents': 8, 'unison_voices': 3},
 }
 
 
