@@ -1,2 +1,4 @@
 device-backup/
 fw/
+.pytest_cache/
+__pycache__/
