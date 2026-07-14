@@ -85,11 +85,21 @@ def chip_specs(instruments, active_id):
     return specs
 
 
+_KIT_NAMES = {384: 'TR-808', 385: 'TR-909', 386: 'Linn 9000', 387: 'MR-12',
+              388: 'Tokyo Synthetics', 389: '80s Power', 390: 'Percussion'}
+
+
+def instrument_sound(instr):
+    """The sound label for an instrument: its kit (drums) or patch name (synth)."""
+    if instr.get('type') == 'drums':
+        return _KIT_NAMES.get(instr.get('kit', 384), 'TR-808') + " kit"
+    return patch_name(instr.get('patch', 0))
+
+
 def instrument_summary(instr):
     """One-line rack-row summary of an instrument (ASCII only)."""
     return "%s  ch%d  %s" % (device_name(instr.get('device', 'internal')),
-                             instr.get('channel', 1),
-                             patch_name(instr.get('patch', 0)))
+                             instr.get('channel', 1), instrument_sound(instr))
 
 
 def device_meter(dev):
