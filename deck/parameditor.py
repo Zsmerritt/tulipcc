@@ -153,17 +153,7 @@ class ParamEditor:
         cur = self._get(d)
         r = dk.row(body)
         dk.label(r, self.label_for(d), color=dk.TEXT)
-        b = dk.button(r, "On" if cur else "Off", w=120, h=52,
-                      bg=(dk.GREEN if cur else dk.SURFACE2))
-        b.add_event_cb(self._toggle_cb(d, b), lv.EVENT.CLICKED, None)
-
-    def _toggle_cb(self, d, btn):
-        def cb(e):
-            v = not self._get(d)
-            self._set(d, v)
-            btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
-            btn.get_child(0).set_text("On" if v else "Off")
-        return cb
+        dk.switch(r, bool(cur), lambda v: self._set(d, v))
 
 
 class FxEditor(ParamEditor):

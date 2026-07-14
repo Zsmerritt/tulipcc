@@ -61,9 +61,15 @@ def _inst_row(body, shell, instr, is_active):
     dk.label(b, sm.instrument_summary(instr), 16, 42, color=dk.MUTED,
              font=dk.FONT_S)
     if is_active:
-        dk.label(b, "active", 0, 26, color=dk.GREEN, font=dk.FONT_S,
-                 w=tulip.screen_size()[0] - 48 - 24,
-                 align=lv.TEXT_ALIGN.RIGHT)
+        # A filled badge, not a faint word -- the old green "active" text was
+        # nearly invisible (audit).
+        badge = lv.obj(b)
+        badge.set_size(84, 34)
+        dk._flat(badge, radius=17, bg=dk.GREEN)
+        badge.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        badge.align(lv.ALIGN.RIGHT_MID, -16, 0)
+        bl = dk.label(badge, "ACTIVE", color=dk.WHITE, font=dk.FONT_S)
+        bl.center()
     iid = instr.get('id')
     b.add_event_cb((lambda i: (lambda e: (_open_edit(shell, i)
                     if e.get_code() == lv.EVENT.CLICKED else None)))(iid),
@@ -173,9 +179,7 @@ def _open_mpe(e):
         _s['shell'].push(mpe.panel, "MPE", key='mpe')
 
 
-def _remove(e):
-    if e.get_code() != lv.EVENT.CLICKED:
-        return
+def _do_remove():
     deckcfg.remove_instrument(deckcfg.active_instrument())
     deckcfg.apply_all()
     sh = _s.get('shell')
@@ -184,6 +188,16 @@ def _remove(e):
         sh.back()
         if sh.top_key() == 'rack':
             sh.rebuild_top(panel, "Instruments", key='rack')
+
+
+def _remove(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    instr = _active()
+    name = instr.get('name', 'this instrument') if instr else 'this instrument'
+    dk.confirm("Remove instrument?",
+               "Delete \"%s\"? This can't be undone." % name,
+               _do_remove, yes_text="Remove")
 
 
 def _build_edit(parent, shell):

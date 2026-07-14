@@ -165,6 +165,75 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22):
     return s
 
 
+def switch(parent, value, on_change=None, color=GREEN):
+    # A real toggle switch -- unambiguous on/off state (vs a button labelled
+    # "On"/"Off", which reads as either the current state or the action).
+    # on_change(new_bool) fires on toggle.
+    sw = lv.switch(parent)
+    sw.set_size(64, 34)
+    if value:
+        sw.add_state(lv.STATE.CHECKED)
+    sw.set_style_bg_color(c(SURFACE2), lv.PART.MAIN)
+    sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)
+    sw.set_style_bg_color(c(color), lv.PART.INDICATOR | lv.STATE.CHECKED)
+    sw.set_style_bg_color(c(WHITE), lv.PART.KNOB)
+    if on_change is not None:
+        def _cb(e):
+            try:
+                on_change(sw.has_state(lv.STATE.CHECKED))
+            except Exception:
+                pass
+        sw.add_event_cb(_cb, lv.EVENT.VALUE_CHANGED, None)
+    return sw
+
+
+def confirm(title, message, on_yes, yes_text="Delete", yes_bg=RED):
+    # A modal confirmation over everything (lv.layer_top blocks the background).
+    # Cancel dismisses; the yes button runs on_yes() then dismisses. Used to gate
+    # destructive actions (remove instrument, etc.).
+    w, h = tulip.screen_size()
+    ov = lv.obj(lv.layer_top())
+    ov.set_size(w, h)
+    ov.set_pos(0, 0)
+    ov.set_style_border_width(0, 0)
+    ov.set_style_pad_all(0, 0)
+    ov.set_style_bg_color(c(BG), 0)
+    ov.set_style_bg_opa(200, 0)
+    ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+
+    card = lv.obj(ov)
+    card.set_size(600, 280)
+    card.center()
+    _flat(card, radius=20, bg=SURFACE)
+    card.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    label(card, title, 32, 30, color=WHITE, font=FONT_L)
+    label(card, message, 32, 84, color=MUTED, font=FONT_M, w=536)
+
+    def _close():
+        try:
+            ov.delete()
+        except Exception:
+            pass
+
+    cancel = button(card, "Cancel", w=240, h=60, bg=SURFACE2, font=FONT_M)
+    cancel.set_pos(32, 190)
+    cancel.add_event_cb(lambda e: _close() if e.get_code() == lv.EVENT.CLICKED
+                        else None, lv.EVENT.CLICKED, None)
+    yes = button(card, yes_text, w=240, h=60, bg=yes_bg, font=FONT_M)
+    yes.set_pos(600 - 240 - 32, 190)
+
+    def _do(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        _close()
+        try:
+            on_yes()
+        except Exception:
+            pass
+    yes.add_event_cb(_do, lv.EVENT.CLICKED, None)
+    return ov
+
+
 def hgroup(parent, w, h=52, gap=8):
     # A transparent, fixed-width flex row that right-aligns its children
     # (for grouping buttons on the right side of a row).

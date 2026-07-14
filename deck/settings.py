@@ -23,14 +23,9 @@ def _screensaver_cb(key):
     return cb
 
 
-def _mpe_cb(btn):
-    def cb(e):
-        v = not deckcfg.get('mpe_enabled', False)
-        deckcfg.set('mpe_enabled', v)
-        btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
-        btn.get_child(0).set_text("On" if v else "Off")
-        deckcfg.apply_all()      # re-run the router so the gate takes effect now
-    return cb
+def _mpe_switch(v):
+    deckcfg.set('mpe_enabled', v)
+    deckcfg.apply_all()          # re-run the router so the gate takes effect now
 
 
 def _volume_cb(e):
@@ -139,15 +134,13 @@ def run(screen):
     col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
     dk.label(col, "Smooth UI (partial buffer)", color=dk.TEXT, font=dk.FONT_M)
     dk.label(col, "cleaner touch updates; small memory cost", color=dk.MUTED, font=dk.FONT_S)
-    pb = dk.button(r, "On" if cfg.get('render_partial') else "Off", w=120, h=52,
-        bg=(dk.GREEN if cfg.get('render_partial') else dk.SURFACE2))
-    pb.add_event_cb(_render_cb('render_partial', pb, _apply_partial), lv.EVENT.CLICKED, None)
+    dk.switch(r, bool(cfg.get('render_partial')),
+              _render_switch('render_partial', _apply_partial))
 
     r = dk.row(body)
     dk.label(r, "V-sync (tear-free)", color=dk.TEXT)
-    vs = dk.button(r, "On" if cfg.get('render_vsync', True) else "Off", w=120, h=52,
-        bg=(dk.GREEN if cfg.get('render_vsync', True) else dk.SURFACE2))
-    vs.add_event_cb(_render_cb('render_vsync', vs, _apply_vsync), lv.EVENT.CLICKED, None)
+    dk.switch(r, bool(cfg.get('render_vsync', True)),
+              _render_switch('render_vsync', _apply_vsync))
 
     # --- Screensaver (dim / sleep after idle) ---
     opts = sm.screensaver_options_str()
@@ -163,9 +156,7 @@ def run(screen):
     # --- MPE (global gate; off by default, hides all MPE UI when off) ---
     r = dk.row(body)
     dk.label(r, "MPE", color=dk.TEXT)
-    mp = dk.button(r, "On" if cfg.get('mpe_enabled') else "Off", w=120, h=52,
-        bg=(dk.GREEN if cfg.get('mpe_enabled') else dk.SURFACE2))
-    mp.add_event_cb(_mpe_cb(mp), lv.EVENT.CLICKED, None)
+    dk.switch(r, bool(cfg.get('mpe_enabled')), _mpe_switch)
 
     # --- System actions ---
     r = dk.row(body)
@@ -196,14 +187,11 @@ def _apply_vsync(v):
         pass
 
 
-def _render_cb(key, btn, apply_fn):
-    def cb(e):
-        v = not deckcfg.get(key, key == 'render_vsync')
+def _render_switch(key, apply_fn):
+    def on_change(v):
         deckcfg.set(key, v)
-        btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
-        btn.get_child(0).set_text("On" if v else "Off")
         apply_fn(v)   # live
-    return cb
+    return on_change
 
 
 def _uiscale_cb(e):

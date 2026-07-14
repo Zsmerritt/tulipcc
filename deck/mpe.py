@@ -50,18 +50,11 @@ def _set_mpe(sub, value):
     deckcfg.set_instrument_mpe(deckcfg.active_instrument(), sub, value)
 
 
-def _toggle_mpe(sub, btn):
-    def cb(e):
-        v = not _mpe().get(sub)
+def _switch_mpe(sub):
+    def on_change(v):
         _set_mpe(sub, v)
-        _paint_toggle(btn, v)
         _apply()
-    return cb
-
-
-def _paint_toggle(btn, v):
-    btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
-    btn.get_child(0).set_text("On" if v else "Off")
+    return on_change
 
 
 def _members_cb(e):
@@ -148,9 +141,7 @@ def _rebuild():
 
     r = dk.row(body)
     dk.label(r, "Enable MPE", color=dk.WHITE)
-    en = dk.button(r, "On" if m.get('enabled') else "Off", w=120, h=52,
-                   bg=(dk.GREEN if m.get('enabled') else dk.SURFACE2))
-    en.add_event_cb(_toggle_mpe('enabled', en), lv.EVENT.CLICKED, None)
+    dk.switch(r, bool(m.get('enabled')), _switch_mpe('enabled'))
 
     r = dk.row(body, h=92)
     col = _vcol(r, "Member channels")
@@ -198,9 +189,7 @@ def expression_panel(parent, shell=None):
 
     r = dk.row(body)
     dk.label(r, "Enable expression", color=dk.WHITE)
-    ex = dk.button(r, "On" if m.get('expression') else "Off", w=120, h=52,
-                   bg=(dk.GREEN if m.get('expression') else dk.SURFACE2))
-    ex.add_event_cb(_toggle_mpe('expression', ex), lv.EVENT.CLICKED, None)
+    dk.switch(r, bool(m.get('expression')), _switch_mpe('expression'))
 
     r = dk.row(body, h=92)
     col = _vcol(r, "Pressure")
