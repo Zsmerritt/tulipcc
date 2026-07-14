@@ -95,7 +95,7 @@ def _apply(e):
         print("calib: apply failed:", err)
     try:
         import deckcfg
-        deckcfg.set('touch_delta', [nx, ny, cs])
+        deckcfg.set_value('touch_delta', [nx, ny, cs])
     except Exception:
         pass
     _back()

@@ -31,7 +31,7 @@ def _big_card(parent, x, y, title, sub, color, cb):
 
 
 def _done_and_run(app):
-    deckcfg.set('setup_done', True)
+    deckcfg.set_value('setup_done', True)
     tulip.run(app)
 
 

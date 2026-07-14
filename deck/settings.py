@@ -11,40 +11,27 @@ import shellmodel as sm
 import lvgl as lv
 
 
+def _reload_saver():
+    # The screensaver caches brightness/thresholds (it no longer polls the
+    # config file); tell it whenever a value it depends on changes.
+    try:
+        import screensaver
+        screensaver.reload()
+    except Exception:
+        pass
+
+
 def _screensaver_cb(key):
     def cb(e):
         idx = e.get_target_obj().get_selected()
-        deckcfg.set(key, sm.screensaver_seconds(idx))
-        try:
-            import screensaver
-            screensaver.reload()
-        except Exception:
-            pass
+        deckcfg.set_value(key, sm.screensaver_seconds(idx))
+        _reload_saver()
     return cb
 
 
 def _mpe_switch(v):
-    deckcfg.set('mpe_enabled', v)
+    deckcfg.set_value('mpe_enabled', v)
     deckcfg.apply_all()          # re-run the router so the gate takes effect now
-
-
-def _volume_cb(e):
-    v = e.get_target_obj().get_value()
-    amy.volume(v)
-    deckcfg.set('volume', v)
-
-
-def _bright_cb(e):
-    v = e.get_target_obj().get_value()
-    tulip.brightness(v)
-    deckcfg.set('brightness', v)
-
-
-def _make_font_cb(n):
-    def cb(e):
-        tulip.tfb_font(n)
-        deckcfg.set('tfb_font', n)
-    return cb
 
 
 def run(screen):
@@ -77,8 +64,8 @@ def run(screen):
     def connect_cb(e):
         s = ssid.ta.get_text()
         p = pw.ta.get_text()
-        deckcfg.set('wifi_ssid', s)
-        deckcfg.set('wifi_pass', p)
+        deckcfg.set_value('wifi_ssid', s)
+        deckcfg.set_value('wifi_pass', p)
         status_lbl.set_text("connecting...")
         status_lbl.set_style_text_color(dk.c(dk.MUTED), 0)
 
@@ -102,12 +89,16 @@ def run(screen):
 
     # --- Volume ---
     _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
-                lambda v: (amy.volume(v), deckcfg.set('volume', v)), dk.GREEN)
+                live=amy.volume,
+                commit=lambda v: deckcfg.set_value('volume', v),
+                color=dk.GREEN)
 
     # --- Brightness ---
     _val_slider(body, 'brightness', "Brightness", cfg.get('brightness', 5), 1, 9,
-                lambda v: (tulip.brightness(v), deckcfg.set('brightness', v)),
-                dk.ORANGE)
+                live=tulip.brightness,
+                commit=lambda v: (deckcfg.set_value('brightness', v),
+                                  _reload_saver()),
+                color=dk.ORANGE)
 
     # --- REPL font size (active size highlighted) ---
     r = dk.row(body)
@@ -123,7 +114,7 @@ def run(screen):
     def _font_cb(n):
         def cb(e):
             tulip.tfb_font(n)
-            deckcfg.set('tfb_font', n)
+            deckcfg.set_value('tfb_font', n)
             _paint_fonts(n)
         return cb
     for lbl, code, bw in (("Small", 1, 104), ("Medium", 0, 112), ("Large", 2, 104)):
@@ -134,7 +125,9 @@ def run(screen):
 
     # --- Menu / task-bar button size (drives ui_patch) ---
     _val_slider(body, 'ui_btn', "Menu button size", cfg.get('ui_btn', 60), 40, 104,
-                _uiscale_apply, dk.TEAL)
+                live=_uiscale_live,
+                commit=lambda v: deckcfg.set_value('ui_btn', v),
+                color=dk.TEAL)
 
     # --- Rendering (smoother UI) ---
     r = dk.row(body, h=92)
@@ -203,13 +196,12 @@ def _apply_vsync(v):
 
 def _render_switch(key, apply_fn):
     def on_change(v):
-        deckcfg.set(key, v)
+        deckcfg.set_value(key, v)
         apply_fn(v)   # live
     return on_change
 
 
-def _uiscale_apply(v):
-    deckcfg.set('ui_btn', v)
+def _uiscale_live(v):
     try:
         import ui_patch
         ui_patch.set_scale(v)   # live-resize the task-bar + menu buttons now
@@ -220,9 +212,13 @@ def _uiscale_apply(v):
 _sv = {}   # settings-slider value labels, by key
 
 
-def _val_slider(body, key, name, value, lo, hi, apply_fn, color, fmt="%d"):
+def _val_slider(body, key, name, value, lo, hi, live, commit, color, fmt="%d"):
     """A slider row with a LIVE value readout (title + value stacked left, fat
-    slider right) -- so Volume/Brightness/Menu-size aren't set blind."""
+    slider right) -- so Volume/Brightness/Menu-size aren't set blind.
+
+    `live(v)` runs per drag tick (cheap hardware apply: amy.volume, backlight);
+    `commit(v)` runs once on release (config write -- one flash write per drag,
+    not one per tick)."""
     r = dk.row(body, h=92)
     col = lv.obj(r)
     col.set_size(400, 60)
@@ -243,8 +239,11 @@ def _val_slider(body, key, name, value, lo, hi, apply_fn, color, fmt="%d"):
             _sv[key].set_text(fmt % v)
         except Exception:
             pass
-        apply_fn(v)
-    dk.slider(r, value, lo, hi, w=360, cb=cb, color=color)
+        live(v)
+
+    def done(e):
+        commit(e.get_target_obj().get_value())
+    dk.slider(r, value, lo, hi, w=360, cb=cb, color=color, on_release=done)
 
 
 def _upgrade(screen):

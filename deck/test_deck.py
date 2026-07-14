@@ -27,6 +27,9 @@ def _install_hw_mocks():
 
     tulip = types.ModuleType('tulip')
     tulip.midi_out = lambda data, device=None: sent.append((bytes(data), device))
+    # Present on any firmware whose midi_out takes a device arg -- the forwarder
+    # probes for it (hasattr) instead of raising TypeError per message.
+    tulip.num_midi_devices = lambda: 1
     tulip.defer = lambda fn, arg, ms: None
     tulip.board = lambda: 'DESKTOP'
     tulip.screen_size = lambda: (1024, 600)
@@ -420,6 +423,24 @@ def _install_and_reset_sent():
     return sent
 
 
+def test_cc_and_bend_forwarded_to_board_only(deck):
+    # CC / pitch bend on a board channel go to that board (with its device
+    # index); on an internal-only channel they go nowhere (internal CC handling
+    # is a later milestone).
+    deckcfg, forwarder = deck
+    deckcfg.add_instrument(device=0, channel=2)
+    sent = _install_and_reset_sent()
+    forwarder.start()
+    sent.clear()
+    forwarder._route((0xB1, 74, 100))              # CC74 on ch2 -> board 0
+    forwarder._route((0xE1, 0, 64))                # bend on ch2 -> board 0
+    assert [d for _, d in sent] == [0, 0]
+    assert sent[0][0][0] == 0xB1 and sent[1][0][0] == 0xE1
+    sent.clear()
+    forwarder._route((0xB0, 74, 100))              # CC on ch1 (internal only)
+    assert sent == []
+
+
 # --- ui_patch: Home-as-root task bar + quit routing ---
 def test_quit_target_and_hide_helpers(uipatch):
     _, ui_patch = uipatch
@@ -794,7 +815,7 @@ def test_preview_board_sends_midi_out(deck):
 def test_mpe_enabled_default_off(deck):
     deckcfg, _ = deck
     assert deckcfg.mpe_enabled() is False           # off by default
-    deckcfg.set('mpe_enabled', True)
+    deckcfg.set_value('mpe_enabled', True)
     assert deckcfg.mpe_enabled() is True
 
 
@@ -808,7 +829,7 @@ def test_mpe_gate_governs_configure_mpe(deck):
     forwarder.start()
     assert midi._mpe_calls == []
     # global gate ON: now it configures MPE for the instrument's channel
-    deckcfg.set('mpe_enabled', True)
+    deckcfg.set_value('mpe_enabled', True)
     midi._mpe_calls.clear()
     forwarder.start()
     assert len(midi._mpe_calls) == 1
@@ -1012,6 +1033,54 @@ def test_device_fx_get_set(deck):
     assert deckcfg.device_fx('internal')['reverb']['level'] == 0.4
     deckcfg.set_device_fx(0, 'echo', 'level', 1.0)   # a board device (key '0')
     assert deckcfg.device_fx(0)['echo']['level'] == 1.0
+
+
+# --- deckcfg: cache + drag-time flush semantics ---
+def _read_config_file(deckcfg):
+    import json
+    with open(deckcfg.PATH) as f:
+        return json.load(f)
+
+
+def test_load_returns_cached_config(deck):
+    deckcfg, _ = deck
+    assert deckcfg.load() is deckcfg.load()      # same dict: no re-read/parse
+
+
+def test_set_param_flush_false_defers_flash_write(deck):
+    deckcfg, _ = deck
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument_param(iid, 'filter_freq', 500)   # creates the file
+    # A drag tick: cache updated, file NOT rewritten.
+    deckcfg.set_instrument_param(iid, 'filter_freq', 900, flush=False)
+    assert deckcfg.get_instrument_param(iid, 'filter_freq') == 900
+    on_disk = _read_config_file(deckcfg)['instruments'][0]['params']
+    assert on_disk['filter_freq'] == 500
+    # Release: flush() commits the cached value.
+    deckcfg.flush()
+    on_disk = _read_config_file(deckcfg)['instruments'][0]['params']
+    assert on_disk['filter_freq'] == 900
+
+
+def test_set_device_fx_flush_false_defers_flash_write(deck):
+    deckcfg, _ = deck
+    deckcfg.set_device_fx('internal', 'reverb', 'level', 0.2)
+    deckcfg.set_device_fx('internal', 'reverb', 'level', 0.8, flush=False)
+    assert deckcfg.device_fx('internal')['reverb']['level'] == 0.8
+    assert _read_config_file(deckcfg)['fx']['internal']['reverb']['level'] == 0.2
+    deckcfg.flush()
+    assert _read_config_file(deckcfg)['fx']['internal']['reverb']['level'] == 0.8
+
+
+def test_invalidate_rereads_file(deck):
+    deckcfg, _ = deck
+    import json
+    deckcfg.set_value('volume', 3)
+    with open(deckcfg.PATH, 'w') as f:           # external edit behind the cache
+        json.dump({'volume': 9}, f)
+    assert deckcfg.get('volume') == 3            # cache still serves the old value
+    deckcfg.invalidate()
+    assert deckcfg.get('volume') == 9
 
 
 # --- D1: forwarder applies params + FX ---

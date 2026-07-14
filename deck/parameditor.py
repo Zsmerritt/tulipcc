@@ -66,8 +66,12 @@ class ParamEditor:
     def _get(self, d):
         return deckcfg.get_instrument_param(self.iid, d['name'], d['default'])
 
-    def _set(self, d, value):
-        deckcfg.set_instrument_param(self.iid, d['name'], value)
+    def _set(self, d, value, flush=True):
+        # flush=False during a slider drag: the value lands in deckcfg's RAM
+        # cache (live audition via on_change reads it from there) but is not
+        # written to flash until the release commit -- a flash write per
+        # VALUE_CHANGED tick stalls both cores and wears the config sector.
+        deckcfg.set_instrument_param(self.iid, d['name'], value, flush=flush)
         if self.on_change is not None:
             try:
                 self.on_change()
@@ -108,19 +112,29 @@ class ParamEditor:
         val.align(lv.ALIGN.TOP_RIGHT, -20, 14)
         s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
                       int(round(d['max'] * scale)), w=lv.pct(84),
-                      cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26)
+                      cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26,
+                      on_release=self._slider_release_cb(d, scale))
         s.align(lv.ALIGN.BOTTOM_MID, 0, -16)
 
     def _slider_cb(self, d, scale, val_label=None):
+        # Per-tick during a drag: cache-only value update + live audition.
         def cb(e):
             raw = e.get_target_obj().get_value()
             v = (raw / scale) if scale != 1 else raw
-            self._set(d, v)
+            self._set(d, v, flush=False)
             if val_label is not None:
                 try:
                     val_label.set_text(self._fmt_value(d, v))
                 except Exception:
                     pass
+        return cb
+
+    def _slider_release_cb(self, d, scale):
+        # Finger lifted: commit the final value to flash (one write per drag).
+        def cb(e):
+            raw = e.get_target_obj().get_value()
+            v = (raw / scale) if scale != 1 else raw
+            self._set(d, v)
         return cb
 
     def _dropdown(self, body, d):
@@ -175,8 +189,9 @@ class FxEditor(ParamEditor):
         v = deckcfg.device_fx(self.device).get(d['bus'], {}).get(d['name'])
         return v if v is not None else d['default']
 
-    def _set(self, d, value):
-        deckcfg.set_device_fx(self.device, d['bus'], d['name'], value)
+    def _set(self, d, value, flush=True):
+        deckcfg.set_device_fx(self.device, d['bus'], d['name'], value,
+                              flush=flush)
         if self.on_change is not None:
             try:
                 self.on_change()

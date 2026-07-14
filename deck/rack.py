@@ -156,9 +156,16 @@ def _channel_cb(ch):
 
 
 def _voices_cb(e):
+    # Per-tick during the drag: just the readout. Committing here would rebuild
+    # every synth (apply_all -> forwarder.start) dozens of times per drag.
     v = e.get_target_obj().get_value()
     if _s.get('vlabel') is not None:
         _s['vlabel'].set_text("%d voices" % v)
+
+
+def _voices_done(e):
+    # Finger lifted: save + rebuild the router once with the final voice count.
+    v = e.get_target_obj().get_value()
     deckcfg.set_instrument(deckcfg.active_instrument(), 'num_voices', v)
     deckcfg.apply_all()
 
@@ -367,7 +374,7 @@ def _build_edit(parent, shell):
     _s['vlabel'] = dk.label(r, "%d voices" % instr.get('num_voices', 10),
                             color=dk.TEXT)
     dk.slider(r, instr.get('num_voices', 10), 1, 32, w=340, cb=_voices_cb,
-              color=dk.GREEN)
+              color=dk.GREEN, on_release=_voices_done)
 
     # Type (engine) -> mode switch. Scopes the patch picker + drives the Sound
     # editor (a synth gets Sound tabs; a drum gets the pad list).

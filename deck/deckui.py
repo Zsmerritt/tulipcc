@@ -180,10 +180,15 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     return b
 
 
-def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22):
+def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22,
+           on_release=None):
     # h defaults fat (was 14 -- audit flagged the track as "thinner than a
     # finger"). The knob padding grows with the track so the touch target stays
     # comfortably larger than the visible bar.
+    #
+    # cb fires on every VALUE_CHANGED (continuously during a drag) -- keep it
+    # cheap: update labels, live-audition. on_release fires once when the finger
+    # lifts -- that's where config writes (flash!) and synth rebuilds belong.
     s = lv.slider(parent)
     s.set_width(w)
     s.set_height(h)
@@ -196,6 +201,8 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22):
     s.set_value(int(value), lv.ANIM.OFF)
     if cb is not None:
         s.add_event_cb(cb, lv.EVENT.VALUE_CHANGED, None)
+    if on_release is not None:
+        s.add_event_cb(on_release, lv.EVENT.RELEASED, None)
     return s
 
 

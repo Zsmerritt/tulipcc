@@ -31,7 +31,14 @@ def log(msg):
         import os
         try:
             if os.stat(_LOGFILE)[6] > _MAX:
-                os.remove(_LOGFILE)        # simple roll-over
+                # Roll over keeping ONE previous generation -- deleting the log
+                # outright could throw away the lead-up to the very event being
+                # diagnosed.
+                try:
+                    os.remove(_LOGFILE + '.old')
+                except OSError:
+                    pass
+                os.rename(_LOGFILE, _LOGFILE + '.old')
         except OSError:
             pass
         with open(_LOGFILE, 'a') as f:
