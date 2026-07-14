@@ -1,4 +1,18 @@
-# MPE + instrument modes — design notes (in discussion)
+# MPE + instrument modes — design notes
+
+**Status (built):** the pass-through architecture below is implemented and
+device-validated. `channels.py` is the pure per-device budget/allocator (unit
+tested); `forwarder.py` creates each MPE instrument's synth at its zone master
+channel, records the zone's member channels, calls `configure_mpe`, and skips
+member channels in `_route` (AMY's C layer renders them). `mpe.py` shows a live
+per-device **channel map** (zone master/members, other instruments, red conflict
+cells) with an overlap warning. Confirmed on device: MPE synth number == master
+channel (1), a non-MPE instrument coexists at an auto id (20), member set +
+`MPE_MEMBER_CHANNELS` match the zone, no warnings. **Not yet exercised:** actual
+per-note bend/pressure from a hardware MPE controller (needs the physical
+controller), and render-side **remap (B)** (deferred — additive, see below).
+
+
 
 ## The two instrument modes (reconciled with the instrument-first model)
 

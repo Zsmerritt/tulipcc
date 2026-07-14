@@ -62,6 +62,7 @@ def _members_cb(e):
     _w['mlabel'].set_text("%d channels" % v)
     _set_mpe('members', v)
     _apply()
+    _render_strip()
 
 
 def _bend_cb(e):
@@ -75,6 +76,73 @@ def _channel_cb(ch):
     deckcfg.set_instrument(deckcfg.active_instrument(), 'channel', ch)
     _w['chlabel'].set_text("Zone: %s" % ("upper" if ch == 16 else "lower"))
     _apply()
+    _render_strip()
+
+
+def _render_strip():
+    """Draw/redraw the per-device channel-map strip (16 slots): the active
+    instrument's zone (master + members) vs other instruments on the device,
+    with an overlap warning. Kept LAST in the body flex column so a
+    delete + re-add on live edits keeps its position."""
+    body = _w.get('strip_parent')
+    if body is None:
+        return
+    old = _w.get('strip')
+    if old is not None:
+        try:
+            old.delete()
+        except Exception:
+            pass
+    import channels
+    instr = _inst()
+    device = instr.get('device', 'internal')
+    mpe_on = deckcfg.mpe_enabled()
+    active = deckcfg.active_instrument()
+    insts = deckcfg.instruments()
+    slots = channels.channel_map(insts, device, mpe_on, active_iid=active)
+
+    card = lv.obj(body)
+    card.set_width(lv.pct(100))
+    card.set_height(128)
+    dk._flat(card, radius=16, bg=dk.SURFACE)
+    card.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    card.set_style_pad_all(0, 0)
+    _w['strip'] = card
+    dk.label(card, "Channel map", 16, 10, color=dk.TEXT, font=dk.FONT_M)
+
+    cw, gap, x0, y0 = 52, 4, 16, 42
+    for s in slots:
+        cell = lv.obj(card)
+        cell.set_size(cw, 40)
+        cell.set_pos(x0 + (s['ch'] - 1) * (cw + gap), y0)
+        col = dk.SURFACE2
+        if s['conflict']:
+            col = dk.RED              # zone channel also claimed by another instr
+        elif s['master'] or (s['mine'] and not s['member']):
+            col = dk.ACCENT           # this instrument's master / single channel
+        elif s['member']:
+            col = dk.TEAL             # this instrument's MPE member channels
+        elif s['busy']:
+            col = dk.GRAY             # another instrument on the device
+        dk._flat(cell, radius=8, bg=col)
+        cell.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        dk.label(cell, str(s['ch']), color=dk.WHITE, font=dk.FONT_S).center()
+
+    m = instr.get('mpe', {})
+    if mpe_on and m.get('enabled'):
+        fits, conflicts = channels.zone_fits(insts, device,
+                                             instr.get('channel', 1),
+                                             m.get('members', 15), active, True)
+        if fits:
+            msg, colr = ("Zone fits: master ch%d + %d members"
+                         % (instr.get('channel', 1), m.get('members', 15)),
+                         dk.MUTED)
+        else:
+            msg, colr = ("%s Zone overlaps ch %s -- shrink it or move those"
+                         % (_sym('WARNING', '!'),
+                            ",".join(str(c) for c in conflicts)), dk.ORANGE)
+        dk.label(card, msg, 16, 92, color=colr, font=dk.FONT_S,
+                 w=tulip.screen_size()[0] - 100)
 
 
 def _open_expression(e):
@@ -170,6 +238,11 @@ def _rebuild():
     nav = dk.button(r, "Edit  " + _sym('RIGHT', ">"), w=150, h=52,
                     bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_expression, lv.EVENT.CLICKED, None)
+
+    # Per-device channel-map strip (kept last so live redraws stay in place).
+    _w['strip_parent'] = body
+    _w['strip'] = None
+    _render_strip()
 
     _w['status'] = dk.label(content,
                             _members_str(instr) if m.get('enabled') else "MPE off",

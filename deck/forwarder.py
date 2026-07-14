@@ -29,6 +29,7 @@ _state = {
     'synths': {},        # instrument id -> PatchSynth (internal instruments)
     'routes': {},        # channel (1-16) -> list of route entries
     'notes': {},         # (channel, note) -> list of internal instrument ids
+    'mpe_members': set(),  # member channels of active MPE zones (AMY C handles)
     'registered': False,
 }
 
@@ -54,6 +55,11 @@ def _route(m):
         return
     status = m[0] & 0xF0
     ch = (m[0] & 0x0F) + 1
+    if ch in _state['mpe_members']:
+        # Member channel of an active MPE zone: AMY's C layer routes the note +
+        # per-note expression to the zone synth (== the zone master channel).
+        # The forwarder -- like midi.midi_event_cb -- must not also handle it.
+        return
     entries = _state['routes'].get(ch)
     if not entries:
         return
@@ -181,6 +187,7 @@ def start():
     _release_synths()
     _state['routes'] = {}
     _state['notes'] = {}
+    _state['mpe_members'] = set()
     internal_synths = []
 
     import synth as _synth
@@ -189,6 +196,8 @@ def start():
             continue
         ch = instr.get('channel', 1)
         dev = instr.get('device')
+        mpe = instr.get('mpe', {})
+        is_mpe = bool(mpe_on and mpe.get('enabled'))
         route = _state['routes'].setdefault(ch, [])
         if dev == 'internal':
             # The router owns this synth; make sure midi.config has none on the
@@ -199,8 +208,18 @@ def start():
                 pass
             syn = None
             try:
-                syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                        num_voices=instr.get('num_voices', 10))
+                # An MPE instrument's synth number MUST equal its zone master
+                # channel: AMY's C-layer MPE routing (configure_mpe) dispatches
+                # member-channel notes to the synth whose number == master (the
+                # spike finding). Non-MPE synths keep their auto-assigned ids
+                # (16+), which never collide with lower-zone masters (1-15).
+                if is_mpe:
+                    syn = _synth.PatchSynth(patch=instr.get('patch', 0),
+                                            num_voices=instr.get('num_voices', 10),
+                                            channel=ch)
+                else:
+                    syn = _synth.PatchSynth(patch=instr.get('patch', 0),
+                                            num_voices=instr.get('num_voices', 10))
                 _state['synths'][instr['id']] = syn
             except Exception as e:
                 print("forwarder: internal synth failed:", e)
@@ -222,11 +241,15 @@ def start():
                     internal_synths.append(sn)
             route.append({'kind': 'internal', 'iid': instr['id']})
             # MPE only when the global gate AND this instrument both enable it.
-            mpe = instr.get('mpe', {})
-            if mpe_on and mpe.get('enabled') and hasattr(midi, 'configure_mpe'):
+            if is_mpe and hasattr(midi, 'configure_mpe'):
+                import channels
+                members = mpe.get('members', 15)
+                # Record this zone's member channels so _route defers them to
+                # AMY's C layer (pass-through rendering, MPE-DESIGN.md).
+                for mc in channels.member_channels(ch, members):
+                    _state['mpe_members'].add(mc)
                 try:
-                    midi.configure_mpe(mpe.get('members', 15),
-                                       mpe.get('bend', 48), master=ch)
+                    midi.configure_mpe(members, mpe.get('bend', 48), master=ch)
                 except Exception:
                     pass
         else:

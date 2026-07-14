@@ -1066,3 +1066,85 @@ def test_root_and_repl_cannot_be_quit(uipatch):
     assert repl.presented == 0
     repl.screen_quit_callback(None)             # repl: no-op
     assert 'repl' in ui.running_apps
+
+
+# ---------------------------------------------------------------------------
+# channels.py -- pure MPE channel-budget / zone allocation (no hardware)
+# ---------------------------------------------------------------------------
+import channels
+
+
+def _instr(iid, ch, device='internal', mpe=None, name=None, enabled=True):
+    d = {'id': iid, 'channel': ch, 'device': device, 'enabled': enabled,
+         'name': name or iid}
+    if mpe is not None:
+        d['mpe'] = mpe
+    return d
+
+
+def test_channels_member_and_zone_math():
+    assert channels.member_channels(1, 4) == [2, 3, 4, 5]
+    assert channels.member_channels(1, 15) == list(range(2, 17))
+    assert channels.member_channels(5, 6) == [6, 7, 8, 9, 10, 11]
+    # clamp at 16
+    assert channels.member_channels(13, 15) == [14, 15, 16]
+    # upper zone descends
+    assert channels.member_channels(16, 4) == [12, 13, 14, 15]
+    assert channels.zone_channels(1, 3) == [1, 2, 3, 4]
+
+
+def test_channels_instrument_channels_respects_gate():
+    mpe_instr = _instr('a', 1, mpe={'enabled': True, 'members': 4})
+    # gate off -> single channel even though instrument enables MPE
+    assert channels.instrument_channels(mpe_instr, False) == [1]
+    # gate on -> full zone
+    assert channels.instrument_channels(mpe_instr, True) == [1, 2, 3, 4, 5]
+    plain = _instr('b', 3)
+    assert channels.instrument_channels(plain, True) == [3]
+
+
+def test_channels_zone_fits_and_conflicts():
+    insts = [
+        _instr('lead', 1, mpe={'enabled': True, 'members': 4}),
+        _instr('bass', 3),   # sits inside the lead's would-be zone
+    ]
+    # lead's zone (1..5) overlaps bass on ch3
+    fits, conflicts = channels.zone_fits(insts, 'internal', 1, 4,
+                                         exclude_iid='lead', mpe_on=True)
+    assert not fits and conflicts == [3]
+    # a device with just the lead: zone fits
+    fits2, _ = channels.zone_fits([insts[0]], 'internal', 1, 4,
+                                  exclude_iid='lead', mpe_on=True)
+    assert fits2
+    # cross-device instrument never conflicts
+    other = [insts[0], _instr('bass', 3, device=0)]
+    fits3, conf3 = channels.zone_fits(other, 'internal', 1, 4,
+                                      exclude_iid='lead', mpe_on=True)
+    assert fits3 and conf3 == []
+
+
+def test_channels_max_members_at():
+    insts = [_instr('lead', 1, mpe={'enabled': True, 'members': 15}),
+             _instr('pad', 6)]
+    # from master ch1, free members run 2..5 (ch6 taken) -> 4
+    assert channels.max_members_at(insts, 'internal', 1, 'lead', True) == 4
+    # empty device from ch1 -> 15
+    assert channels.max_members_at([], 'internal', 1, None, True) == 15
+
+
+def test_channels_channel_map():
+    insts = [_instr('lead', 1, mpe={'enabled': True, 'members': 2}, name='Lead'),
+             _instr('bass', 8, name='Bass')]
+    slots = channels.channel_map(insts, 'internal', True, active_iid='lead')
+    assert len(slots) == 16
+    assert slots[0]['ch'] == 1 and slots[0]['master'] and slots[0]['mine']
+    assert slots[1]['member'] and slots[2]['member']       # ch2,3 members
+    assert slots[7]['busy'] and slots[7]['names'] == ['Bass']
+    assert not slots[4]['busy']                            # ch5 free
+
+    # a bass that sits inside the lead's zone shows as a conflict on that channel
+    insts2 = [_instr('lead', 1, mpe={'enabled': True, 'members': 4}, name='Lead'),
+              _instr('bass', 3, name='Bass')]
+    slots2 = channels.channel_map(insts2, 'internal', True, active_iid='lead')
+    assert slots2[2]['conflict']       # ch3: lead member + bass
+    assert not slots2[3]['conflict']   # ch4: lead member only, no conflict
