@@ -14,6 +14,13 @@ import lvgl as lv
 
 _s = {}
 
+# Instrument engine types (the mode switch). Drums is a sample/pad engine; the
+# rest are the melodic synth engines with curated Sound views.
+_TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
+              ('drums', 'Drums')]
+_TYPE_NAMES = dict(_TYPE_LIST)
+_TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'drums': 0}
+
 
 def _panel_h():
     import homeshell
@@ -159,6 +166,41 @@ def _open_patch(e):
         _s['shell'].push(instrument.panel, "Patch", key='patch')
 
 
+def _open_type(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    if _s.get('shell') is not None:
+        _s['shell'].push(type_panel, "Type", key='type')
+
+
+def _set_type(t):
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'type', t)
+    # reset the patch to the type's first patch so patch stays valid for the engine
+    deckcfg.set_instrument(iid, 'patch', _TYPE_FIRST_PATCH.get(t, 0))
+    deckcfg.apply_all()
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.refresh_chips()
+        sh.back()      # pop Type; the deferred refill rebuilds the editor anew
+
+
+def type_panel(parent, shell=None):
+    _s['shell'] = shell
+    w = tulip.screen_size()[0]
+    cur = (_active() or {}).get('type', 'juno6')
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+    dk.label(body, "What engine this instrument plays.", color=dk.MUTED,
+             font=dk.FONT_S)
+    for t, name in _TYPE_LIST:
+        b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
+                      bg=(dk.ACCENT if t == cur else dk.SURFACE))
+        b.add_event_cb((lambda tt: (lambda e: _set_type(tt)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(t),
+                       lv.EVENT.CLICKED, None)
+
+
 def _open_sound(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
@@ -245,11 +287,22 @@ def _build_edit(parent, shell):
     dk.slider(r, instr.get('num_voices', 10), 1, 32, w=340, cb=_voices_cb,
               color=dk.GREEN)
 
-    # Patch -> picker sub-panel
+    # Type (engine) -> mode switch. Scopes the patch picker + drives the Sound
+    # editor (a synth gets Sound tabs; a drum gets the pad list).
     r = dk.row(body)
-    dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
-    nav = dk.button(r, sm.patch_category(instr.get('patch', 0)) + "  >", w=180,
-                    h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    dk.label(r, "Type", color=dk.TEXT)
+    nav = dk.button(r, _TYPE_NAMES.get(instr.get('type', 'juno6'), 'Juno-6')
+                    + "  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    nav.add_event_cb(_open_type, lv.EVENT.CLICKED, None)
+
+    # Patch (or Kit for drums) -> picker sub-panel
+    is_drum = instr.get('type') == 'drums'
+    r = dk.row(body)
+    if is_drum:
+        dk.label(r, "Kit  TR-808", color=dk.TEXT)
+    else:
+        dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
+    nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
     # Sound (per-instrument params) -> ParamEditor sub-panel
@@ -306,7 +359,7 @@ def _render_sound():
     w = tulip.screen_size()[0]
     iid = _snd['iid']
     instr = deckcfg.get_instrument(iid) or {}
-    engine = amyparams.engine_of(instr.get('patch'))
+    engine = instr.get('type') or amyparams.engine_of(instr.get('patch'))
     labels = curated.labels(engine)
     vname = curated.view_name(engine)
     # Anchored header bar: the curated-view badge (left) + a Basic|Advanced
