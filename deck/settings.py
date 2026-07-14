@@ -101,14 +101,13 @@ def run(screen):
         cb=lambda e: tulip.keyboard()).align(lv.ALIGN.TOP_RIGHT, 0, 118)
 
     # --- Volume ---
-    r = dk.row(body)
-    dk.label(r, "Volume", color=dk.TEXT)
-    dk.slider(r, cfg.get('volume', 4), 0, 11, w=360, cb=_volume_cb, color=dk.GREEN)
+    _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
+                lambda v: (amy.volume(v), deckcfg.set('volume', v)), dk.GREEN)
 
     # --- Brightness ---
-    r = dk.row(body)
-    dk.label(r, "Brightness", color=dk.TEXT)
-    dk.slider(r, cfg.get('brightness', 5), 1, 9, w=360, cb=_bright_cb, color=dk.ORANGE)
+    _val_slider(body, 'brightness', "Brightness", cfg.get('brightness', 5), 1, 9,
+                lambda v: (tulip.brightness(v), deckcfg.set('brightness', v)),
+                dk.ORANGE)
 
     # --- REPL font size ---
     r = dk.row(body)
@@ -119,9 +118,8 @@ def run(screen):
     dk.button(g, "Large", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S, cb=_make_font_cb(2))
 
     # --- Menu / task-bar button size (drives ui_patch) ---
-    r = dk.row(body)
-    dk.label(r, "Menu button size", color=dk.TEXT)
-    dk.slider(r, cfg.get('ui_btn', 60), 40, 104, w=360, cb=_uiscale_cb, color=dk.TEAL)
+    _val_slider(body, 'ui_btn', "Menu button size", cfg.get('ui_btn', 60), 40, 104,
+                _uiscale_apply, dk.TEAL)
 
     # --- Rendering (smoother UI) ---
     r = dk.row(body, h=92)
@@ -151,6 +149,7 @@ def run(screen):
         dd.set_options(opts)
         dd.set_selected(sm.screensaver_index(cfg.get(key, 0)))
         dd.set_width(200)
+        dk.style_dropdown(dd)
         dd.add_event_cb(_screensaver_cb(key), lv.EVENT.VALUE_CHANGED, None)
 
     # --- MPE (global gate; off by default, hides all MPE UI when off) ---
@@ -194,14 +193,43 @@ def _render_switch(key, apply_fn):
     return on_change
 
 
-def _uiscale_cb(e):
-    v = e.get_target_obj().get_value()
+def _uiscale_apply(v):
     deckcfg.set('ui_btn', v)
     try:
         import ui_patch
         ui_patch.set_scale(v)   # live-resize the task-bar + menu buttons now
     except Exception:
         pass
+
+
+_sv = {}   # settings-slider value labels, by key
+
+
+def _val_slider(body, key, name, value, lo, hi, apply_fn, color, fmt="%d"):
+    """A slider row with a LIVE value readout (title + value stacked left, fat
+    slider right) -- so Volume/Brightness/Menu-size aren't set blind."""
+    r = dk.row(body, h=92)
+    col = lv.obj(r)
+    col.set_size(400, 60)
+    col.set_style_border_width(0, 0)
+    col.set_style_pad_all(0, 0)
+    col.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    col.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+    col.set_style_pad_row(4, 0)
+    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START,
+                       lv.FLEX_ALIGN.START)
+    dk.label(col, name, color=dk.TEXT, font=dk.FONT_M)
+    _sv[key] = dk.label(col, fmt % value, color=dk.TEAL, font=dk.FONT_S)
+
+    def cb(e):
+        v = e.get_target_obj().get_value()
+        try:
+            _sv[key].set_text(fmt % v)
+        except Exception:
+            pass
+        apply_fn(v)
+    dk.slider(r, value, lo, hi, w=360, cb=cb, color=color)
 
 
 def _upgrade(screen):

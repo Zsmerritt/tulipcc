@@ -241,7 +241,7 @@ def _build_edit(parent, shell):
     # Patch -> picker sub-panel
     r = dk.row(body)
     dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
-    nav = dk.button(r, sm.patch_short(instr.get('patch', 0)) + "  >", w=180,
+    nav = dk.button(r, sm.patch_category(instr.get('patch', 0)) + "  >", w=180,
                     h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 

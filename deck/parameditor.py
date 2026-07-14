@@ -182,31 +182,8 @@ class FxEditor(ParamEditor):
 
 
 def _style_dropdown(dd):
-    """Paint an lv.dropdown (button + open list) into the deck palette -- the
-    default theme renders it in maroon/olive, which reads as broken."""
-    try:
-        dd.set_style_bg_opa(lv.OPA.COVER, 0)
-        dd.set_style_bg_color(dk.c(dk.SURFACE2), 0)
-        dd.set_style_text_color(dk.c(dk.WHITE), 0)
-        dd.set_style_border_width(0, 0)
-        dd.set_style_radius(10, 0)
-        dd.set_style_pad_all(10, 0)
-    except Exception:
-        pass
-    # The open list is a separate object; style it if the binding exposes it.
-    try:
-        lst = dd.get_list()
-        if lst is not None:
-            lst.set_style_bg_color(dk.c(dk.SURFACE), 0)
-            lst.set_style_text_color(dk.c(dk.WHITE), 0)
-            lst.set_style_border_color(dk.c(dk.ACCENT), 0)
-            lst.set_style_border_width(1, 0)
-            lst.set_style_radius(10, 0)
-            # highlighted (selected/pressed) row
-            lst.set_style_bg_color(dk.c(dk.ACCENT), lv.PART.SELECTED
-                                   | lv.STATE.CHECKED)
-    except Exception:
-        pass
+    """Deck-palette a dropdown (shared helper lives in deckui now)."""
+    dk.style_dropdown(dd)
 
 
 def _style_tabview(tv):

@@ -21,9 +21,16 @@ def _terminal():
 
 
 def _reset():
-    if tulip.board() != "DESKTOP":
+    # The single highest-stakes action on the device -- gate it behind a confirm
+    # so one stray tap can't drop a live performance session.
+    if tulip.board() == "DESKTOP":
+        return
+
+    def _do():
         import machine
         machine.reset()
+    dk.confirm("Reset device?", "This reboots now and drops the current session.",
+               _do, yes_text="Reset")
 
 
 def _open_rack(shell):
@@ -103,7 +110,7 @@ _APPS = [
     ("Wordpad",     "run",  "wordpad",      dk.GREEN),
     ("Tulip World", "run",  "worldui",      dk.PURPLE),
     ("Keyboard",    "call", tulip.keyboard, dk.GRAY),
-    ("Voices",      "run",  "voices",       dk.TEAL),
+    ("Voices (legacy)", "run", "voices",     dk.GRAY),
 ]
 
 

@@ -164,9 +164,9 @@ FX = {
     'reverb': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 1, 'default': 0,
          'arg': 'level'},
-        {'name': 'liveness', 'label': 'live', 'min': 0, 'max': 1,
+        {'name': 'liveness', 'label': 'liveness', 'min': 0, 'max': 1,
          'default': 0.85, 'arg': 'liveness'},
-        {'name': 'damping', 'label': 'damp', 'min': 0, 'max': 1,
+        {'name': 'damping', 'label': 'damping', 'min': 0, 'max': 1,
          'default': 0.5, 'arg': 'damping'},
     ],
     'chorus': [
