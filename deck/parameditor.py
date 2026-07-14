@@ -77,13 +77,16 @@ class ParamEditor:
     # ----- value formatting -----
     def _fmt_value(self, d, value):
         """Human-readable current value: decimals scaled to the param's
-        resolution (whole ms/Hz at scale 1, tenths at 10, hundredths at 100)."""
+        resolution (whole ms/Hz at scale 1, tenths at 10, hundredths at 100),
+        with an optional unit suffix (Hz / ms / dB)."""
         scale = d.get('scale', 1)
         dec = 2 if scale >= 100 else (1 if scale >= 10 else 0)
+        unit = d.get('unit', '')
         try:
-            return "%.*f" % (dec, float(value))
+            s = "%.*f" % (dec, float(value))
         except Exception:
-            return str(value)
+            s = str(value)
+        return (s + " " + unit) if unit else s
 
     # ----- per-type controls -----
     def _slider(self, body, d):
@@ -104,9 +107,9 @@ class ParamEditor:
                        font=dk.FONT_M, w=140, align=lv.TEXT_ALIGN.RIGHT)
         val.align(lv.ALIGN.TOP_RIGHT, -20, 14)
         s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
-                      int(round(d['max'] * scale)), w=lv.pct(90),
+                      int(round(d['max'] * scale)), w=lv.pct(84),
                       cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26)
-        s.align(lv.ALIGN.BOTTOM_MID, 0, -14)
+        s.align(lv.ALIGN.BOTTOM_MID, 0, -16)
 
     def _slider_cb(self, d, scale, val_label=None):
         def cb(e):

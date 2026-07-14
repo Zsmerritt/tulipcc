@@ -26,6 +26,33 @@ def _is_dir(path):
         return False
 
 
+def _set_actions(on):
+    # Dim Run/Edit/Delete when nothing is selected so they don't look armed.
+    for k in ('run', 'edit', 'delbtn'):
+        b = _s.get(k)
+        if b is not None:
+            try:
+                b.set_style_opa(lv.OPA.COVER if on else lv.OPA._40, 0)
+            except Exception:
+                pass
+
+
+def _update_up():
+    # Show "Up" only inside a subfolder -- at the /user root there's nothing above
+    # it, so only the app Back remains (removes the Back/Up ambiguity there).
+    b = _s.get('upbtn')
+    if b is None:
+        return
+    at_root = _s.get('path', '/user').rstrip('/') in ('/user', '')
+    try:
+        if at_root:
+            b.add_flag(lv.obj.FLAG.HIDDEN)
+        else:
+            b.remove_flag(lv.obj.FLAG.HIDDEN)
+    except Exception:
+        pass
+
+
 def _select(path, name, btn):
     if _s.get('selbtn') is not None:
         try:
@@ -39,6 +66,7 @@ def _select(path, name, btn):
     _s['selname'].set_text(name)
     _s['delbtn'].get_child(0).set_text("Delete")
     _s['delbtn'].set_style_bg_color(dk.c(dk.SURFACE2), 0)
+    _set_actions(True)
 
 
 def _open(path):
@@ -47,6 +75,8 @@ def _open(path):
     _s['selbtn'] = None
     _s['selname'].set_text("nothing selected")
     _s['pathlbl'].set_text(path)
+    _set_actions(False)
+    _update_up()
     _refresh()
 
 
@@ -137,8 +167,9 @@ def run(screen):
 
     # header controls (top-right area is clear of task bar? put on left under title)
     _s['pathlbl'] = dk.label(screen.group, "/user", 300, 40, color=dk.MUTED, font=dk.FONT_S)
-    dk.button(screen.group, lv.SYMBOL.UP + " Up", w=110, h=44, bg=dk.SURFACE2,
-        font=dk.FONT_S, cb=_up_cb).set_pos(470, 30)
+    _s['upbtn'] = dk.button(screen.group, lv.SYMBOL.UP + " Up", w=110, h=44,
+        bg=dk.SURFACE2, font=dk.FONT_S, cb=_up_cb)
+    _s['upbtn'].set_pos(470, 30)
 
     _s['body'] = dk.scroll_body(screen, top=118)
     # leave room for the action bar
@@ -154,9 +185,11 @@ def run(screen):
     bar.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER)
     _s['selname'] = dk.label(bar, "nothing selected", color=dk.MUTED, font=dk.FONT_S)
     g = dk.hgroup(bar, w=380, h=44)
-    dk.button(g, "Run", w=110, h=44, bg=dk.GREEN, font=dk.FONT_S, cb=_run_cb)
-    dk.button(g, "Edit", w=110, h=44, bg=dk.ACCENT, font=dk.FONT_S, cb=_edit_cb)
+    _s['run'] = dk.button(g, "Run", w=110, h=44, bg=dk.GREEN, font=dk.FONT_S, cb=_run_cb)
+    _s['edit'] = dk.button(g, "Edit", w=110, h=44, bg=dk.ACCENT, font=dk.FONT_S, cb=_edit_cb)
     _s['delbtn'] = dk.button(g, "Delete", w=120, h=44, bg=dk.SURFACE2, font=dk.FONT_S, cb=_delete_cb)
 
+    _set_actions(False)     # nothing selected yet
+    _update_up()            # hide Up at the /user root
     _refresh()
     screen.present()

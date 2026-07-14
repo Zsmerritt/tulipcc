@@ -270,14 +270,13 @@ def expression_panel(parent, shell=None):
     dk.label(r, "Enable expression", color=dk.WHITE)
     dk.switch(r, bool(m.get('expression')), _switch_mpe('expression'))
 
-    r = dk.row(body, h=92)
-    col = _vcol(r, "Pressure")
-    dk.label(col, "channel pressure -> voice level", color=dk.MUTED,
-             font=dk.FONT_S)
-
-    r = dk.row(body, h=92)
-    col = _vcol(r, "Slide (CC74)")
-    dk.label(col, "timbre slide -> filter cutoff", color=dk.MUTED, font=dk.FONT_S)
+    # What expression routes to -- static descriptions, NOT interactive rows, so
+    # they're plain text (no card chrome) to avoid looking tappable.
+    dk.label(body, "What it does", color=dk.MUTED, font=dk.FONT_S)
+    for title, desc in (("Pressure", "channel pressure -> voice level"),
+                        ("Slide (CC74)", "timbre slide -> filter cutoff")):
+        dk.label(body, title, color=dk.TEXT, font=dk.FONT_M)
+        dk.label(body, desc, color=dk.MUTED, font=dk.FONT_S)
 
 
 def panel(parent, shell=None):

@@ -59,9 +59,9 @@ def _p(name, group, label, ptype, default, tier, apply, **kw):
     return d
 
 
-def _slider(name, group, label, lo, hi, default, tier, apply, scale=1):
+def _slider(name, group, label, lo, hi, default, tier, apply, scale=1, unit=''):
     return _p(name, group, label, 'slider', default, tier, apply,
-              min=lo, max=hi, scale=scale)
+              min=lo, max=hi, scale=scale, unit=unit)
 
 
 def _wave(name, group, label, default, tier, apply):
@@ -76,15 +76,15 @@ PARAMS = [
             _osc(OSC_CTL, 'amp', COEF_CONST), scale=100),
     _slider('pan', 'Amp', 'pan', -1.0, 1.0, 0.0, 'basic',
             _osc(None, 'pan'), scale=100),
-    _slider('portamento', 'Amp', 'portamento ms', 0, 1000, 0, 'advanced',
-            _osc(None, 'portamento')),
+    _slider('portamento', 'Amp', 'portamento', 0, 1000, 0, 'advanced',
+            _osc(None, 'portamento'), unit='ms'),
 
     # Oscillator A
     _wave('oscA_wave', 'Osc A', 'wave', 0, 'basic', _osc(OSC_A, 'wave')),
     _slider('oscA_level', 'Osc A', 'level', 0.001, 1.0, 1.0, 'basic',
             _osc(OSC_A, 'amp', COEF_CONST), scale=100),
     _slider('oscA_freq', 'Osc A', 'freq', 50, 2000, 440, 'advanced',
-            _osc(OSC_A, 'freq', COEF_CONST)),
+            _osc(OSC_A, 'freq', COEF_CONST), unit='Hz'),
     _slider('oscA_duty', 'Osc A', 'duty', 0.5, 0.99, 0.5, 'basic',
             _osc(OSC_A, 'duty', COEF_CONST), scale=100),
 
@@ -93,13 +93,13 @@ PARAMS = [
     _slider('oscB_level', 'Osc B', 'level', 0.001, 1.0, 1.0, 'advanced',
             _osc(OSC_B, 'amp', COEF_CONST), scale=100),
     _slider('oscB_freq', 'Osc B', 'freq', 50, 2000, 440, 'advanced',
-            _osc(OSC_B, 'freq', COEF_CONST)),
+            _osc(OSC_B, 'freq', COEF_CONST), unit='Hz'),
     _slider('oscB_duty', 'Osc B', 'duty', 0.5, 0.99, 0.5, 'advanced',
             _osc(OSC_B, 'duty', COEF_CONST), scale=100),
 
     # Filter (VCF, on the control osc)
-    _slider('filter_freq', 'Filter', 'freq', 20, 8000, 1000, 'basic',
-            _osc(OSC_CTL, 'filter_freq', COEF_CONST)),
+    _slider('filter_freq', 'Filter', 'cutoff', 20, 8000, 1000, 'basic',
+            _osc(OSC_CTL, 'filter_freq', COEF_CONST), unit='Hz'),
     _slider('resonance', 'Filter', 'resonance', 0.5, 16, 0.7, 'basic',
             _osc(OSC_CTL, 'resonance'), scale=10),
     _slider('filter_kbd', 'Filter', 'kbd track', 0, 1, 0, 'advanced',
@@ -109,27 +109,27 @@ PARAMS = [
 
     # Amp envelope (eg0 / bp0)
     _slider('amp_attack', 'Amp Env', 'attack', 0, 1000, 0, 'basic',
-            _env('amp', 'attack')),
+            _env('amp', 'attack'), unit='ms'),
     _slider('amp_decay', 'Amp Env', 'decay', 0, 2000, 100, 'basic',
-            _env('amp', 'decay')),
+            _env('amp', 'decay'), unit='ms'),
     _slider('amp_sustain', 'Amp Env', 'sustain', 0, 1, 1.0, 'basic',
             _env('amp', 'sustain'), scale=100),
     _slider('amp_release', 'Amp Env', 'release', 0, 8000, 100, 'basic',
-            _env('amp', 'release')),
+            _env('amp', 'release'), unit='ms'),
 
     # Filter envelope (eg1 / bp1)
     _slider('filt_attack', 'Filter Env', 'attack', 0, 1000, 0, 'advanced',
-            _env('filter', 'attack')),
+            _env('filter', 'attack'), unit='ms'),
     _slider('filt_decay', 'Filter Env', 'decay', 0, 2000, 100, 'advanced',
-            _env('filter', 'decay')),
+            _env('filter', 'decay'), unit='ms'),
     _slider('filt_sustain', 'Filter Env', 'sustain', 0, 1, 0, 'advanced',
             _env('filter', 'sustain'), scale=100),
     _slider('filt_release', 'Filter Env', 'release', 0, 8000, 100, 'advanced',
-            _env('filter', 'release')),
+            _env('filter', 'release'), unit='ms'),
 
     # LFO + modulation
-    _slider('lfo_freq', 'LFO', 'freq', 0.1, 20, 4, 'basic',
-            _osc(OSC_LFO, 'freq', COEF_CONST), scale=10),
+    _slider('lfo_freq', 'LFO', 'rate', 0.1, 20, 4, 'basic',
+            _osc(OSC_LFO, 'freq', COEF_CONST), scale=10, unit='Hz'),
     _wave('lfo_wave', 'LFO', 'wave', 0, 'advanced', _osc(OSC_LFO, 'wave')),
     _slider('lfo_pitch', 'LFO', 'to pitch', 0, 4, 0, 'basic',
             _multi([(OSC_A, 'freq', COEF_MOD), (OSC_B, 'freq', COEF_MOD)]),
@@ -172,8 +172,8 @@ FX = {
     'chorus': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 1, 'default': 0,
          'arg': 'level'},
-        {'name': 'freq', 'label': 'freq', 'min': 0.1, 'max': 20, 'default': 0.5,
-         'arg': 'freq'},
+        {'name': 'freq', 'label': 'rate', 'min': 0.1, 'max': 20, 'default': 0.5,
+         'arg': 'freq', 'unit': 'Hz'},
         {'name': 'depth', 'label': 'depth', 'min': 0.01, 'max': 1,
          'default': 0.5, 'arg': 'amp'},
     ],
@@ -181,7 +181,7 @@ FX = {
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 2, 'default': 0,
          'arg': 'level'},
         {'name': 'delay_ms', 'label': 'delay', 'min': 0, 'max': 5000,
-         'default': 500, 'arg': 'delay_ms'},
+         'default': 500, 'arg': 'delay_ms', 'unit': 'ms'},
         {'name': 'feedback', 'label': 'feedback', 'min': 0, 'max': 1,
          'default': 0, 'arg': 'feedback'},
     ],
@@ -189,9 +189,12 @@ FX = {
     # amy.send(synth=<a synth on the bus>, eq="low,mid,high"), so it's kept out
     # of FX_BUSES (the fn-applied set) and handled by fx_eq_string().
     'eq': [
-        {'name': 'low', 'label': 'low', 'min': -15, 'max': 15, 'default': 0},
-        {'name': 'mid', 'label': 'mid', 'min': -15, 'max': 15, 'default': 0},
-        {'name': 'high', 'label': 'high', 'min': -15, 'max': 15, 'default': 0},
+        {'name': 'low', 'label': 'low', 'min': -15, 'max': 15, 'default': 0,
+         'unit': 'dB'},
+        {'name': 'mid', 'label': 'mid', 'min': -15, 'max': 15, 'default': 0,
+         'unit': 'dB'},
+        {'name': 'high', 'label': 'high', 'min': -15, 'max': 15, 'default': 0,
+         'unit': 'dB'},
     ],
 }
 FX_BUSES = ('reverb', 'chorus', 'echo')     # applied via amy.<bus>() fns
@@ -263,7 +266,8 @@ def fx_defs(bus=None):
                         'group': b[:1].upper() + b[1:],  # str.capitalize() is not in MicroPython
                         'label': p['label'], 'type': 'slider', 'min': p['min'],
                         'max': p['max'], 'default': p['default'],
-                        'tier': 'basic', 'scale': _fx_scale(p['min'], p['max'])})
+                        'tier': 'basic', 'scale': _fx_scale(p['min'], p['max']),
+                        'unit': p.get('unit', '')})
     return out
 
 

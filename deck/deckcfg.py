@@ -56,6 +56,8 @@ DEFAULTS = {
     # echo:{...}}} where device_key is 'internal' or str(board index). Empty =
     # amyparams defaults (all FX off). See amyparams.FX.
     'fx': {},
+    # favorite patch numbers (starred in the patch picker; sorted to the top)
+    'favorites': [],
 }
 
 
@@ -186,6 +188,31 @@ def set(key, value):
 
 def get(key, default=None):
     return load().get(key, default)
+
+
+# --- patch favorites (list of patch numbers, newest last) ---
+def favorites(cfg=None):
+    return list((cfg or load()).get('favorites', []))
+
+
+def is_favorite(patch, cfg=None):
+    try:
+        return int(patch) in favorites(cfg)
+    except (TypeError, ValueError):
+        return False
+
+
+def toggle_favorite(patch):
+    cfg = load()
+    favs = list(cfg.get('favorites', []))
+    p = int(patch)
+    if p in favs:
+        favs.remove(p)
+    else:
+        favs.append(p)
+    cfg['favorites'] = favs
+    save(cfg)
+    return p in favs
 
 
 # --- instrument accessors (canonical) ---

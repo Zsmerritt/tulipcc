@@ -302,16 +302,27 @@ def _render_sound():
     engine = amyparams.engine_of(instr.get('patch'))
     labels = curated.labels(engine)
     vname = curated.view_name(engine)
-    # Curated-view badge (engine-native labels) top-left, so it's clear which
-    # familiar layout you're in (e.g. Juno-6 -> DCO/VCF/VCA).
-    if vname:
-        dk.label(parent, vname + " view", 12, 18, color=dk.MUTED, font=dk.FONT_S)
-    # Basic/Advanced view toggle: a compact chip pinned top-right (ACCENT when on),
-    # clear of the left tab rail and the param list.
-    tog = dk.button(parent, "Advanced", w=150, h=40, font=dk.FONT_S,
-                    bg=(dk.ACCENT if _snd['adv'] else dk.SURFACE2))
-    tog.set_pos(w - 150 - 16, 8)
-    tog.add_event_cb(_toggle_adv, lv.EVENT.CLICKED, None)
+    # Anchored header bar: the curated-view badge (left) + a Basic|Advanced
+    # SEGMENTED toggle (right). Replaces the button that floated loose in the
+    # top-right corner; now it reads as a proper toolbar and both states show.
+    hdr = lv.obj(parent)
+    hdr.set_size(w - 16, 44)
+    hdr.set_pos(8, 6)
+    dk._flat(hdr, radius=12, bg=dk.SURFACE)
+    hdr.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    hdr.set_style_pad_all(0, 0)
+    dk.label(hdr, (vname + " view") if vname else "Sound design", 16, 13,
+             color=dk.MUTED, font=dk.FONT_S)
+    seg_w = 116
+    adv_x = (w - 16) - 16 - seg_w
+    for lbl, val, bx in (("Basic", False, adv_x - seg_w - 4),
+                         ("Advanced", True, adv_x)):
+        b = dk.button(hdr, lbl, w=seg_w, h=34, font=dk.FONT_S,
+                      bg=(dk.ACCENT if _snd['adv'] == val else dk.SURFACE2))
+        b.set_pos(bx, 5)
+        b.add_event_cb((lambda v: (lambda e: _set_adv(v)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(val),
+                       lv.EVENT.CLICKED, None)
 
     # left-tabbed: one tab per engine-native group (tier-filtered), each a short
     # list. curated.tabbed falls back to the generic grouping for unknown engines.
@@ -319,13 +330,13 @@ def _render_sound():
         return curated.CuratedEditor(iid, defs=defs, labels=labels,
                                      on_change=_snd_apply, show_advanced=True)
     parameditor.build_tabbed(parent, curated.tabbed(engine, _snd['adv']), _make,
-                             x=8, y=56, w=w - 16, h=_panel_h() - 64)
+                             x=8, y=58, w=w - 16, h=_panel_h() - 66)
 
 
-def _toggle_adv(e):
-    if e.get_code() != lv.EVENT.CLICKED:
+def _set_adv(value):
+    if _snd.get('adv') == value:
         return
-    _snd['adv'] = not _snd['adv']
+    _snd['adv'] = value
     _render_sound()
 
 
