@@ -33,7 +33,20 @@ DEVICE_CAPACITY = 32
 
 # canonical instrument fields
 _INSTRUMENT_KEYS = ('id', 'name', 'device', 'channel', 'patch', 'num_voices',
-                    'enabled', 'params')
+                    'enabled', 'params', 'type', 'pads', 'kit')
+
+
+def type_of_patch(patch):
+    """Infer an engine type from a patch number (migration + default)."""
+    try:
+        p = int(patch)
+    except (TypeError, ValueError):
+        p = 0
+    if p < 128:
+        return 'juno6'
+    if p < 256:
+        return 'dx7'
+    return 'piano'
 _MPE_KEYS = ('enabled', 'members', 'bend', 'expression')
 
 
@@ -56,6 +69,8 @@ DEFAULTS = {
     # echo:{...}}} where device_key is 'internal' or str(board index). Empty =
     # amyparams defaults (all FX off). See amyparams.FX.
     'fx': {},
+    # favorite patch numbers (starred in the patch picker; sorted to the top)
+    'favorites': [],
 }
 
 
@@ -74,6 +89,7 @@ def default_instrument(index, device=None, channel=None):
     return {
         'id': index, 'name': name, 'device': device, 'channel': channel,
         'patch': 0, 'num_voices': 10, 'mpe': _default_mpe(), 'enabled': True,
+        'type': 'juno6',       # engine: juno6 | dx7 | piano | drums
         'params': {},          # per-synth AMY param overrides (amyparams.PARAMS)
     }
 
@@ -89,6 +105,9 @@ def _merge_instrument(index, d):
             instr['mpe'].update({k: v for k, v in m.items() if k in _MPE_KEYS})
         elif 'mpe' in d:                      # a stray legacy bool
             instr['mpe']['enabled'] = bool(m)
+        # Migrate instruments saved before 'type' existed: infer it from the patch.
+        if not d.get('type'):
+            instr['type'] = type_of_patch(instr.get('patch', 0))
     return instr
 
 
@@ -186,6 +205,31 @@ def set(key, value):
 
 def get(key, default=None):
     return load().get(key, default)
+
+
+# --- patch favorites (list of patch numbers, newest last) ---
+def favorites(cfg=None):
+    return list((cfg or load()).get('favorites', []))
+
+
+def is_favorite(patch, cfg=None):
+    try:
+        return int(patch) in favorites(cfg)
+    except (TypeError, ValueError):
+        return False
+
+
+def toggle_favorite(patch):
+    cfg = load()
+    favs = list(cfg.get('favorites', []))
+    p = int(patch)
+    if p in favs:
+        favs.remove(p)
+    else:
+        favs.append(p)
+    cfg['favorites'] = favs
+    save(cfg)
+    return p in favs
 
 
 # --- instrument accessors (canonical) ---

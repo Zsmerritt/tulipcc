@@ -55,7 +55,7 @@ def run(screen):
     # --- Wi-Fi ---
     wcard = lv.obj(body)
     wcard.set_width(lv.pct(100))
-    wcard.set_height(196)
+    wcard.set_height(214)     # was 196 -- the password field grazed the bottom
     dk._flat(wcard, radius=16, bg=dk.SURFACE)
     wcard.set_style_pad_all(18, 0)
     dk.label(wcard, "Wi-Fi", 0, 0, color=dk.WHITE, font=dk.FONT_M)
@@ -109,13 +109,28 @@ def run(screen):
                 lambda v: (tulip.brightness(v), deckcfg.set('brightness', v)),
                 dk.ORANGE)
 
-    # --- REPL font size ---
+    # --- REPL font size (active size highlighted) ---
     r = dk.row(body)
     dk.label(r, "Terminal font", color=dk.TEXT)
     g = dk.hgroup(r, w=352, h=48)
-    dk.button(g, "Small", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S, cb=_make_font_cb(1))
-    dk.button(g, "Medium", w=112, h=48, bg=dk.SURFACE2, font=dk.FONT_S, cb=_make_font_cb(0))
-    dk.button(g, "Large", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S, cb=_make_font_cb(2))
+    cur_font = cfg.get('tfb_font', 0)
+    _fontbtns = []
+
+    def _paint_fonts(active):
+        for b, code in _fontbtns:
+            b.set_style_bg_color(dk.c(dk.ACCENT if code == active else dk.SURFACE2), 0)
+
+    def _font_cb(n):
+        def cb(e):
+            tulip.tfb_font(n)
+            deckcfg.set('tfb_font', n)
+            _paint_fonts(n)
+        return cb
+    for lbl, code, bw in (("Small", 1, 104), ("Medium", 0, 112), ("Large", 2, 104)):
+        b = dk.button(g, lbl, w=bw, h=48, font=dk.FONT_S,
+                      bg=(dk.ACCENT if code == cur_font else dk.SURFACE2),
+                      cb=_font_cb(code))
+        _fontbtns.append((b, code))
 
     # --- Menu / task-bar button size (drives ui_patch) ---
     _val_slider(body, 'ui_btn', "Menu button size", cfg.get('ui_btn', 60), 40, 104,

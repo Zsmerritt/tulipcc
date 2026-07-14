@@ -99,23 +99,27 @@ def _open_submenu(shell, title, key, items):
         shell.push(builder, title, key=key)
 
 
-_SYSTEM = [
-    ("Settings", "run",  "settings", dk.GREEN),
-    ("Terminal", "call", _terminal,  dk.GRAY),
-    ("Reset",    "call", _reset,     dk.RED),
-]
-
 _APPS = [
     ("Editor",      "call", tulip.edit,     dk.GREEN),
     ("Wordpad",     "run",  "wordpad",      dk.GREEN),
     ("Tulip World", "run",  "worldui",      dk.PURPLE),
     ("Keyboard",    "call", tulip.keyboard, dk.GRAY),
+    ("Drum machine (legacy)", "run", "drums", dk.GRAY),  # drums are now instruments
     ("Voices (legacy)", "run", "voices",     dk.GRAY),
 ]
 
 
 def _open_system(shell):
-    _open_submenu(shell, "System", 'system', list(_SYSTEM))
+    # System is the catch-all: Files + Apps (nested) + device config. Built inline
+    # so it can reference _open_apps (defined below) at call time.
+    items = [
+        ("Files",    "run",   "files",    dk.GREEN),
+        ("Apps",     "panel", _open_apps, dk.PURPLE),
+        ("Settings", "run",   "settings", dk.GREEN),
+        ("Terminal", "call",  _terminal,  dk.GRAY),
+        ("Reset",    "call",  _reset,     dk.RED),
+    ]
+    _open_submenu(shell, "System", 'system', items)
 
 
 def _open_apps(shell):
@@ -133,10 +137,7 @@ def _open_apps(shell):
 _BUILTIN = [
     ("Instruments", "panel", _open_rack,    dk.ACCENT),
     ("Devices",     "panel", _open_devices, dk.TEAL),
-    ("Drums",       "run",   "drums",       dk.ACCENT),
-    ("Files",       "run",   "files",       dk.GREEN),
-    ("System",      "panel", _open_system,  dk.GRAY),
-    ("Apps",        "panel", _open_apps,    dk.PURPLE),
+    ("System",      "panel", _open_system,  dk.GRAY),   # Files + Apps + config live here
 ]
 
 _actions = {}
@@ -194,21 +195,21 @@ def _cb(e):
 
 def _tile(parent, label, color, subtitle=None):
     b = lv.button(parent)
-    b.set_size(200, 96)
-    dk._flat(b, radius=16, bg=color)
+    b.set_size(300, 150)     # larger tiles fill the panel + are easier to hit
+    dk._flat(b, radius=18, bg=color)
     lb = lv.label(b)
     lb.set_text(label)
     lb.set_style_text_color(dk.c(dk.WHITE), 0)
-    lb.set_style_text_font(dk.FONT_M, 0)
+    lb.set_style_text_font(dk.FONT_L, 0)
     if subtitle:
-        lb.align(lv.ALIGN.TOP_LEFT, 14, 14)
+        lb.align(lv.ALIGN.TOP_LEFT, 18, 18)
         sub = lv.label(b)
         sub.set_text(subtitle)
         sub.set_style_text_color(dk.c(dk.WHITE), 0)
         sub.set_style_text_font(dk.FONT_S, 0)
-        sub.align(lv.ALIGN.BOTTOM_LEFT, 14, -14)
+        sub.align(lv.ALIGN.BOTTOM_LEFT, 18, -18)
     else:
-        lb.center()
+        lb.align(lv.ALIGN.TOP_LEFT, 18, 18)
     b.add_event_cb(_cb, lv.EVENT.CLICKED, None)
 
 
@@ -216,10 +217,16 @@ def _build_root(parent, shell):
     # The root panel: a wrapping grid of app tiles. `parent` is a full-size
     # scrollable panel supplied by the shell.
     parent.set_flex_flow(lv.FLEX_FLOW.ROW_WRAP)
-    parent.set_style_pad_all(20, 0)
-    parent.set_style_pad_row(16, 0)
-    parent.set_style_pad_column(16, 0)
+    parent.set_style_pad_all(24, 0)
+    parent.set_style_pad_row(20, 0)
+    parent.set_style_pad_column(20, 0)
     parent.set_scroll_dir(lv.DIR.VER)
+    # Center the grid so the tiles use the panel instead of clustering top-left.
+    try:
+        parent.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER,
+                              lv.FLEX_ALIGN.CENTER)
+    except Exception:
+        pass
 
     # Root tiles are the fixed six; discovered /user apps live under Apps.
     # per-tile subtitles (Devices shows the live board count)

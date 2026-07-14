@@ -14,6 +14,13 @@ import lvgl as lv
 
 _s = {}
 
+# Instrument engine types (the mode switch). Drums is a sample/pad engine; the
+# rest are the melodic synth engines with curated Sound views.
+_TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
+              ('drums', 'Drums')]
+_TYPE_NAMES = dict(_TYPE_LIST)
+_TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'drums': 0}
+
 
 def _panel_h():
     import homeshell
@@ -42,9 +49,8 @@ def _build_list(parent, shell):
     w = tulip.screen_size()[0]
     body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
     body.set_pos(24, 8)
-    active = deckcfg.active_instrument()
     for instr in deckcfg.instruments():
-        _inst_row(body, shell, instr, instr.get('id') == active)
+        _inst_row(body, shell, instr)
     add = dk.button(body, "+ Add instrument", w=lv.pct(100), h=60, bg=dk.GREEN,
                     font=dk.FONT_M)
     add.add_event_cb(lambda e: (_add(shell)
@@ -52,25 +58,33 @@ def _build_list(parent, shell):
                      lv.EVENT.CLICKED, None)
 
 
-def _inst_row(body, shell, instr, is_active):
+def _mk_enable(iid):
+    def on_change(v):
+        deckcfg.set_instrument(iid, 'enabled', v)
+        deckcfg.apply_all()          # re-run the router so it starts/stops playing
+        sh = _s.get('shell')
+        if sh is not None:
+            try:
+                sh.refresh_chips()
+            except Exception:
+                pass
+    return on_change
+
+
+def _inst_row(body, shell, instr):
+    iid = instr.get('id')
     b = lv.button(body)
     b.set_width(lv.pct(100))
     b.set_height(76)
-    dk._flat(b, radius=16, bg=(dk.SURFACE2 if is_active else dk.SURFACE))
+    dk._flat(b, radius=16, bg=dk.SURFACE)
     dk.label(b, instr.get('name', '?'), 16, 10, color=dk.WHITE, font=dk.FONT_M)
     dk.label(b, sm.instrument_summary(instr), 16, 42, color=dk.MUTED,
              font=dk.FONT_S)
-    if is_active:
-        # A filled badge, not a faint word -- the old green "active" text was
-        # nearly invisible (audit).
-        badge = lv.obj(b)
-        badge.set_size(84, 34)
-        dk._flat(badge, radius=17, bg=dk.GREEN)
-        badge.remove_flag(lv.obj.FLAG.SCROLLABLE)
-        badge.align(lv.ALIGN.RIGHT_MID, -16, 0)
-        bl = dk.label(badge, "ACTIVE", color=dk.WHITE, font=dk.FONT_S)
-        bl.center()
-    iid = instr.get('id')
+    # Per-instrument ON/OFF. Enabled instruments all play at once (multitimbral) --
+    # there is no single "active" instrument; tapping the row just opens its editor.
+    sw = dk.switch(b, bool(instr.get('enabled', True)), _mk_enable(iid),
+                   color=dk.GREEN)
+    sw.align(lv.ALIGN.RIGHT_MID, -16, 0)
     b.add_event_cb((lambda i: (lambda e: (_open_edit(shell, i)
                     if e.get_code() == lv.EVENT.CLICKED else None)))(iid),
                    lv.EVENT.CLICKED, None)
@@ -147,9 +161,87 @@ def _voices_cb(e):
 def _open_patch(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
+    sh = _s.get('shell')
+    if sh is None:
+        return
+    instr = _active()
+    if instr and instr.get('type') == 'drums':
+        sh.push(kit_panel, "Kit", key='kit')       # drums pick a kit, not a patch
+    else:
         import instrument
-        _s['shell'].push(instrument.panel, "Patch", key='patch')
+        sh.push(instrument.panel, "Patch", key='patch')
+
+
+def _open_type(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    if _s.get('shell') is not None:
+        _s['shell'].push(type_panel, "Type", key='type')
+
+
+def _set_type(t):
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'type', t)
+    # reset the patch to the type's first patch so patch stays valid for the engine
+    deckcfg.set_instrument(iid, 'patch', _TYPE_FIRST_PATCH.get(t, 0))
+    if t == 'drums':
+        deckcfg.set_instrument(iid, 'kit', 384)   # default TR-808
+    deckcfg.apply_all()
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.refresh_chips()
+        sh.back()      # pop Type; the deferred refill rebuilds the editor anew
+
+
+def _set_kit(kit):
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'kit', kit)
+    deckcfg.apply_all()
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.refresh_chips()
+    try:
+        import forwarder
+        forwarder.preview(iid, note=36)     # audition: a kick
+    except Exception:
+        pass
+    for b, k in _s.get('kitbtns', []):
+        b.set_style_bg_color(dk.c(dk.ACCENT if k == kit else dk.SURFACE), 0)
+
+
+def kit_panel(parent, shell=None):
+    _s['shell'] = shell
+    import drums_kit
+    w = tulip.screen_size()[0]
+    cur = (_active() or {}).get('kit', 384)
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+    dk.label(body, "Drum kit -- swaps all the sounds at once.", color=dk.MUTED,
+             font=dk.FONT_S)
+    _s['kitbtns'] = []
+    for kit, name in drums_kit.KITS:
+        b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
+                      bg=(dk.ACCENT if kit == cur else dk.SURFACE))
+        b.add_event_cb((lambda k: (lambda e: _set_kit(k)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(kit),
+                       lv.EVENT.CLICKED, None)
+        _s['kitbtns'].append((b, kit))
+
+
+def type_panel(parent, shell=None):
+    _s['shell'] = shell
+    w = tulip.screen_size()[0]
+    cur = (_active() or {}).get('type', 'juno6')
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+    dk.label(body, "What engine this instrument plays.", color=dk.MUTED,
+             font=dk.FONT_S)
+    for t, name in _TYPE_LIST:
+        b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
+                      bg=(dk.ACCENT if t == cur else dk.SURFACE))
+        b.add_event_cb((lambda tt: (lambda e: _set_type(tt)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(t),
+                       lv.EVENT.CLICKED, None)
 
 
 def _open_sound(e):
@@ -238,18 +330,33 @@ def _build_edit(parent, shell):
     dk.slider(r, instr.get('num_voices', 10), 1, 32, w=340, cb=_voices_cb,
               color=dk.GREEN)
 
-    # Patch -> picker sub-panel
+    # Type (engine) -> mode switch. Scopes the patch picker + drives the Sound
+    # editor (a synth gets Sound tabs; a drum gets the pad list).
     r = dk.row(body)
-    dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
-    nav = dk.button(r, sm.patch_category(instr.get('patch', 0)) + "  >", w=180,
-                    h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    dk.label(r, "Type", color=dk.TEXT)
+    nav = dk.button(r, _TYPE_NAMES.get(instr.get('type', 'juno6'), 'Juno-6')
+                    + "  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    nav.add_event_cb(_open_type, lv.EVENT.CLICKED, None)
+
+    # Patch (or Kit for drums) -> picker sub-panel
+    is_drum = instr.get('type') == 'drums'
+    r = dk.row(body)
+    if is_drum:
+        import drums_kit
+        dk.label(r, "Kit  " + drums_kit.kit_name(instr.get('kit', 384)),
+                 color=dk.TEXT)
+    else:
+        dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
+    nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
-    # Sound (per-instrument params) -> ParamEditor sub-panel
-    r = dk.row(body)
-    dk.label(r, "Sound", color=dk.TEXT)
-    nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
-    nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
+    # Sound (per-instrument params) -> ParamEditor sub-panel. Drums have no
+    # osc/filter design (per-pad tune/decay is a planned follow-up), so no Sound.
+    if not is_drum:
+        r = dk.row(body)
+        dk.label(r, "Sound", color=dk.TEXT)
+        nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+        nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
 
     # FX -> the OWNING DEVICE's FX bus (shared by all instruments on it)
     r = dk.row(body)
@@ -299,19 +406,30 @@ def _render_sound():
     w = tulip.screen_size()[0]
     iid = _snd['iid']
     instr = deckcfg.get_instrument(iid) or {}
-    engine = amyparams.engine_of(instr.get('patch'))
+    engine = instr.get('type') or amyparams.engine_of(instr.get('patch'))
     labels = curated.labels(engine)
     vname = curated.view_name(engine)
-    # Curated-view badge (engine-native labels) top-left, so it's clear which
-    # familiar layout you're in (e.g. Juno-6 -> DCO/VCF/VCA).
-    if vname:
-        dk.label(parent, vname + " view", 12, 18, color=dk.MUTED, font=dk.FONT_S)
-    # Basic/Advanced view toggle: a compact chip pinned top-right (ACCENT when on),
-    # clear of the left tab rail and the param list.
-    tog = dk.button(parent, "Advanced", w=150, h=40, font=dk.FONT_S,
-                    bg=(dk.ACCENT if _snd['adv'] else dk.SURFACE2))
-    tog.set_pos(w - 150 - 16, 8)
-    tog.add_event_cb(_toggle_adv, lv.EVENT.CLICKED, None)
+    # Anchored header bar: the curated-view badge (left) + a Basic|Advanced
+    # SEGMENTED toggle (right). Replaces the button that floated loose in the
+    # top-right corner; now it reads as a proper toolbar and both states show.
+    hdr = lv.obj(parent)
+    hdr.set_size(w - 16, 44)
+    hdr.set_pos(8, 6)
+    dk._flat(hdr, radius=12, bg=dk.SURFACE)
+    hdr.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    hdr.set_style_pad_all(0, 0)
+    dk.label(hdr, (vname + " view") if vname else "Sound design", 16, 13,
+             color=dk.MUTED, font=dk.FONT_S)
+    seg_w = 116
+    adv_x = (w - 16) - 16 - seg_w
+    for lbl, val, bx in (("Basic", False, adv_x - seg_w - 4),
+                         ("Advanced", True, adv_x)):
+        b = dk.button(hdr, lbl, w=seg_w, h=34, font=dk.FONT_S,
+                      bg=(dk.ACCENT if _snd['adv'] == val else dk.SURFACE2))
+        b.set_pos(bx, 5)
+        b.add_event_cb((lambda v: (lambda e: _set_adv(v)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(val),
+                       lv.EVENT.CLICKED, None)
 
     # left-tabbed: one tab per engine-native group (tier-filtered), each a short
     # list. curated.tabbed falls back to the generic grouping for unknown engines.
@@ -319,13 +437,13 @@ def _render_sound():
         return curated.CuratedEditor(iid, defs=defs, labels=labels,
                                      on_change=_snd_apply, show_advanced=True)
     parameditor.build_tabbed(parent, curated.tabbed(engine, _snd['adv']), _make,
-                             x=8, y=56, w=w - 16, h=_panel_h() - 64)
+                             x=8, y=58, w=w - 16, h=_panel_h() - 66)
 
 
-def _toggle_adv(e):
-    if e.get_code() != lv.EVENT.CLICKED:
+def _set_adv(value):
+    if _snd.get('adv') == value:
         return
-    _snd['adv'] = not _snd['adv']
+    _snd['adv'] = value
     _render_sound()
 
 

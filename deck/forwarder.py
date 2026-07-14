@@ -213,7 +213,13 @@ def start():
                 # member-channel notes to the synth whose number == master (the
                 # spike finding). Non-MPE synths keep their auto-assigned ids
                 # (16+), which never collide with lower-zone masters (1-15).
-                if is_mpe:
+                if instr.get('type') == 'drums':
+                    # A drum instrument is a DrumSynth loaded with a kit patch;
+                    # GM notes on its channel trigger the kit's samples.
+                    import drums_kit
+                    syn = drums_kit.make_synth(instr.get('kit', 384),
+                                               num_voices=instr.get('num_voices', 6))
+                elif is_mpe:
                     syn = _synth.PatchSynth(patch=instr.get('patch', 0),
                                             num_voices=instr.get('num_voices', 10),
                                             channel=ch)
@@ -235,8 +241,17 @@ def start():
                         di()
                     except Exception as e:
                         print("forwarder: synth init failed:", e)
-                _apply_params(syn, instr.get('params', {}))
                 sn = getattr(syn, 'synth', None)
+                if instr.get('type') == 'drums':
+                    # drums carry no osc/filter params; just route to the FX bus
+                    if sn is not None:
+                        try:
+                            import amy
+                            amy.send(synth=sn, bus=0)
+                        except Exception:
+                            pass
+                else:
+                    _apply_params(syn, instr.get('params', {}))
                 if sn is not None:
                     internal_synths.append(sn)
             route.append({'kind': 'internal', 'iid': instr['id']})

@@ -11,15 +11,31 @@ import deckcfg
 from patches import patches
 import lvgl as lv
 
-CATS = [("Juno-6", 0, 128, dk.ACCENT),
-        ("DX7", 128, 256, dk.PURPLE),
-        ("Piano", 256, 257, dk.GREEN)]
+# The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
+# patches -- so we build a small list, not all 257. Drums use the pad editor.
+_TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257)}
+_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano', 'drums': 'Drums'}
 
 _s = {}
 
 
 def _inst():
     return deckcfg.get_instrument(deckcfg.active_instrument())
+
+
+def _type():
+    return (_inst() or {}).get('type', 'juno6')
+
+
+def _nums():
+    """This instrument type's patch numbers, favorites first (or favorites only
+    when the filter is on)."""
+    lo, hi = _TYPE_RANGE.get(_type(), (0, 128))
+    nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]
+    if _s.get('fav_only'):
+        return [n for n in nums if deckcfg.is_favorite(n)]
+    favs = [n for n in nums if deckcfg.is_favorite(n)]
+    return favs + [n for n in nums if n not in favs]
 
 
 def _select_patch(patch):
@@ -42,30 +58,80 @@ def _select_patch(patch):
         b.set_style_bg_color(dk.c(dk.ACCENT if n == patch else dk.SURFACE), 0)
 
 
-def _build_list(body, lo, hi):
+def _toggle_fav(n, star):
+    fav = deckcfg.toggle_favorite(n)
+    try:
+        star.set_style_bg_color(dk.c(dk.ORANGE if fav else dk.SURFACE2), 0)
+    except Exception:
+        pass
+    if _s.get('fav_only'):
+        _build_list()      # an unstarred patch drops out of the favorites filter
+
+
+def _row(body, n, cur):
+    b = lv.button(body)
+    b.set_width(lv.pct(100))
+    b.set_height(56)
+    dk._flat(b, radius=12, bg=(dk.ACCENT if n == cur else dk.SURFACE))
+    lb = lv.label(b)
+    lb.set_text(patches[n])
+    lb.set_style_text_color(dk.c(dk.TEXT), 0)
+    lb.set_style_text_font(dk.FONT_M, 0)
+    lb.align(lv.ALIGN.LEFT_MID, 12, 0)
+    b.add_event_cb((lambda pn: (lambda e: _select_patch(pn)
+                    if e.get_code() == lv.EVENT.CLICKED else None))(n),
+                   lv.EVENT.CLICKED, None)
+    # star toggles favorite (orange when starred). As a child button it captures
+    # its own taps, so starring doesn't also select the patch.
+    star = dk.button(b, "*", w=48, h=44, font=dk.FONT_L,
+                     bg=(dk.ORANGE if deckcfg.is_favorite(n) else dk.SURFACE2))
+    star.align(lv.ALIGN.RIGHT_MID, -8, 0)
+    star.add_event_cb((lambda pn, st: (lambda e: _toggle_fav(pn, st)
+                       if e.get_code() == lv.EVENT.CLICKED else None))(n, star),
+                      lv.EVENT.CLICKED, None)
+    _s['rows'].append((b, n))
+
+
+def _build_list():
+    body = _s.get('listbody')
+    if body is None:
+        return
     body.clean()
     _s['rows'] = []
     cur = (_inst() or {}).get('patch', 0)
-    for n in range(lo, hi):
-        b = lv.button(body)
-        b.set_width(lv.pct(100))
-        b.set_height(56)
-        dk._flat(b, radius=12, bg=(dk.ACCENT if n == cur else dk.SURFACE))
-        lb = lv.label(b)
-        lb.set_text(patches[n])
-        lb.set_style_text_color(dk.c(dk.TEXT), 0)
-        lb.set_style_text_font(dk.FONT_M, 0)
-        lb.align(lv.ALIGN.LEFT_MID, 6, 0)
-        b.add_event_cb((lambda pn: (lambda e: _select_patch(pn)))(n),
-                       lv.EVENT.CLICKED, None)
-        _s['rows'].append((b, n))
+    q = _s.get('query', '').strip().lower()
+    shown = 0
+    for n in _nums():
+        if q and q not in patches[n].lower():
+            continue
+        _row(body, n, cur)
+        shown += 1
+    if shown == 0:
+        if _s.get('fav_only') and not q:
+            msg = "No favorites in %s yet -- tap the * on a patch." % \
+                _TYPE_NAME.get(_type(), '')
+        else:
+            msg = "No patches match \"%s\"." % _s.get('query', '')
+        dk.label(body, msg, color=dk.MUTED, font=dk.FONT_S)
 
 
-def _pick_cat(lo, hi, accent, btn):
-    for b in _s['catbtns']:
-        b.set_style_bg_color(dk.c(dk.SURFACE2), 0)
-    btn.set_style_bg_color(dk.c(accent), 0)
-    _build_list(_s['listbody'], lo, hi)
+def _toggle_favonly(btn):
+    _s['fav_only'] = not _s.get('fav_only')
+    try:
+        btn.set_style_bg_color(
+            dk.c(dk.ORANGE if _s['fav_only'] else dk.SURFACE2), 0)
+    except Exception:
+        pass
+    _build_list()
+
+
+def _search_changed(e):
+    ta = _s.get('searchta')
+    try:
+        _s['query'] = ta.get_text() if ta is not None else ''
+    except Exception:
+        _s['query'] = ''
+    _build_list()
 
 
 def _rebuild_content():
@@ -81,6 +147,8 @@ def _rebuild_content():
     w = tulip.screen_size()[0]
     inst = _inst() or {}
     cur = inst.get('patch', 0)
+    _s.setdefault('query', '')
+    _s.setdefault('fav_only', False)
 
     content = lv.obj(base)
     content.set_pos(0, ctop)
@@ -90,28 +158,38 @@ def _rebuild_content():
 
     _s['name'] = dk.label(content, patches[cur], 24, 6, color=dk.WHITE,
                           font=dk.FONT_L)
+    # the picker is scoped to the instrument's type (set in the editor)
+    dk.label(content, _TYPE_NAME.get(_type(), 'Patches') + " patches", 24, 52,
+             color=dk.MUTED, font=dk.FONT_S)
+    # favorites filter (right)
+    favbtn = dk.button(content, "* Favorites", w=180, h=44, font=dk.FONT_S,
+                       bg=(dk.ORANGE if _s['fav_only'] else dk.SURFACE2))
+    favbtn.set_pos(w - 24 - 180, 44)
+    favbtn.add_event_cb((lambda bt: (lambda e: _toggle_favonly(bt)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(favbtn),
+                        lv.EVENT.CLICKED, None)
 
-    # category buttons
-    _s['catbtns'] = []
-    x = 24
-    for name, lo, hi, accent in CATS:
-        active = lo <= cur < hi
-        b = dk.button(content, name, w=150, h=52,
-                      bg=(accent if active else dk.SURFACE2), font=dk.FONT_M)
-        b.set_pos(x, 48)
-        _s['catbtns'].append(b)
-        b.add_event_cb((lambda l, h, a, bt: (lambda e: _pick_cat(l, h, a, bt)))(
-            lo, hi, accent, b), lv.EVENT.CLICKED, None)
-        x += 162
+    # search field + on-screen keyboard button (filters the list live by name)
+    sw = w - 48 - 76
+    t = tulip.UIText(text=_s.get('query', ''), placeholder="search patches",
+        w=sw, h=44, bg_color=dk.SURFACE2, fg_color=dk.TEXT, font=dk.FONT_S)
+    t.group.set_parent(content)
+    t.group.set_size(sw, 44)
+    t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    t.group.set_pos(24, 108)
+    _s['searchta'] = t.ta
+    try:
+        t.ta.add_event_cb(_search_changed, lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
+    dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
+        cb=lambda e: tulip.keyboard()).set_pos(w - 24 - 64, 108)
 
     # patch list
-    body = dk.scroll_col(content, w - 48, chh - 116)
-    body.set_pos(24, 110)
+    body = dk.scroll_col(content, w - 48, chh - 168)
+    body.set_pos(24, 164)
     _s['listbody'] = body
-    for name, lo, hi, accent in CATS:
-        if lo <= cur < hi:
-            _build_list(body, lo, hi)
-            break
+    _build_list()
 
 
 def panel(parent, shell=None):
