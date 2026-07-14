@@ -27,6 +27,13 @@
 #     firmware apps stay untouched (survives tulip.upgrade()).
 #
 # Call ui_patch.apply() once at boot; call ui_patch.set_scale(px) to resize live.
+#
+# COUPLING NOTE: this module reaches into frozen ui.py internals (UIScreen
+# .draw_task_bar / .screen_quit_callback / the module-global repl_screen &
+# lv_launcher). Written against the ui.py shipped in this repo's firmware
+# (tulip/shared/py/ui.py on the deck-ui branch, July 2026). After a
+# tulip.upgrade() to a newer firmware, re-check those attribute names first if
+# task-bar buttons or quit-to-Home misbehave.
 
 import ui
 import tulip

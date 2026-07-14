@@ -320,16 +320,56 @@ class HomeShell:
 
     # ----- clock ----------------------------------------------------------
     def _schedule_clock(self):
+        """Tick the clock label every 30s -- but only while Home is the
+        presented screen. Switching to another app pauses the chain (no point
+        repainting a hidden label forever); presenting Home again fires the
+        screen's activate_callback, which repaints the time/wifi immediately
+        (so the clock is never stale on return) and resumes the ticking."""
+        self._clock_running = False
+        prev_activate = getattr(self.screen, 'activate_callback', None)
+
+        def _on_activate(scr):
+            if prev_activate is not None:
+                try:
+                    prev_activate(scr)
+                except Exception:
+                    pass
+            self._render_wifi_clock()      # snap time + wifi current NOW
+            self._start_clock()
+        try:
+            self.screen.activate_callback = _on_activate
+        except Exception:
+            pass
+        self._start_clock()
+
+    def _home_presented(self):
+        try:
+            import ui
+            return ui.current_app_string == getattr(self.screen, 'name', None)
+        except Exception:
+            return True    # can't tell: keep ticking (the old behavior)
+
+    def _start_clock(self):
+        if self._clock_running or not self._alive:
+            return
+        self._clock_running = True
+
         def _tick(x):
             if not self._alive:
+                self._clock_running = False
+                return
+            if not self._home_presented():
+                # Paused. _on_activate repaints and resumes when Home is back.
+                self._clock_running = False
                 return
             try:
                 self._clock_lbl.set_text(_clock_str())
             except Exception:
                 self._alive = False
+                self._clock_running = False
                 return
             tulip.defer(_tick, 0, 30000)
         try:
             tulip.defer(_tick, 0, 30000)
         except Exception:
-            pass
+            self._clock_running = False

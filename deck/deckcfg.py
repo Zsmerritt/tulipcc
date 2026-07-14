@@ -23,7 +23,10 @@ import json
 
 PATH = '/user/deck_config.json'
 
-# runtime-only state (not persisted)
+# runtime-only state (not persisted). _state['cfg'] caches the parsed config so
+# load() stops re-reading + re-parsing the JSON file on every call -- on the
+# ESP32-S3 every one of those was an SPI-flash read plus heap churn, and callers
+# hit load() dozens of times per panel build. save() keeps it in sync.
 _state = {}
 
 # Per-device polyphony budget (voices). A tunable constant; boards + the Tulip
@@ -150,6 +153,9 @@ def _instrument_from_flat(data):
 
 
 def load():
+    cached = _state.get('cfg')
+    if cached is not None:
+        return cached
     try:
         with open(PATH) as f:
             data = json.load(f)
@@ -183,10 +189,11 @@ def load():
     if act not in ids:
         act = ids[0]
     cfg['active_instrument'] = act
+    _state['cfg'] = cfg
     return cfg
 
 
-def save(cfg):
+def _write(cfg):
     # Drop the legacy `instances` key if an old config still carries it.
     data = {k: v for k, v in cfg.items() if k != 'instances'}
     try:
@@ -196,7 +203,27 @@ def save(cfg):
         print("deckcfg: could not save:", e)
 
 
-def set(key, value):
+def save(cfg):
+    _state['cfg'] = cfg
+    _write(cfg)
+
+
+def flush():
+    """Write the cached config to flash now. Pairs with the setters' flush=False
+    (drag-time updates): the UI updates the cache per slider tick and flushes
+    once on release, so a drag costs one flash write instead of dozens."""
+    cfg = _state.get('cfg')
+    if cfg is not None:
+        _write(cfg)
+
+
+def invalidate():
+    """Drop the cache so the next load() re-reads the file (tests / external
+    edits to the config file)."""
+    _state.pop('cfg', None)
+
+
+def set_value(key, value):
     cfg = load()
     cfg[key] = value
     save(cfg)
@@ -352,13 +379,18 @@ def get_instrument_param(iid, name, default=None):
         return default
 
 
-def set_instrument_param(iid, name, value):
+def set_instrument_param(iid, name, value, flush=True):
+    """Set one stored param. flush=False updates only the in-RAM cache (for
+    slider drags -- live audition reads the cache); call flush() on release."""
     cfg = load()
     for i in cfg['instruments']:
         if i['id'] == iid:
             i.setdefault('params', {})[name] = value
             break
-    save(cfg)
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
     return cfg
 
 
@@ -371,11 +403,16 @@ def device_fx(device, cfg=None):
     return (cfg or load()).get('fx', {}).get(_device_key(device), {})
 
 
-def set_device_fx(device, bus, name, value):
+def set_device_fx(device, bus, name, value, flush=True):
+    """Set one FX-bus value. flush=False updates only the in-RAM cache (slider
+    drags); call flush() on release."""
     cfg = load()
     fx = cfg.setdefault('fx', {})
     fx.setdefault(_device_key(device), {}).setdefault(bus, {})[name] = value
-    save(cfg)
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
     return cfg
 
 
@@ -406,7 +443,6 @@ def device_list(cfg=None):
                      'kind': 'amyboard', 'connected': True,
                      'capacity': DEVICE_CAPACITY, 'load': device_load(d, cfg)})
     # configured-but-not-currently-connected boards still show (disconnected)
-    # (a set comprehension, not set(); the module defines its own set() helper)
     used = {i.get('device') for i in cfg['instruments']
             if isinstance(i.get('device'), int)}
     for d in sorted(x for x in used if x >= n):

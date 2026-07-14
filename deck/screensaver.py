@@ -25,11 +25,10 @@ SLEEP_LEVEL = 0     # brightness while asleep: 0 = backlight fully off (needs th
                     # display_brightness(0) firmware change; clamps to ~1/near-off
                     # on older firmware)
 TICK_MS = 300       # idle poll period -- small so touch wake feels immediate
-_RELOAD_EVERY = 16  # re-read config roughly every ~5s (16 * 300ms)
 
 # phase: None | 'full' | 'dim' | 'sleep'
 _state = {'on': False, 'phase': None, 'full': 5,
-          'dim_after': 0, 'sleep_after': 0, 'ticks': 0}
+          'dim_after': 0, 'sleep_after': 0}
 
 
 def reload():
@@ -76,11 +75,11 @@ def note_activity(*a):
 
 
 def _tick(x):
+    # No periodic config re-read here: Settings calls reload() whenever
+    # brightness or the dim/sleep thresholds change, so polling the config file
+    # from flash every few seconds bought nothing.
     if not _state['on']:
         return
-    _state['ticks'] += 1
-    if _state['ticks'] % _RELOAD_EVERY == 0:
-        reload()
     idle = _idle_ms()
     sa = _state['sleep_after']
     da = _state['dim_after']
@@ -102,7 +101,6 @@ def start():
     reload()
     _state['on'] = True
     _state['phase'] = None
-    _state['ticks'] = 0
     try:
         import midi
         midi.add_callback(note_activity)   # wake on incoming MIDI

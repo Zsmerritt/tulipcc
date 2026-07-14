@@ -27,15 +27,17 @@ def _type():
     return (_inst() or {}).get('type', 'juno6')
 
 
-def _nums():
+def _nums(favs):
     """This instrument type's patch numbers, favorites first (or favorites only
-    when the filter is on)."""
+    when the filter is on). `favs` is the favorites SET, loaded once by the
+    caller -- calling deckcfg.is_favorite() per patch was a config load per
+    row."""
     lo, hi = _TYPE_RANGE.get(_type(), (0, 128))
     nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]
     if _s.get('fav_only'):
-        return [n for n in nums if deckcfg.is_favorite(n)]
-    favs = [n for n in nums if deckcfg.is_favorite(n)]
-    return favs + [n for n in nums if n not in favs]
+        return [n for n in nums if n in favs]
+    starred = [n for n in nums if n in favs]
+    return starred + [n for n in nums if n not in favs]
 
 
 def _select_patch(patch):
@@ -68,7 +70,7 @@ def _toggle_fav(n, star):
         _build_list()      # an unstarred patch drops out of the favorites filter
 
 
-def _row(body, n, cur):
+def _row(body, n, cur, favs):
     b = lv.button(body)
     b.set_width(lv.pct(100))
     b.set_height(56)
@@ -84,7 +86,7 @@ def _row(body, n, cur):
     # star toggles favorite (orange when starred). As a child button it captures
     # its own taps, so starring doesn't also select the patch.
     star = dk.button(b, "*", w=48, h=44, font=dk.FONT_L,
-                     bg=(dk.ORANGE if deckcfg.is_favorite(n) else dk.SURFACE2))
+                     bg=(dk.ORANGE if n in favs else dk.SURFACE2))
     star.align(lv.ALIGN.RIGHT_MID, -8, 0)
     star.add_event_cb((lambda pn, st: (lambda e: _toggle_fav(pn, st)
                        if e.get_code() == lv.EVENT.CLICKED else None))(n, star),
@@ -99,12 +101,13 @@ def _build_list():
     body.clean()
     _s['rows'] = []
     cur = (_inst() or {}).get('patch', 0)
+    favs = set(deckcfg.favorites())      # loaded once for the whole list
     q = _s.get('query', '').strip().lower()
     shown = 0
-    for n in _nums():
+    for n in _nums(favs):
         if q and q not in patches[n].lower():
             continue
-        _row(body, n, cur)
+        _row(body, n, cur, favs)
         shown += 1
     if shown == 0:
         if _s.get('fav_only') and not q:
@@ -126,12 +129,24 @@ def _toggle_favonly(btn):
 
 
 def _search_changed(e):
+    # Debounced: rebuilding ~130 rows (several hundred LVGL objects) per
+    # keystroke makes typing crawl. Rebuild once, shortly after typing pauses;
+    # the generation counter cancels rebuilds superseded by newer keystrokes.
     ta = _s.get('searchta')
     try:
         _s['query'] = ta.get_text() if ta is not None else ''
     except Exception:
         _s['query'] = ''
-    _build_list()
+    _s['search_gen'] = _s.get('search_gen', 0) + 1
+    gen = _s['search_gen']
+
+    def _do(x):
+        if _s.get('search_gen') == gen and _s.get('listbody') is not None:
+            _build_list()
+    try:
+        tulip.defer(_do, 0, 250)
+    except Exception:
+        _build_list()      # no defer (host): rebuild inline
 
 
 def _rebuild_content():

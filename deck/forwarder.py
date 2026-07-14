@@ -27,30 +27,54 @@ import deckcfg
 _state = {
     'on': False,
     'synths': {},        # instrument id -> PatchSynth (internal instruments)
-    'routes': {},        # channel (1-16) -> list of route entries
+    'routes': {},        # channel (1-16) -> ([internal iids], [board devices])
     'notes': {},         # (channel, note) -> list of internal instrument ids
     'mpe_members': set(),  # member channels of active MPE zones (AMY C handles)
     'registered': False,
+    'has_device_arg': None,  # firmware supports tulip.midi_out(msg, device)?
+    'err_iids': set(),   # instrument ids whose synth already logged a failure
 }
+
+_EMPTY = ((), ())        # shared empty route (no per-message allocation)
+
+
+def _has_device_arg():
+    # tulip.num_midi_devices shipped in the same firmware as midi_out's device
+    # arg, so its presence is the capability probe -- checked once, not by
+    # raising TypeError per MIDI message on older firmware.
+    flag = _state['has_device_arg']
+    if flag is None:
+        flag = hasattr(tulip, 'num_midi_devices')
+        _state['has_device_arg'] = flag
+    return flag
 
 
 def _emit(data, device=None):
-    # Send to a specific USB-MIDI device when the firmware supports it; fall back
-    # to the single-device broadcast on older firmware.
-    if device is not None:
-        try:
-            tulip.midi_out(bytes(data), device)
-            return
-        except TypeError:
-            pass
-    tulip.midi_out(bytes(data))
+    if not isinstance(data, bytes):
+        data = bytes(data)
+    if device is not None and _has_device_arg():
+        tulip.midi_out(data, device)
+    else:
+        tulip.midi_out(data)
 
 
-def _boards_on(entries):
-    return [e for e in entries if e['kind'] == 'board']
+def _synth_err(iid, e):
+    # Log the first failure per instrument (a broken synth would otherwise
+    # throw -- silently, or worse noisily -- on every note).
+    if iid in _state['err_iids']:
+        return
+    _state['err_iids'].add(iid)
+    try:
+        import decklog
+        decklog.log_exc("forwarder: synth for instrument %s failed" % iid, e)
+    except Exception:
+        pass
 
 
 def _route(m):
+    # The per-MIDI-message hot path: no list/dict allocation for CC/bend/
+    # pressure streams (MPE controllers send 100+ msgs/sec), which keeps
+    # MicroPython GC pauses out of the note timing.
     if not _state['on'] or not m:
         return
     status = m[0] & 0xF0
@@ -60,44 +84,46 @@ def _route(m):
         # per-note expression to the zone synth (== the zone master channel).
         # The forwarder -- like midi.midi_event_cb -- must not also handle it.
         return
-    entries = _state['routes'].get(ch)
-    if not entries:
+    iids, boards = _state['routes'].get(ch, _EMPTY)
+    if not iids and not boards:
         return
 
     if status == 0x90 and len(m) > 2 and m[2] > 0:
         note = m[1]
         vel = m[2] / 127.0
-        played = []
-        for e in entries:
-            if e['kind'] == 'internal':
-                syn = _state['synths'].get(e['iid'])
-                if syn is not None:
-                    try:
-                        syn.note_on(note, vel)
-                    except Exception:
-                        pass
-                    played.append(e['iid'])
-            else:
-                _emit(m, e['device'])          # raw forward to the board
+        played = None
+        synths = _state['synths']
+        for iid in iids:
+            syn = synths.get(iid)
+            if syn is not None:
+                try:
+                    syn.note_on(note, vel)
+                except Exception as e:
+                    _synth_err(iid, e)
+                if played is None:
+                    played = []
+                played.append(iid)
+        for dev in boards:
+            _emit(m, dev)                      # raw forward to the board
         if played:
             _state['notes'][(ch, note)] = played
     elif status == 0x80 or (status == 0x90 and len(m) > 2 and m[2] == 0):
         note = m[1]
-        for iid in _state['notes'].pop((ch, note), []):
+        for iid in _state['notes'].pop((ch, note), ()):
             syn = _state['synths'].get(iid)
             if syn is not None:
                 try:
                     syn.note_off(note)
-                except Exception:
-                    pass
-        for e in _boards_on(entries):
-            _emit(m, e['device'])              # forward the note-off raw
+                except Exception as e:
+                    _synth_err(iid, e)
+        for dev in boards:
+            _emit(m, dev)                      # forward the note-off raw
     else:
         # CC / pitch bend / aftertouch: forward to boards on this channel (MPE +
         # expression reach the board). Internal CC handling lands in a later
         # milestone.
-        for e in _boards_on(entries):
-            _emit(m, e['device'])
+        for dev in boards:
+            _emit(m, dev)
 
 
 def _release_synths():
@@ -188,6 +214,9 @@ def start():
     _state['routes'] = {}
     _state['notes'] = {}
     _state['mpe_members'] = set()
+    _state['err_iids'] = set()
+    _state['has_device_arg'] = None    # re-probe (firmware can't change, but
+                                       # tests swap the tulip module)
     internal_synths = []
 
     import synth as _synth
@@ -198,7 +227,7 @@ def start():
         dev = instr.get('device')
         mpe = instr.get('mpe', {})
         is_mpe = bool(mpe_on and mpe.get('enabled'))
-        route = _state['routes'].setdefault(ch, [])
+        route = _state['routes'].setdefault(ch, ([], []))
         if dev == 'internal':
             # The router owns this synth; make sure midi.config has none on the
             # channel so Tulip's default handler doesn't double-play the note.
@@ -254,7 +283,7 @@ def start():
                     _apply_params(syn, instr.get('params', {}))
                 if sn is not None:
                     internal_synths.append(sn)
-            route.append({'kind': 'internal', 'iid': instr['id']})
+            route[0].append(instr['id'])
             # MPE only when the global gate AND this instrument both enable it.
             if is_mpe and hasattr(midi, 'configure_mpe'):
                 import channels
@@ -273,7 +302,7 @@ def start():
                 _emit((0xC0 | ((ch - 1) & 0x0F), instr.get('patch', 0) & 0x7F), dev)
             except Exception:
                 pass
-            route.append({'kind': 'board', 'device': dev})
+            route[1].append(dev)
 
     _apply_device_fx(cfg, internal_synths)   # internal (Tulip) FX bus
 

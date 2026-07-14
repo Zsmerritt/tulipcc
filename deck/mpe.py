@@ -58,8 +58,14 @@ def _switch_mpe(sub):
 
 
 def _members_cb(e):
+    # Per-tick during the drag: readout only. The commit (config write + router
+    # restart, which releases and rebuilds every synth) waits for release.
     v = e.get_target_obj().get_value()
     _w['mlabel'].set_text("%d channels" % v)
+
+
+def _members_done(e):
+    v = e.get_target_obj().get_value()
     _set_mpe('members', v)
     _apply()
     _render_strip()
@@ -68,6 +74,10 @@ def _members_cb(e):
 def _bend_cb(e):
     v = e.get_target_obj().get_value()
     _w['blabel'].set_text("+/- %d semitones" % v)
+
+
+def _bend_done(e):
+    v = e.get_target_obj().get_value()
     _set_mpe('bend', v)
     _apply()
 
@@ -222,13 +232,14 @@ def _rebuild():
     _w['mlabel'] = dk.label(col, "%d channels" % m.get('members', 15),
                             color=dk.MUTED, font=dk.FONT_S)
     dk.slider(r, m.get('members', 15), 1, 15, w=360, cb=_members_cb,
-              color=dk.ACCENT)
+              color=dk.ACCENT, on_release=_members_done)
 
     r = dk.row(body, h=92)
     col = _vcol(r, "Pitch bend range")
     _w['blabel'] = dk.label(col, "+/- %d semitones" % m.get('bend', 48),
                             color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(r, m.get('bend', 48), 1, 96, w=360, cb=_bend_cb, color=dk.ORANGE)
+    dk.slider(r, m.get('bend', 48), 1, 96, w=360, cb=_bend_cb, color=dk.ORANGE,
+              on_release=_bend_done)
 
     r = dk.row(body, h=92)
     col = _vcol(r, "Listen channel")
