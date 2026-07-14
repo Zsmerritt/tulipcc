@@ -42,9 +42,8 @@ def _build_list(parent, shell):
     w = tulip.screen_size()[0]
     body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
     body.set_pos(24, 8)
-    active = deckcfg.active_instrument()
     for instr in deckcfg.instruments():
-        _inst_row(body, shell, instr, instr.get('id') == active)
+        _inst_row(body, shell, instr)
     add = dk.button(body, "+ Add instrument", w=lv.pct(100), h=60, bg=dk.GREEN,
                     font=dk.FONT_M)
     add.add_event_cb(lambda e: (_add(shell)
@@ -52,25 +51,33 @@ def _build_list(parent, shell):
                      lv.EVENT.CLICKED, None)
 
 
-def _inst_row(body, shell, instr, is_active):
+def _mk_enable(iid):
+    def on_change(v):
+        deckcfg.set_instrument(iid, 'enabled', v)
+        deckcfg.apply_all()          # re-run the router so it starts/stops playing
+        sh = _s.get('shell')
+        if sh is not None:
+            try:
+                sh.refresh_chips()
+            except Exception:
+                pass
+    return on_change
+
+
+def _inst_row(body, shell, instr):
+    iid = instr.get('id')
     b = lv.button(body)
     b.set_width(lv.pct(100))
     b.set_height(76)
-    dk._flat(b, radius=16, bg=(dk.SURFACE2 if is_active else dk.SURFACE))
+    dk._flat(b, radius=16, bg=dk.SURFACE)
     dk.label(b, instr.get('name', '?'), 16, 10, color=dk.WHITE, font=dk.FONT_M)
     dk.label(b, sm.instrument_summary(instr), 16, 42, color=dk.MUTED,
              font=dk.FONT_S)
-    if is_active:
-        # A filled badge, not a faint word -- the old green "active" text was
-        # nearly invisible (audit).
-        badge = lv.obj(b)
-        badge.set_size(84, 34)
-        dk._flat(badge, radius=17, bg=dk.GREEN)
-        badge.remove_flag(lv.obj.FLAG.SCROLLABLE)
-        badge.align(lv.ALIGN.RIGHT_MID, -16, 0)
-        bl = dk.label(badge, "ACTIVE", color=dk.WHITE, font=dk.FONT_S)
-        bl.center()
-    iid = instr.get('id')
+    # Per-instrument ON/OFF. Enabled instruments all play at once (multitimbral) --
+    # there is no single "active" instrument; tapping the row just opens its editor.
+    sw = dk.switch(b, bool(instr.get('enabled', True)), _mk_enable(iid),
+                   color=dk.GREEN)
+    sw.align(lv.ALIGN.RIGHT_MID, -16, 0)
     b.add_event_cb((lambda i: (lambda e: (_open_edit(shell, i)
                     if e.get_code() == lv.EVENT.CLICKED else None)))(iid),
                    lv.EVENT.CLICKED, None)
