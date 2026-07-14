@@ -103,10 +103,12 @@ def _open_edit(shell, iid):
     if shell is None:
         return
     shell.refresh_chips()
+    instr = deckcfg.get_instrument(iid)
+    title = (instr.get('name') or 'Instrument') if instr else 'Instrument'
     if sm.open_panel_action(shell.top_key(), 'inst_edit') == 'rebuild':
-        shell.rebuild_top(edit_panel, "Edit instrument", key='inst_edit')
+        shell.rebuild_top(edit_panel, title, key='inst_edit')
     else:
-        shell.push(edit_panel, "Edit instrument", key='inst_edit')
+        shell.push(edit_panel, title, key='inst_edit')
 
 
 # ---------------- edit panel ----------------
@@ -302,6 +304,39 @@ def _build_edit(parent, shell):
         return
     body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
     body.set_pos(24, 8)
+    iid = instr.get('id')
+
+    # Name (rename via the on-screen keyboard) -- so several instruments on one
+    # device don't all read the same, and you can tell which you're editing.
+    ncard = lv.obj(body)
+    ncard.set_width(lv.pct(100))
+    ncard.set_height(76)
+    dk._flat(ncard, radius=16, bg=dk.SURFACE)
+    ncard.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    ncard.set_style_pad_all(0, 0)
+    dk.label(ncard, "Name", color=dk.TEXT, font=dk.FONT_M).align(
+        lv.ALIGN.LEFT_MID, 20, 0)
+    nt = tulip.UIText(text=instr.get('name', ''), placeholder="instrument name",
+                      w=460, h=44, bg_color=dk.SURFACE2, fg_color=dk.TEXT,
+                      font=dk.FONT_S)
+    nt.group.set_parent(ncard)
+    nt.group.set_size(460, 44)
+    nt.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    nt.group.align(lv.ALIGN.RIGHT_MID, -84, 0)
+    dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=56, h=44, bg=dk.SURFACE2,
+              cb=lambda e: tulip.keyboard()).align(lv.ALIGN.RIGHT_MID, -16, 0)
+
+    def _name_cb(e):
+        try:
+            deckcfg.set_instrument(iid, 'name', nt.ta.get_text())
+            if _s.get('shell') is not None:
+                _s['shell'].refresh_chips()
+        except Exception:
+            pass
+    try:
+        nt.ta.add_event_cb(_name_cb, lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
 
     # Device chooser (internal + each board)
     r = dk.row(body, h=76)

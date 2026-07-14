@@ -260,6 +260,18 @@ def _next_id(insts):
     return (max(i['id'] for i in insts) + 1) if insts else 0
 
 
+def _unique_name(insts, base):
+    """A name not already used by another instrument (so rows are tellable apart):
+    'Tulip', then 'Tulip 2', 'Tulip 3', ..."""
+    names = {i.get('name') for i in insts}
+    if base not in names:
+        return base
+    n = 2
+    while ('%s %d' % (base, n)) in names:
+        n += 1
+    return '%s %d' % (base, n)
+
+
 def add_instrument(device='internal', channel=1, **kw):
     cfg = load()
     insts = cfg['instruments']
@@ -269,6 +281,8 @@ def add_instrument(device='internal', channel=1, **kw):
     for k, v in kw.items():
         if k in _INSTRUMENT_KEYS:
             instr[k] = v
+    if 'name' not in kw:                       # distinct default name
+        instr['name'] = _unique_name(insts, instr.get('name', 'Instrument'))
     insts.append(instr)
     save(cfg)
     return instr
