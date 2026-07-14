@@ -272,6 +272,18 @@ def _unique_name(insts, base):
     return '%s %d' % (base, n)
 
 
+def next_free_channel(device, cfg=None, exclude_iid=None):
+    """The lowest MIDI channel (1-16) not used by another instrument on `device`
+    (so a new/moved instrument lands on a free channel, not always ch 1)."""
+    cfg = cfg or load()
+    used = {i.get('channel') for i in cfg['instruments']
+            if i.get('device') == device and i.get('id') != exclude_iid}
+    for ch in range(1, 17):
+        if ch not in used:
+            return ch
+    return 1
+
+
 def add_instrument(device='internal', channel=1, **kw):
     cfg = load()
     insts = cfg['instruments']

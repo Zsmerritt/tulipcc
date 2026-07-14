@@ -65,6 +65,15 @@ except Exception:
 _installed = False
 
 
+def _log(msg):
+    # persistent breadcrumb for the "drops back to Home" glitch (decklog.py)
+    try:
+        import decklog
+        decklog.log(msg)
+    except Exception:
+        pass
+
+
 def _sym(name, fallback):
     """An lv.SYMBOL glyph if this build has it, else an ASCII fallback."""
     return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
@@ -282,6 +291,7 @@ def _make_back_cb(screen):
     def _cb(e):
         if e.get_code() != lv.EVENT.CLICKED:
             return
+        _log("Back tapped in app '%s'" % getattr(screen, 'name', '?'))
         if _back_keeps_alive(screen.name, screen):
             _go_home()                       # busy: leave it playing, show Home
         else:
@@ -368,6 +378,7 @@ def apply():
     def _patched_quit(self, e):
         # control-Q and the power button both land here. Return to Home instead
         # of the REPL; refuse to quit the REPL or the root (would orphan Home).
+        _log("screen_quit_callback for app '%s'" % getattr(self, 'name', '?'))
         target = _quit_target(self.name, ui.running_apps)
         if target is None:
             return

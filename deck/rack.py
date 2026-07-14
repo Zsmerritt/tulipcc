@@ -17,7 +17,7 @@ _s = {}
 # Instrument engine types (the mode switch). Drums is a sample/pad engine; the
 # rest are the melodic synth engines with curated Sound views.
 _TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
-              ('drums', 'Drums')]
+              ('drums', 'Kits')]   # 'drums' key kept; user-facing label is "Kits"
 _TYPE_NAMES = dict(_TYPE_LIST)
 _TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'drums': 0}
 
@@ -91,7 +91,8 @@ def _inst_row(body, shell, instr):
 
 
 def _add(shell):
-    instr = deckcfg.add_instrument(device='internal', channel=1)
+    ch = deckcfg.next_free_channel('internal')   # next free channel, not always 1
+    instr = deckcfg.add_instrument(device='internal', channel=ch)
     deckcfg.apply_all()
     if shell is not None:
         shell.refresh_chips()
@@ -136,7 +137,9 @@ def _rebuild_edit():
 def _set_device(dev):
     iid = deckcfg.active_instrument()
     deckcfg.set_instrument(iid, 'device', dev)
-    deckcfg.set_instrument(iid, 'name', sm.device_name(dev))
+    # land on the next free channel on the new device (keep the user's name)
+    deckcfg.set_instrument(iid, 'channel',
+                           deckcfg.next_free_channel(dev, exclude_iid=iid))
     deckcfg.apply_all()
     if _s.get('shell') is not None:
         _s['shell'].refresh_chips()
@@ -337,6 +340,7 @@ def _build_edit(parent, shell):
         nt.ta.add_event_cb(_name_cb, lv.EVENT.VALUE_CHANGED, None)
     except Exception:
         pass
+    dk.autoshow_keyboard(nt.ta)
 
     # Device chooser (internal + each board)
     r = dk.row(body, h=76)
