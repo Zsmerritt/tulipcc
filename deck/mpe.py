@@ -109,6 +109,12 @@ def _render_strip():
     card.set_style_pad_all(0, 0)
     _w['strip'] = card
     dk.label(card, "Channel map", 16, 10, color=dk.TEXT, font=dk.FONT_M)
+    # color legend (right of the title) so the cell colors are self-explanatory
+    lx = 210
+    for txt, cc in (("master", dk.ACCENT), ("members", dk.TEAL),
+                    ("other", dk.GRAY), ("conflict", dk.RED)):
+        dk.label(card, txt, lx, 14, color=cc, font=dk.FONT_S)
+        lx += len(txt) * 9 + 26
 
     cw, gap, x0, y0 = 52, 4, 16, 42
     for s in slots:

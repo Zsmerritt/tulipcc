@@ -34,6 +34,29 @@ def patch_short(patch):
     return "Piano"
 
 
+def patch_name(patch):
+    """The real preset name (from patches.py), e.g. 'A11 Brass Set 1' -- not the
+    'Juno0' index token. Falls back to the compact tag if the table is missing."""
+    try:
+        from patches import patches
+        return patches[int(patch)]
+    except Exception:
+        return patch_short(patch)
+
+
+def patch_category(patch):
+    """The engine family label for a patch: 'Juno-6' / 'DX7' / 'Piano'."""
+    try:
+        p = int(patch)
+    except (TypeError, ValueError):
+        p = 0
+    if p < _JUNO_END:
+        return "Juno-6"
+    if p < _DX_END:
+        return "DX7"
+    return "Piano"
+
+
 def device_name(device):
     """Display name for a device id: 'internal' -> 'Tulip', 0 -> 'Board A'."""
     if device == 'internal':
@@ -66,7 +89,7 @@ def instrument_summary(instr):
     """One-line rack-row summary of an instrument (ASCII only)."""
     return "%s  ch%d  %s" % (device_name(instr.get('device', 'internal')),
                              instr.get('channel', 1),
-                             patch_short(instr.get('patch', 0)))
+                             patch_name(instr.get('patch', 0)))
 
 
 def device_meter(dev):

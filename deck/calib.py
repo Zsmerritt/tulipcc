@@ -24,6 +24,7 @@
 
 import tulip
 import deckui as dk
+import deckcfg
 import lvgl as lv
 
 # Sample targets as screen fractions: center + four insets (kept off the extreme
@@ -144,9 +145,15 @@ def run(screen):
         pass
 
     screen.bg_color = dk.BG
-    dk.label(screen.group, "Touch calibration", 40, 34, color=dk.WHITE,
+    # Start the title right of the standalone Back button (ui_patch pins it at
+    # top-left) so it isn't clipped to "libration". Matches dk.frame's offset.
+    try:
+        _tx = int(deckcfg.get('ui_btn', 60) * 2.4) + 24
+    except Exception:
+        _tx = 168
+    dk.label(screen.group, "Touch calibration", _tx, 34, color=dk.WHITE,
              font=dk.FONT_L)
-    _st['prompt'] = dk.label(screen.group, "", 42, 84, color=dk.MUTED,
+    _st['prompt'] = dk.label(screen.group, "", _tx + 2, 84, color=dk.MUTED,
                              font=dk.FONT_M)
 
     # Full-screen transparent capture button underneath everything.

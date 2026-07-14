@@ -79,16 +79,50 @@ def label(parent, text, x=None, y=None, color=TEXT, font=FONT_M, w=None,
 
 
 def frame(screen, title, subtitle=None):
-    # Dark background + a left-aligned title and thin divider. Keeps clear of
-    # the task-bar buttons in the top-right corner.
+    # Dark background + a title and thin divider. Standalone apps get a top-left
+    # Back button (ui_patch), so start the header to its RIGHT -- otherwise the
+    # button covers the title (e.g. "Calibration" -> "libration"). Offset is
+    # derived from the configured menu-button size so it stays clear at any size.
     screen.bg_color = BG
-    label(screen.group, title, 24, 30, color=WHITE, font=FONT_L)
+    try:
+        import deckcfg
+        back_w = int(deckcfg.get('ui_btn', 60) * 2.4)
+    except Exception:
+        back_w = 144
+    tx = back_w + 24
+    label(screen.group, title, tx, 30, color=WHITE, font=FONT_L)
     if subtitle:
-        label(screen.group, subtitle, 26, 74, color=MUTED, font=FONT_S)
+        label(screen.group, subtitle, tx + 2, 74, color=MUTED, font=FONT_S)
     d = lv.obj(screen.group)
     d.set_size(tulip.screen_size()[0] - 48, 2)
     d.set_pos(24, 102)
     _flat(d, bg=SURFACE2)
+
+
+def style_dropdown(dd):
+    """Paint an lv.dropdown (button + open list) into the deck palette. The
+    default theme renders it maroon/olive, which reads as broken. Shared by the
+    param editor and any other dropdown (Settings screensaver, etc.)."""
+    try:
+        dd.set_style_bg_opa(lv.OPA.COVER, 0)
+        dd.set_style_bg_color(c(SURFACE2), 0)
+        dd.set_style_text_color(c(WHITE), 0)
+        dd.set_style_border_width(0, 0)
+        dd.set_style_radius(10, 0)
+        dd.set_style_pad_all(10, 0)
+    except Exception:
+        pass
+    try:
+        lst = dd.get_list()
+        if lst is not None:
+            lst.set_style_bg_color(c(SURFACE), 0)
+            lst.set_style_text_color(c(WHITE), 0)
+            lst.set_style_border_color(c(ACCENT), 0)
+            lst.set_style_border_width(1, 0)
+            lst.set_style_radius(10, 0)
+            lst.set_style_bg_color(c(ACCENT), lv.PART.SELECTED | lv.STATE.CHECKED)
+    except Exception:
+        pass
 
 
 def scroll_body(screen, top=118, gap=12):
