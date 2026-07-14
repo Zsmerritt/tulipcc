@@ -74,7 +74,7 @@ PARAMS = [
     # Amp / dynamics
     _slider('level', 'Amp', 'level', 0.001, 7, 1.0, 'basic',
             _osc(OSC_CTL, 'amp', COEF_CONST), scale=100),
-    _slider('pan', 'Amp', 'pan', -1.0, 1.0, 0.0, 'advanced',
+    _slider('pan', 'Amp', 'pan', -1.0, 1.0, 0.0, 'basic',
             _osc(None, 'pan'), scale=100),
     _slider('portamento', 'Amp', 'portamento ms', 0, 1000, 0, 'advanced',
             _osc(None, 'portamento')),
@@ -104,7 +104,7 @@ PARAMS = [
             _osc(OSC_CTL, 'resonance'), scale=10),
     _slider('filter_kbd', 'Filter', 'kbd track', 0, 1, 0, 'advanced',
             _osc(OSC_CTL, 'filter_freq', COEF_NOTE), scale=100),
-    _slider('filter_env', 'Filter', 'env depth', -10, 10, 0, 'advanced',
+    _slider('filter_env', 'Filter', 'env depth', -10, 10, 0, 'basic',
             _osc(OSC_CTL, 'filter_freq', COEF_EG1)),
 
     # Amp envelope (eg0 / bp0)
@@ -131,13 +131,13 @@ PARAMS = [
     _slider('lfo_freq', 'LFO', 'freq', 0.1, 20, 4, 'basic',
             _osc(OSC_LFO, 'freq', COEF_CONST), scale=10),
     _wave('lfo_wave', 'LFO', 'wave', 0, 'advanced', _osc(OSC_LFO, 'wave')),
-    _slider('lfo_pitch', 'LFO', 'to pitch', 0, 4, 0, 'advanced',
+    _slider('lfo_pitch', 'LFO', 'to pitch', 0, 4, 0, 'basic',
             _multi([(OSC_A, 'freq', COEF_MOD), (OSC_B, 'freq', COEF_MOD)]),
             scale=100),
     _slider('lfo_pwm', 'LFO', 'to pwm', 0, 0.49, 0, 'advanced',
             _multi([(OSC_A, 'duty', COEF_MOD), (OSC_B, 'duty', COEF_MOD)]),
             scale=100),
-    _slider('lfo_filter', 'LFO', 'to filter', 0, 4, 0, 'advanced',
+    _slider('lfo_filter', 'LFO', 'to filter', 0, 4, 0, 'basic',
             _osc(OSC_CTL, 'filter_freq', COEF_MOD), scale=100),
     # NOTE: EQ is per-BUS (per-device), not per-synth (verified on AMY) -- it
     # lives in FX below, not here.

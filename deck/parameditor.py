@@ -74,20 +74,50 @@ class ParamEditor:
             except Exception:
                 pass
 
+    # ----- value formatting -----
+    def _fmt_value(self, d, value):
+        """Human-readable current value: decimals scaled to the param's
+        resolution (whole ms/Hz at scale 1, tenths at 10, hundredths at 100)."""
+        scale = d.get('scale', 1)
+        dec = 2 if scale >= 100 else (1 if scale >= 10 else 0)
+        try:
+            return "%.*f" % (dec, float(value))
+        except Exception:
+            return str(value)
+
     # ----- per-type controls -----
     def _slider(self, body, d):
+        # A card showing the param name + a LIVE value readout on top, above a
+        # full-width fat slider (the MPE screen's pattern, generalized). The
+        # audit flagged the old bare 14px slider with no number as "blind".
         scale = d.get('scale', 1)
         cur = self._get(d)
-        r = dk.row(body)
-        dk.label(r, self.label_for(d), color=dk.TEXT)
-        dk.slider(r, int(round(cur * scale)), int(round(d['min'] * scale)),
-                  int(round(d['max'] * scale)), w=340,
-                  cb=self._slider_cb(d, scale), color=dk.TEAL)
+        cell = lv.obj(body)
+        cell.set_width(lv.pct(100))
+        cell.set_height(88)
+        dk._flat(cell, radius=16, bg=dk.SURFACE)
+        cell.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        cell.set_style_pad_all(0, 0)
+        name = dk.label(cell, self.label_for(d), color=dk.TEXT)
+        name.align(lv.ALIGN.TOP_LEFT, 20, 14)
+        val = dk.label(cell, self._fmt_value(d, cur), color=dk.TEAL,
+                       font=dk.FONT_M, w=140, align=lv.TEXT_ALIGN.RIGHT)
+        val.align(lv.ALIGN.TOP_RIGHT, -20, 14)
+        s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
+                      int(round(d['max'] * scale)), w=lv.pct(90),
+                      cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26)
+        s.align(lv.ALIGN.BOTTOM_MID, 0, -14)
 
-    def _slider_cb(self, d, scale):
+    def _slider_cb(self, d, scale, val_label=None):
         def cb(e):
             raw = e.get_target_obj().get_value()
-            self._set(d, (raw / scale) if scale != 1 else raw)
+            v = (raw / scale) if scale != 1 else raw
+            self._set(d, v)
+            if val_label is not None:
+                try:
+                    val_label.set_text(self._fmt_value(d, v))
+                except Exception:
+                    pass
         return cb
 
     def _dropdown(self, body, d):
@@ -103,6 +133,7 @@ class ParamEditor:
         dd.set_options("\n".join(d['options']))
         dd.set_selected(idx)
         dd.set_width(200)
+        _style_dropdown(dd)
         dd.add_event_cb(self._dropdown_cb(d, vals), lv.EVENT.VALUE_CHANGED, None)
 
     def _dropdown_cb(self, d, vals):
@@ -160,6 +191,74 @@ class FxEditor(ParamEditor):
                 pass
 
 
+def _style_dropdown(dd):
+    """Paint an lv.dropdown (button + open list) into the deck palette -- the
+    default theme renders it in maroon/olive, which reads as broken."""
+    try:
+        dd.set_style_bg_opa(lv.OPA.COVER, 0)
+        dd.set_style_bg_color(dk.c(dk.SURFACE2), 0)
+        dd.set_style_text_color(dk.c(dk.WHITE), 0)
+        dd.set_style_border_width(0, 0)
+        dd.set_style_radius(10, 0)
+        dd.set_style_pad_all(10, 0)
+    except Exception:
+        pass
+    # The open list is a separate object; style it if the binding exposes it.
+    try:
+        lst = dd.get_list()
+        if lst is not None:
+            lst.set_style_bg_color(dk.c(dk.SURFACE), 0)
+            lst.set_style_text_color(dk.c(dk.WHITE), 0)
+            lst.set_style_border_color(dk.c(dk.ACCENT), 0)
+            lst.set_style_border_width(1, 0)
+            lst.set_style_radius(10, 0)
+            # highlighted (selected/pressed) row
+            lst.set_style_bg_color(dk.c(dk.ACCENT), lv.PART.SELECTED
+                                   | lv.STATE.CHECKED)
+    except Exception:
+        pass
+
+
+def _style_tabview(tv):
+    """Paint an lv.tabview's bar + tab buttons into the deck palette (default
+    theme renders the bar/buttons in maroon/olive)."""
+    try:
+        tv.set_style_bg_color(dk.c(dk.BG), 0)
+        tv.set_style_border_width(0, 0)
+    except Exception:
+        pass
+    try:
+        bar = tv.get_tab_bar()
+    except Exception:
+        bar = None
+    if bar is None:
+        return
+    try:
+        bar.set_style_bg_opa(lv.OPA.COVER, 0)
+        bar.set_style_bg_color(dk.c(dk.SURFACE), 0)
+        bar.set_style_border_width(0, 0)
+        bar.set_style_pad_all(6, 0)
+        bar.set_style_pad_row(6, 0)
+    except Exception:
+        pass
+    try:
+        n = bar.get_child_count()
+    except Exception:
+        n = 0
+    for i in range(n):
+        try:
+            btn = bar.get_child(i)
+            btn.set_style_bg_opa(lv.OPA.COVER, 0)
+            btn.set_style_bg_color(dk.c(dk.SURFACE2), 0)
+            btn.set_style_bg_color(dk.c(dk.ACCENT), lv.STATE.CHECKED)
+            btn.set_style_text_color(dk.c(dk.MUTED), 0)
+            btn.set_style_text_color(dk.c(dk.WHITE), lv.STATE.CHECKED)
+            btn.set_style_radius(10, 0)
+            btn.set_style_border_width(0, 0)
+        except Exception:
+            pass
+
+
 def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,
                  tab_bar=140):
     """Build an lv.tabview with a LEFT tab bar; one tab per (label, defs) in
@@ -199,4 +298,5 @@ def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,
         ed = make_editor(defs)
         ed.group_headers = False
         ed.build(page)
+    _style_tabview(tv)
     return tv

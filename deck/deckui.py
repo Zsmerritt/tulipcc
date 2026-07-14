@@ -146,15 +146,18 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     return b
 
 
-def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT):
+def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22):
+    # h defaults fat (was 14 -- audit flagged the track as "thinner than a
+    # finger"). The knob padding grows with the track so the touch target stays
+    # comfortably larger than the visible bar.
     s = lv.slider(parent)
     s.set_width(w)
-    s.set_height(14)
+    s.set_height(h)
     s.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)
     s.set_style_bg_color(c(SURFACE2), lv.PART.MAIN)
     s.set_style_bg_color(c(color), lv.PART.INDICATOR)
     s.set_style_bg_color(c(WHITE), lv.PART.KNOB)
-    s.set_style_pad_all(6, lv.PART.KNOB)
+    s.set_style_pad_all(max(8, h // 2), lv.PART.KNOB)
     s.set_range(vmin, vmax)
     s.set_value(int(value), lv.ANIM.OFF)
     if cb is not None:

@@ -132,7 +132,7 @@ def _install_ui_mocks():
                     LIST='list', DIRECTORY='dir', NEXT='next', FILE='file',
                     KEYBOARD='kb', POWER='pwr', SHUFFLE='shuf', WIFI='wifi')
     lv.PART = _NS(MAIN=0)
-    lv.ALIGN = _NS(TOP_RIGHT=1, BOTTOM_RIGHT=2, OUT_LEFT_MID=3)
+    lv.ALIGN = _NS(TOP_RIGHT=1, BOTTOM_RIGHT=2, OUT_LEFT_MID=3, TOP_LEFT=4)
     lv.EVENT = _NS(CLICKED=1, VALUE_CHANGED=2)
     lv.TEXT_ALIGN = _NS(CENTER=1)
     lv.font_montserrat_24 = object()

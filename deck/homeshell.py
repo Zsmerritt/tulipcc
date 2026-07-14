@@ -21,7 +21,8 @@ import shellmodel as sm
 import lvgl as lv
 
 BAR_H = 56
-LEFT_ZONE = 210     # left region: Back button + breadcrumb
+LEFT_ZONE = 288     # left region: Back button + breadcrumb (wide enough that
+                    # titles like "Edit instrument" no longer truncate to "Edit…")
 RIGHT_ZONE = 190    # right region: wifi + clock
 CHIP_H = 40
 

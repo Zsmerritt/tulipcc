@@ -116,22 +116,26 @@ def _size_buttons(screen):
             if lb is not None:
                 lb.set_style_text_font(f, 0)
                 lb.center()
-    # top-right cluster: shuffle (if any), then quit/power, then Back to its left
+    # Back ALWAYS lives in the TOP-LEFT corner -- matching the in-shell panel
+    # Back (homeshell) -- so Back never flips corners between the shell and
+    # standalone apps (audit: "Back flips corners"). The Back is either a
+    # dedicated back_button (keep-alive apps) or the quit button repurposed as
+    # Back (quit_is_back).
+    back_btn = bk if bk is not None else (q if quit_is_back else None)
+    if back_btn is not None:
+        back_btn.align_to(screen.group, lv.ALIGN.TOP_LEFT, 0, 0)
+    # top-right cluster: shuffle (if any), then quit/power -- but only when the
+    # quit button is a real Power button, not the repurposed Back.
     anchor = None
     if a is not None:
         a.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
         anchor = a
-    if q is not None:
+    if q is not None and not quit_is_back:
         if anchor is not None:
             q.align_to(anchor, lv.ALIGN.OUT_LEFT_MID, 0, 0)
         else:
             q.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
         anchor = q
-    if bk is not None:
-        if anchor is not None:
-            bk.align_to(anchor, lv.ALIGN.OUT_LEFT_MID, 0, 0)
-        else:
-            bk.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
     # bottom-right: launcher, then Home to its left
     if l is not None:
         l.align_to(screen.group, lv.ALIGN.BOTTOM_RIGHT, 0, 0)
