@@ -295,20 +295,30 @@ def _render_sound():
         return
     import parameditor
     import amyparams
+    import curated
     w = tulip.screen_size()[0]
+    iid = _snd['iid']
+    instr = deckcfg.get_instrument(iid) or {}
+    engine = amyparams.engine_of(instr.get('patch'))
+    labels = curated.labels(engine)
+    vname = curated.view_name(engine)
+    # Curated-view badge (engine-native labels) top-left, so it's clear which
+    # familiar layout you're in (e.g. Juno-6 -> DCO/VCF/VCA).
+    if vname:
+        dk.label(parent, vname + " view", 12, 18, color=dk.MUTED, font=dk.FONT_S)
     # Basic/Advanced view toggle: a compact chip pinned top-right (ACCENT when on),
     # clear of the left tab rail and the param list.
     tog = dk.button(parent, "Advanced", w=150, h=40, font=dk.FONT_S,
                     bg=(dk.ACCENT if _snd['adv'] else dk.SURFACE2))
     tog.set_pos(w - 150 - 16, 8)
     tog.add_event_cb(_toggle_adv, lv.EVENT.CLICKED, None)
-    # left-tabbed: one tab per param group (tier-filtered); each tab a short list
-    iid = _snd['iid']
 
+    # left-tabbed: one tab per engine-native group (tier-filtered), each a short
+    # list. curated.tabbed falls back to the generic grouping for unknown engines.
     def _make(defs):
-        return parameditor.ParamEditor(iid, defs=defs, on_change=_snd_apply,
-                                       show_advanced=True)
-    parameditor.build_tabbed(parent, amyparams.tabbed_groups(_snd['adv']), _make,
+        return curated.CuratedEditor(iid, defs=defs, labels=labels,
+                                     on_change=_snd_apply, show_advanced=True)
+    parameditor.build_tabbed(parent, curated.tabbed(engine, _snd['adv']), _make,
                              x=8, y=56, w=w - 16, h=_panel_h() - 64)
 
 

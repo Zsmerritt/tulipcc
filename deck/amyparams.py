@@ -85,7 +85,7 @@ PARAMS = [
             _osc(OSC_A, 'amp', COEF_CONST), scale=100),
     _slider('oscA_freq', 'Osc A', 'freq', 50, 2000, 440, 'advanced',
             _osc(OSC_A, 'freq', COEF_CONST)),
-    _slider('oscA_duty', 'Osc A', 'duty', 0.5, 0.99, 0.5, 'advanced',
+    _slider('oscA_duty', 'Osc A', 'duty', 0.5, 0.99, 0.5, 'basic',
             _osc(OSC_A, 'duty', COEF_CONST), scale=100),
 
     # Oscillator B
@@ -144,6 +144,18 @@ PARAMS = [
 ]
 
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
+
+
+# Patch-number ranges -> synth engine (mirrors instrument.CATS). Used to pick a
+# curated editor view (curated.py); 'generic' falls back to the full grouped set.
+def engine_of(patch):
+    if patch is None:
+        return 'generic'
+    if patch < 128:
+        return 'juno6'
+    if patch < 256:
+        return 'dx7'
+    return 'piano'
 
 
 # --- FX schema (per-DEVICE bus): bus -> list of {name,label,min,max,default,arg}
