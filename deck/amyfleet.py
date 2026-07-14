@@ -28,12 +28,15 @@ def enroll(device, channel):
 
 
 def enroll_from_config():
-    """Enroll every amyboard instance to its configured channel/device."""
+    """Enroll every board-backed instrument to its configured channel/device."""
     import deckcfg
+    seen = set()
     n = 0
-    for inst in deckcfg.instances():
-        if inst.get('kind') == 'amyboard' and inst.get('device') is not None:
-            enroll(inst['device'], inst.get('channel', 2))
+    for instr in deckcfg.instruments():
+        dev = instr.get('device')
+        if isinstance(dev, int) and dev not in seen:
+            enroll(dev, instr.get('channel', 2))
+            seen.add(dev)
             n += 1
     return n
 

@@ -104,6 +104,19 @@ def scroll_body(screen, top=118, gap=12):
     return body
 
 
+def scroll_col(parent, w, h, gap=12):
+    # A vertical, scrollable flex column of the given size, parented anywhere
+    # (unlike scroll_body which assumes a screen + header). Used by the in-shell
+    # panels, which fill a shell-supplied container rather than a full screen.
+    body = lv.obj(parent)
+    _flat(body, bg=BG, scroll=True)
+    body.set_size(w, h)
+    body.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+    body.set_style_pad_row(gap, 0)
+    body.set_scroll_dir(lv.DIR.VER)
+    return body
+
+
 def row(parent, h=76, bg=SURFACE):
     # A full-width rounded card that lays its children out left-to-right,
     # pushing the first to the left edge and the last to the right edge.

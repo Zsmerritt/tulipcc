@@ -14,6 +14,18 @@
 #   * The REPL keeps running (everything depends on it) as a normal switchable
 #     "Terminal" app, and gets a Home button on its task bar as a way back.
 #
+# Phase 1 navigation model (deck/PLAN-rework.md) -- every page has a Back, and
+# Back frees resources like the old quit did:
+#   * Standalone config/utility apps (settings, files, voices, wordpad, worldui,
+#     editor, keyboard, ...): the shuffle/app-switcher button is removed and the
+#     quit/power button becomes a labeled "< Back" (its action stays
+#     screen_quit_callback = free + return Home). Back = quit = free + Home.
+#   * Keep-alive apps (KEEP_ALIVE, e.g. the drum sequencer): keep BOTH a Back and
+#     a Power. Power quits (stops the beat + frees). Back consults a per-app
+#     "busy" probe: if busy, present Home but leave the app running (keeps
+#     playing in the background); if idle, quit it. The probes live here so the
+#     firmware apps stay untouched (survives tulip.upgrade()).
+#
 # Call ui_patch.apply() once at boot; call ui_patch.set_scale(px) to resize live.
 
 import ui
@@ -30,7 +42,32 @@ except Exception:
 # the return target when any other app is quit -- so the REPL stops being "root".
 ROOT_APP = 'home'
 
+# Sound-producing apps that may keep running in the background after Back. They
+# get both a Back and a Power button; Back keeps them alive only while "busy".
+KEEP_ALIVE = {'drums'}
+
+# Per-app "busy" probes (kept here so the firmware apps stay untouched). Each
+# takes the app's UIScreen and returns truthy iff it is doing something worth
+# keeping alive. drums is busy iff its sequencer has any events. Guards missing
+# attributes so a firmware change can't crash the task bar.
+_BUSY_PROBE = {
+    'drums': lambda scr: bool(getattr(getattr(scr, 'drum_seq', None),
+                                      'events', None)),
+}
+
+# Back buttons use the deck accent blue (matching the in-shell panel Back) so a
+# Back reads differently from the red Power/quit button.
+try:
+    _BACK_BG = tulip.color(64, 132, 224)
+except Exception:
+    _BACK_BG = 36
+
 _installed = False
+
+
+def _sym(name, fallback):
+    """An lv.SYMBOL glyph if this build has it, else an ASCII fallback."""
+    return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
 
 
 def _should_hide_quit(name):
@@ -62,23 +99,40 @@ def _font_for(px):
 def _size_buttons(screen):
     px = _BTN
     w = int(px * 1.4)
+    wtext = int(px * 2.4)       # wider, for the labeled "< Back" buttons
     f = _font_for(px)
     a = getattr(screen, 'alttab_button', None)
     q = getattr(screen, 'quit_button', None)
     l = getattr(screen, 'launcher_button', None)
     h = getattr(screen, 'home_button', None)
-    for b in (a, q, l, h):
+    bk = getattr(screen, 'back_button', None)
+    quit_is_back = getattr(screen, '_quit_is_back', False)
+    for b, bw in ((a, w), (q, wtext if quit_is_back else w),
+                  (l, w), (h, w), (bk, wtext)):
         if b is not None:
-            b.set_width(w)
+            b.set_width(bw)
             b.set_height(px)
             lb = b.get_child(0)
             if lb is not None:
                 lb.set_style_text_font(f, 0)
                 lb.center()
+    # top-right cluster: shuffle (if any), then quit/power, then Back to its left
+    anchor = None
     if a is not None:
         a.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
-    if q is not None and a is not None:
-        q.align_to(a, lv.ALIGN.OUT_LEFT_MID, 0, 0)
+        anchor = a
+    if q is not None:
+        if anchor is not None:
+            q.align_to(anchor, lv.ALIGN.OUT_LEFT_MID, 0, 0)
+        else:
+            q.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
+        anchor = q
+    if bk is not None:
+        if anchor is not None:
+            bk.align_to(anchor, lv.ALIGN.OUT_LEFT_MID, 0, 0)
+        else:
+            bk.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
+    # bottom-right: launcher, then Home to its left
     if l is not None:
         l.align_to(screen.group, lv.ALIGN.BOTTOM_RIGHT, 0, 0)
     if h is not None and l is not None:
@@ -100,7 +154,6 @@ _MENU = [
     (lv.SYMBOL.HOME,      "Home"),
     (lv.SYMBOL.AUDIO,     "Instrument"),
     (lv.SYMBOL.SETTINGS,  "MPE"),
-    (lv.SYMBOL.LIST,      "Fleet"),
     (lv.SYMBOL.SETTINGS,  "Settings"),
     (lv.SYMBOL.DIRECTORY, "Files"),
     (lv.SYMBOL.AUDIO,     "Voices"),
@@ -114,7 +167,6 @@ _MENU = [
 ]
 
 _RUN = {"Home": "home", "Instrument": "instrument", "MPE": "mpe",
-        "Fleet": "fleet",
         "Settings": "settings", "Files": "files", "Voices": "voices",
         "Juno-6": "juno6", "Drums": "drums", "Wordpad": "wordpad",
         "Tulip World": "worldui"}
@@ -182,6 +234,97 @@ def _ensure_home_button(screen):
     screen.home_button = b
 
 
+# --- Phase 1: standalone-app task bar (Back = free + Home; keep-alive gets both) ---
+def _set_btn_label(btn, text):
+    try:
+        lb = btn.get_child(0)
+        if lb is not None:
+            lb.set_text(text)
+    except Exception:
+        pass
+
+
+def _set_btn_bg(btn, pal):
+    try:
+        btn.set_style_bg_color(ui.pal_to_lv(pal), lv.PART.MAIN)
+    except Exception:
+        pass
+
+
+def _go_home():
+    if ui.lv_launcher is not None:
+        try:
+            ui.lv_launcher.delete()
+        except Exception:
+            pass
+        ui.lv_launcher = None
+    # tulip.run presents Home if it's already running (leaving the current app in
+    # running_apps -- i.e. still alive), or launches it otherwise.
+    tulip.run(ROOT_APP)
+
+
+def _back_keeps_alive(name, screen):
+    """True iff Back on a keep-alive app should keep it running (it's busy)."""
+    probe = _BUSY_PROBE.get(name)
+    if probe is None:
+        return False
+    try:
+        return bool(probe(screen))
+    except Exception:
+        return False
+
+
+def _make_back_cb(screen):
+    def _cb(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        if _back_keeps_alive(screen.name, screen):
+            _go_home()                       # busy: leave it playing, show Home
+        else:
+            screen.screen_quit_callback(e)   # idle: quit == free + Home
+    return _cb
+
+
+def _ensure_back_button(screen):
+    if getattr(screen, 'back_button', None) is not None:
+        return
+    b = lv.button(screen.group)
+    b.set_style_bg_color(ui.pal_to_lv(_BACK_BG), lv.PART.MAIN)
+    b.set_style_radius(0, lv.PART.MAIN)
+    lb = lv.label(b)
+    lb.set_style_text_font(lv.font_montserrat_12, 0)
+    lb.set_text("%s Back" % _sym('LEFT', "<"))
+    lb.set_style_text_align(lv.TEXT_ALIGN.CENTER, 0)
+    b.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
+    b.add_event_cb(_make_back_cb(screen), lv.EVENT.CLICKED, None)
+    screen.back_button = b
+
+
+def _apply_standalone_taskbar(screen):
+    # Remove the shuffle/app-switcher -- Back is the only nav these apps need.
+    a = getattr(screen, 'alttab_button', None)
+    if a is not None:
+        try:
+            a.delete()
+        except Exception:
+            pass
+        screen.alttab_button = None
+    if screen.name in KEEP_ALIVE:
+        # Keep the Power button (quit) and add a separate Back button.
+        _set_btn_label(getattr(screen, 'quit_button', None), _sym('POWER', "Off"))
+        screen._quit_is_back = False
+        try:
+            _ensure_back_button(screen)
+        except Exception:
+            pass
+    else:
+        # Repurpose the quit/power button as Back (action stays quit = free+Home).
+        qb = getattr(screen, 'quit_button', None)
+        _set_btn_label(qb, "%s Back" % _sym('LEFT', "<"))
+        _set_btn_bg(qb, _BACK_BG)
+        screen._quit_is_back = True
+
+
 def apply():
     global _installed
     if _installed:
@@ -192,19 +335,28 @@ def apply():
 
     def _patched_draw(self):
         _orig_draw(self)
-        # Home is the root: strip the quit/power button the firmware just drew.
         if _should_hide_quit(self.name):
-            qb = getattr(self, 'quit_button', None)
-            if qb is not None:
-                try:
-                    qb.delete()
-                except Exception:
-                    pass
-                self.quit_button = None
-        # The REPL/Terminal gets a Home button as its way back to the root.
-        if self.name == 'repl':
+            # Home is the root and owns its own top-bar nav (homeshell.py): strip
+            # every firmware task-bar button the firmware just drew.
+            for attr in ('quit_button', 'alttab_button', 'launcher_button'):
+                b = getattr(self, attr, None)
+                if b is not None:
+                    try:
+                        b.delete()
+                    except Exception:
+                        pass
+                    setattr(self, attr, None)
+        elif self.name == 'repl':
+            # The REPL/Terminal gets a Home button as its way back to the root.
             try:
                 _ensure_home_button(self)
+            except Exception:
+                pass
+        else:
+            # Every other standalone app: shuffle removed, quit becomes Back
+            # (keep-alive apps also get a Power button).
+            try:
+                _apply_standalone_taskbar(self)
             except Exception:
                 pass
         _size_buttons(self)

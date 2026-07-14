@@ -7,7 +7,30 @@ import tulip
 import amy
 import deckui as dk
 import deckcfg
+import shellmodel as sm
 import lvgl as lv
+
+
+def _screensaver_cb(key):
+    def cb(e):
+        idx = e.get_target_obj().get_selected()
+        deckcfg.set(key, sm.screensaver_seconds(idx))
+        try:
+            import screensaver
+            screensaver.reload()
+        except Exception:
+            pass
+    return cb
+
+
+def _mpe_cb(btn):
+    def cb(e):
+        v = not deckcfg.get('mpe_enabled', False)
+        deckcfg.set('mpe_enabled', v)
+        btn.set_style_bg_color(dk.c(dk.GREEN if v else dk.SURFACE2), 0)
+        btn.get_child(0).set_text("On" if v else "Off")
+        deckcfg.apply_all()      # re-run the router so the gate takes effect now
+    return cb
 
 
 def _volume_cb(e):
@@ -126,6 +149,24 @@ def run(screen):
         bg=(dk.GREEN if cfg.get('render_vsync', True) else dk.SURFACE2))
     vs.add_event_cb(_render_cb('render_vsync', vs, _apply_vsync), lv.EVENT.CLICKED, None)
 
+    # --- Screensaver (dim / sleep after idle) ---
+    opts = sm.screensaver_options_str()
+    for key, title in (('dim_after', "Dim after"), ('sleep_after', "Sleep after")):
+        r = dk.row(body)
+        dk.label(r, title, color=dk.TEXT)
+        dd = lv.dropdown(r)
+        dd.set_options(opts)
+        dd.set_selected(sm.screensaver_index(cfg.get(key, 0)))
+        dd.set_width(200)
+        dd.add_event_cb(_screensaver_cb(key), lv.EVENT.VALUE_CHANGED, None)
+
+    # --- MPE (global gate; off by default, hides all MPE UI when off) ---
+    r = dk.row(body)
+    dk.label(r, "MPE", color=dk.TEXT)
+    mp = dk.button(r, "On" if cfg.get('mpe_enabled') else "Off", w=120, h=52,
+        bg=(dk.GREEN if cfg.get('mpe_enabled') else dk.SURFACE2))
+    mp.add_event_cb(_mpe_cb(mp), lv.EVENT.CLICKED, None)
+
     # --- System actions ---
     r = dk.row(body)
     dk.label(r, "System", color=dk.TEXT)
@@ -133,7 +174,7 @@ def run(screen):
     dk.button(g, "Set time", w=130, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: (tulip.set_time(), dk.toast(screen, "Time set")) if tulip.ip() else dk.toast(screen, "Need Wi-Fi", dk.RED))
     dk.button(g, "Calibrate", w=140, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
-        cb=lambda e: tulip.run('calibrate'))
+        cb=lambda e: tulip.run('calib'))
     dk.button(g, "Upgrade", w=140, h=48, bg=dk.PURPLE, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
 

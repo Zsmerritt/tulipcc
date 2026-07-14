@@ -37,12 +37,22 @@ def _boot():
     except Exception as e:
         print("deck: apply failed:", e)
 
-    # Bigger task-bar buttons + launcher menu with the deck apps.
+    # Bigger task-bar buttons + launcher menu with the deck apps. Apply BEFORE
+    # starting any background loop (the screensaver's deferred tick) -- otherwise
+    # that tick can fire mid-import of ui_patch and intermittently leave the patch
+    # uninstalled (Home task bar not stripped).
     try:
         import ui_patch
         ui_patch.apply()
     except Exception as e:
         print("deck: ui_patch failed:", e)
+
+    # Idle screensaver: dim then sleep the backlight (thresholds from Settings).
+    try:
+        import screensaver
+        screensaver.start()
+    except Exception as e:
+        print("deck: screensaver failed:", e)
 
     # MIDI fleet router (Tulip + AMYboards).
     try:

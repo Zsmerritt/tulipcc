@@ -1,8 +1,9 @@
-# mpe.py -- enable/configure MPE for the selected instance.
+# mpe.py -- enable/configure MPE for the active instrument.
 #
-# MPE gives every held note its own pitch bend, pressure and slide, routed by
-# AMY's C layer to the zone master synth. The instance selector chooses which
-# AMY (Tulip or an AMYboard) we're configuring. Needs firmware with MPE support.
+# MPE gives every held note its own pitch bend, pressure and slide. This edits
+# the active instrument's nested mpe config. Used as a pushed sub-panel from the
+# rack editor (Home > Instruments > edit > MPE) and standalone from the launcher.
+# Per-note expression opens as a deeper sub-panel (Back pops one level at a time).
 
 import tulip
 import deckui as dk
@@ -12,13 +13,22 @@ import lvgl as lv
 _w = {}
 
 
+def _sym(name, fallback):
+    return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
+
+
 def _inst():
-    return deckcfg.get_instance(deckcfg.active_index())
+    return deckcfg.get_instrument(deckcfg.active_instrument()) or {}
 
 
-def _members_str(inst):
-    n = inst.get('mpe_members', 15)
-    master = inst.get('channel', 1)
+def _mpe():
+    return _inst().get('mpe', {})
+
+
+def _members_str(instr):
+    m = instr.get('mpe', {})
+    n = m.get('members', 15)
+    master = instr.get('channel', 1)
     if master == 16:
         lo, hi = 16 - n, 15
     else:
@@ -27,22 +37,23 @@ def _members_str(inst):
 
 
 def _apply():
-    i = deckcfg.active_index()
-    deckcfg.apply_instance(i)
-    inst = _inst()
-    on = inst.get('mpe')
-    _w['status'].set_text(_members_str(inst) if on else "MPE off")
-    _w['status'].set_style_text_color(dk.c(dk.GREEN if on else dk.MUTED), 0)
+    deckcfg.apply_all()
+    instr = _inst()
+    on = instr.get('mpe', {}).get('enabled')
+    st = _w.get('status')
+    if st is not None:
+        st.set_text(_members_str(instr) if on else "MPE off")
+        st.set_style_text_color(dk.c(dk.GREEN if on else dk.MUTED), 0)
 
 
-def _set(key, value):
-    deckcfg.set_instance(deckcfg.active_index(), key, value)
+def _set_mpe(sub, value):
+    deckcfg.set_instrument_mpe(deckcfg.active_instrument(), sub, value)
 
 
-def _toggle(key, btn):
+def _toggle_mpe(sub, btn):
     def cb(e):
-        v = not _inst().get(key)
-        _set(key, v)
+        v = not _mpe().get(sub)
+        _set_mpe(sub, v)
         _paint_toggle(btn, v)
         _apply()
     return cb
@@ -56,111 +67,32 @@ def _paint_toggle(btn, v):
 def _members_cb(e):
     v = e.get_target_obj().get_value()
     _w['mlabel'].set_text("%d channels" % v)
-    _set('mpe_members', v)
+    _set_mpe('members', v)
     _apply()
 
 
 def _bend_cb(e):
     v = e.get_target_obj().get_value()
     _w['blabel'].set_text("+/- %d semitones" % v)
-    _set('mpe_bend', v)
+    _set_mpe('bend', v)
     _apply()
 
 
 def _channel_cb(ch):
-    _set('channel', ch)
+    deckcfg.set_instrument(deckcfg.active_instrument(), 'channel', ch)
     _w['chlabel'].set_text("Zone: %s" % ("upper" if ch == 16 else "lower"))
     _apply()
 
 
-def _select_instance(i):
-    deckcfg.set_active(i)
-    _s = _w.get('screen')
-    if _s is not None:
-        _rebuild(_s)
+def _open_expression(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    sh = _w.get('shell')
+    if sh is not None:
+        sh.push(expression_panel, "Per-note expression", key='mpe_expr')
 
 
-def _build_selector(screen):
-    insts = deckcfg.instances()
-    active = deckcfg.active_index()
-    _w['selbtns'] = []
-    x = 300
-    for i, inst in enumerate(insts):
-        b = dk.button(screen.group, inst.get('name', 'Inst %d' % i), w=150, h=44,
-            bg=(dk.ACCENT if i == active else dk.SURFACE2), font=dk.FONT_S)
-        b.set_pos(x, 30)
-        b.add_event_cb((lambda idx: (lambda e: _select_instance(idx)))(i),
-                       lv.EVENT.CLICKED, None)
-        _w['selbtns'].append(b)
-        x += 158
-
-
-def _rebuild(screen):
-    if _w.get('content') is not None:
-        _w['content'].delete()
-    content = lv.obj(screen.group)
-    content.set_pos(0, 140)
-    content.set_size(tulip.screen_size()[0], tulip.screen_size()[1] - 140)
-    dk._flat(content, bg=dk.BG)
-    _w['content'] = content
-    inst = _inst()
-
-    supported = deckcfg.mpe_supported()
-    top = 6
-    if not supported:
-        dk.label(content,
-            lv.SYMBOL.WARNING + "  This firmware has no MPE support -- flash your "
-            "MPE build to activate. Settings are saved and applied then.",
-            24, 6, color=dk.ORANGE, font=dk.FONT_S, w=tulip.screen_size()[0] - 48)
-        top = 40
-
-    body = dk.scroll_body(screen, top=0)
-    body.set_parent(content)
-    body.set_pos(24, top)
-    body.set_size(tulip.screen_size()[0] - 48, tulip.screen_size()[1] - 140 - top - 44)
-
-    r = dk.row(body)
-    dk.label(r, "Enable MPE", color=dk.WHITE)
-    en = dk.button(r, "On" if inst.get('mpe') else "Off", w=120, h=52,
-        bg=(dk.GREEN if inst.get('mpe') else dk.SURFACE2))
-    en.add_event_cb(_toggle('mpe', en), lv.EVENT.CLICKED, None)
-
-    r = dk.row(body, h=92)
-    col = _vlabelcol(r, "Member channels")
-    _w['mlabel'] = dk.label(col, "%d channels" % inst.get('mpe_members', 15),
-        color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(r, inst.get('mpe_members', 15), 1, 15, w=360, cb=_members_cb, color=dk.ACCENT)
-
-    r = dk.row(body, h=92)
-    col = _vlabelcol(r, "Pitch bend range")
-    _w['blabel'] = dk.label(col, "+/- %d semitones" % inst.get('mpe_bend', 48),
-        color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(r, inst.get('mpe_bend', 48), 1, 96, w=360, cb=_bend_cb, color=dk.ORANGE)
-
-    r = dk.row(body, h=92)
-    col = _vlabelcol(r, "Listen channel")
-    _w['chlabel'] = dk.label(col, "Zone: %s" %
-        ("upper" if inst.get('channel', 1) == 16 else "lower"),
-        color=dk.MUTED, font=dk.FONT_S)
-    dk.stepper(r, inst.get('channel', 1), 1, 16, _channel_cb, fmt="Channel %d", w=230)
-
-    r = dk.row(body, h=92)
-    col = _vlabelcol(r, "Per-note expression")
-    dk.label(col, "pressure -> level, slide -> filter", color=dk.MUTED, font=dk.FONT_S)
-    ex = dk.button(r, "On" if inst.get('mpe_expression') else "Off", w=120, h=52,
-        bg=(dk.GREEN if inst.get('mpe_expression') else dk.SURFACE2))
-    ex.add_event_cb(_toggle('mpe_expression', ex), lv.EVENT.CLICKED, None)
-
-    _w['status'] = dk.label(content,
-        _members_str(inst) if inst.get('mpe') else "MPE off",
-        24, tulip.screen_size()[1] - 140 - 36,
-        color=(dk.GREEN if inst.get('mpe') else dk.MUTED), font=dk.FONT_S)
-
-    for idx, b in enumerate(_w.get('selbtns', [])):
-        b.set_style_bg_color(dk.c(dk.ACCENT if idx == deckcfg.active_index() else dk.SURFACE2), 0)
-
-
-def _vlabelcol(row, title):
+def _vcol(row, title):
     col = lv.obj(row)
     col.set_size(360, 60)
     col.set_style_border_width(0, 0)
@@ -169,16 +101,137 @@ def _vlabelcol(row, title):
     col.remove_flag(lv.obj.FLAG.SCROLLABLE)
     col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
     col.set_style_pad_row(4, 0)
-    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
+    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START,
+                       lv.FLEX_ALIGN.START)
     dk.label(col, title, color=dk.TEXT, font=dk.FONT_M)
     return col
 
 
+def _rebuild():
+    if _w.get('content') is not None:
+        try:
+            _w['content'].delete()
+        except Exception:
+            pass
+        _w['content'] = None
+    base = _w['base']
+    chh = _w['ch']
+    w = tulip.screen_size()[0]
+
+    content = lv.obj(base)
+    content.set_pos(0, _w['ctop'])
+    content.set_size(w, chh)
+    dk._flat(content, bg=dk.BG)
+    _w['content'] = content
+    instr = _inst()
+    m = instr.get('mpe', {})
+
+    # Global gate (C.4): when MPE is off, show nothing but a pointer to Settings.
+    if not deckcfg.mpe_enabled():
+        dk.label(content, "MPE is turned off. Enable it in Settings to "
+                 "configure per-instrument MPE.", 24, 8, color=dk.MUTED,
+                 font=dk.FONT_S, w=w - 48)
+        return
+
+    supported = deckcfg.mpe_supported()
+    top = 6
+    if not supported:
+        dk.label(content,
+                 _sym('WARNING', "!") + "  This firmware has no MPE support -- "
+                 "flash your MPE build to activate. Settings are saved and "
+                 "applied then.", 24, 6, color=dk.ORANGE, font=dk.FONT_S,
+                 w=w - 48)
+        top = 40
+
+    body = dk.scroll_col(content, w - 48, chh - top - 44)
+    body.set_pos(24, top)
+
+    r = dk.row(body)
+    dk.label(r, "Enable MPE", color=dk.WHITE)
+    en = dk.button(r, "On" if m.get('enabled') else "Off", w=120, h=52,
+                   bg=(dk.GREEN if m.get('enabled') else dk.SURFACE2))
+    en.add_event_cb(_toggle_mpe('enabled', en), lv.EVENT.CLICKED, None)
+
+    r = dk.row(body, h=92)
+    col = _vcol(r, "Member channels")
+    _w['mlabel'] = dk.label(col, "%d channels" % m.get('members', 15),
+                            color=dk.MUTED, font=dk.FONT_S)
+    dk.slider(r, m.get('members', 15), 1, 15, w=360, cb=_members_cb,
+              color=dk.ACCENT)
+
+    r = dk.row(body, h=92)
+    col = _vcol(r, "Pitch bend range")
+    _w['blabel'] = dk.label(col, "+/- %d semitones" % m.get('bend', 48),
+                            color=dk.MUTED, font=dk.FONT_S)
+    dk.slider(r, m.get('bend', 48), 1, 96, w=360, cb=_bend_cb, color=dk.ORANGE)
+
+    r = dk.row(body, h=92)
+    col = _vcol(r, "Listen channel")
+    _w['chlabel'] = dk.label(col, "Zone: %s" %
+                             ("upper" if instr.get('channel', 1) == 16
+                              else "lower"), color=dk.MUTED, font=dk.FONT_S)
+    dk.stepper(r, instr.get('channel', 1), 1, 16, _channel_cb, fmt="Channel %d",
+               w=230)
+
+    # Per-note expression -> a deeper sub-panel (push) in the shell.
+    r = dk.row(body)
+    dk.label(r, "Per-note expression", color=dk.TEXT)
+    nav = dk.button(r, "Edit  " + _sym('RIGHT', ">"), w=150, h=52,
+                    bg=dk.SURFACE2, font=dk.FONT_S)
+    nav.add_event_cb(_open_expression, lv.EVENT.CLICKED, None)
+
+    _w['status'] = dk.label(content,
+                            _members_str(instr) if m.get('enabled') else "MPE off",
+                            24, chh - 36,
+                            color=(dk.GREEN if m.get('enabled') else dk.MUTED),
+                            font=dk.FONT_S)
+
+
+def expression_panel(parent, shell=None):
+    w = tulip.screen_size()[0]
+    m = _mpe()
+    dk.label(parent, "Per-note expression", 24, 16, color=dk.WHITE, font=dk.FONT_L)
+    dk.label(parent, "Route MPE pressure and slide into the AMY voice.",
+             24, 56, color=dk.MUTED, font=dk.FONT_S, w=w - 48)
+    body = dk.scroll_col(parent, w - 48, tulip.screen_size()[1] - 200)
+    body.set_pos(24, 96)
+
+    r = dk.row(body)
+    dk.label(r, "Enable expression", color=dk.WHITE)
+    ex = dk.button(r, "On" if m.get('expression') else "Off", w=120, h=52,
+                   bg=(dk.GREEN if m.get('expression') else dk.SURFACE2))
+    ex.add_event_cb(_toggle_mpe('expression', ex), lv.EVENT.CLICKED, None)
+
+    r = dk.row(body, h=92)
+    col = _vcol(r, "Pressure")
+    dk.label(col, "channel pressure -> voice level", color=dk.MUTED,
+             font=dk.FONT_S)
+
+    r = dk.row(body, h=92)
+    col = _vcol(r, "Slide (CC74)")
+    dk.label(col, "timbre slide -> filter cutoff", color=dk.MUTED, font=dk.FONT_S)
+
+
+def panel(parent, shell=None):
+    import homeshell
+    _w.clear()
+    _w['base'] = parent
+    _w['shell'] = shell
+    _w['screen'] = shell.screen if shell is not None else None
+    _w['content'] = None
+    _w['ctop'] = 8
+    _w['ch'] = (tulip.screen_size()[1] - homeshell.BAR_H) - 8
+    _rebuild()
+
+
 def run(screen):
     _w.clear()
+    _w['base'] = screen.group
+    _w['shell'] = None
     _w['screen'] = screen
     _w['content'] = None
-    dk.frame(screen, "MPE", "MIDI Polyphonic Expression")
-    _build_selector(screen)
-    _rebuild(screen)
+    _w['ctop'] = 118
+    _w['ch'] = tulip.screen_size()[1] - 118
+    dk.frame(screen, "MPE", "configure MPE for the active instrument")
+    _rebuild()
     screen.present()
