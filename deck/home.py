@@ -99,23 +99,27 @@ def _open_submenu(shell, title, key, items):
         shell.push(builder, title, key=key)
 
 
-_SYSTEM = [
-    ("Settings", "run",  "settings", dk.GREEN),
-    ("Terminal", "call", _terminal,  dk.GRAY),
-    ("Reset",    "call", _reset,     dk.RED),
-]
-
 _APPS = [
     ("Editor",      "call", tulip.edit,     dk.GREEN),
     ("Wordpad",     "run",  "wordpad",      dk.GREEN),
     ("Tulip World", "run",  "worldui",      dk.PURPLE),
     ("Keyboard",    "call", tulip.keyboard, dk.GRAY),
+    ("Drum machine (legacy)", "run", "drums", dk.GRAY),  # drums are now instruments
     ("Voices (legacy)", "run", "voices",     dk.GRAY),
 ]
 
 
 def _open_system(shell):
-    _open_submenu(shell, "System", 'system', list(_SYSTEM))
+    # System is the catch-all: Files + Apps (nested) + device config. Built inline
+    # so it can reference _open_apps (defined below) at call time.
+    items = [
+        ("Files",    "run",   "files",    dk.GREEN),
+        ("Apps",     "panel", _open_apps, dk.PURPLE),
+        ("Settings", "run",   "settings", dk.GREEN),
+        ("Terminal", "call",  _terminal,  dk.GRAY),
+        ("Reset",    "call",  _reset,     dk.RED),
+    ]
+    _open_submenu(shell, "System", 'system', items)
 
 
 def _open_apps(shell):
@@ -133,10 +137,7 @@ def _open_apps(shell):
 _BUILTIN = [
     ("Instruments", "panel", _open_rack,    dk.ACCENT),
     ("Devices",     "panel", _open_devices, dk.TEAL),
-    ("Drums",       "run",   "drums",       dk.ORANGE),   # was ACCENT (dup of Instruments)
-    ("Files",       "run",   "files",       dk.GREEN),
-    ("System",      "panel", _open_system,  dk.GRAY),
-    ("Apps",        "panel", _open_apps,    dk.PURPLE),
+    ("System",      "panel", _open_system,  dk.GRAY),   # Files + Apps + config live here
 ]
 
 _actions = {}
