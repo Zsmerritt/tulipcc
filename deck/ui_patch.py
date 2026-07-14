@@ -339,11 +339,38 @@ def _apply_standalone_taskbar(screen):
         screen._quit_is_back = True
 
 
+def _install_keyboard_partial():
+    """The soft keyboard flashes in the default DIRECT render mode (LVGL draws
+    into the live framebuffer). Switch to PARTIAL -- tear-free -- only while the
+    keyboard is on screen, and back to fast DIRECT when it closes, so typing is
+    clean without making the rest of the UI feel sluggish."""
+    try:
+        import ui
+        _orig_kb = ui.keyboard
+
+        def _kb():
+            was_up = getattr(ui, 'lv_soft_kb', None) is not None
+            _orig_kb()
+            now_up = getattr(ui, 'lv_soft_kb', None) is not None
+            try:
+                if now_up and not was_up:
+                    tulip.display_partial(1)
+                elif was_up and not now_up:
+                    tulip.display_partial(0)
+            except Exception:
+                pass
+        ui.keyboard = _kb
+        tulip.keyboard = _kb     # the deck calls tulip.keyboard() (same object)
+    except Exception:
+        pass
+
+
 def apply():
     global _installed
     if _installed:
         return
     _installed = True
+    _install_keyboard_partial()
     _orig_draw = ui.UIScreen.draw_task_bar
     _orig_quit = ui.UIScreen.screen_quit_callback
 
