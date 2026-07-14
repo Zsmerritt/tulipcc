@@ -13,18 +13,22 @@ Today an instrument's engine is *inferred* from its patch number range. Make it 
   smaller memory, and faster patch-picker load (no 257-item build).
 - Add a `type` field to the instrument model; Routing (or a Type row) sets it.
 
-### Drums as an instrument style (refined)
-- Drums are an instrument **style**, not a patch-picker category (the `patches`
-  list has no kits; only the GAMMA9001 / TR-808 bank is baked into this AMY build).
-- **Whole-kit swaps**, not per-pad sample reassignment (user preference — simpler).
-- Keep **per-pad Tune / Decay / Level / Pan** (TR-8S style): one PCM voice per pad
-  (`wave=PCM, preset=<drum>`, `freq`=tune, `amp`=level, `pan`, `bp0`=decay so decay
-  governs length independent of tune — confirmed configurable on-device; still need
-  to confirm by ear that bp0 clamps a one-shot PCM's length).
-- **Ship the other kits (909 / Linn / MR-12 / …):** requires an **AMY build change**
-  to include more PCM banks than GAMMA9001 (firmware/amy-pin work + memory budget) —
-  without it, "kit swap" has only the 808 to offer.
-- Retire the Home "Drums" tile into Apps (the standalone step-sequencer).
+### Drums as an instrument style — SHIPPED (kit-swap); per-pad is the follow-up
+- DONE: drums are an instrument **style** (`type='drums'`); a drum instrument is a
+  `DrumSynth` loaded with a **kit** (whole-kit swap). All **7 kits already compiled
+  into the firmware** (TR-808/909, Linn 9000, MR-12, Tokyo Synthetics, 80s Power,
+  Percussion = `DrumSynth(patch=384..390)`) — the AMY worker confirmed no firmware
+  change was needed; `drums.bin` is 98.3% of its partition (~64 KB free, so no new
+  *samples* fit, but more kit *patches* over existing samples are ~free). Verified
+  on-device: DrumSynth per kit, MIDI notes route + play, kit picker in the editor.
+  Home "Drums" tile retired to System > Apps.
+- **FOLLOW-UP: per-pad Tune / Decay / Level / Pan** (TR-8S style). Two possible
+  mechanisms, both need an on-device **ear check** (I can't hear):
+  (a) per-note override on the DrumSynth (a per-note `bp0`/`freq` send was *accepted*
+  but its effect is unverified); or (b) one PCM voice per pad (`wave=PCM,
+  preset=<drum>`, `freq`=tune, `bp0`=decay→length) — clean for the 808 (presets
+  0-18), but the other kits map GM notes to gamma9001 presets 256-391 and that
+  per-kit mapping isn't exposed to the deck yet. Decide the mechanism, then build.
 
 ## Side notes (from the user)
 

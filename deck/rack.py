@@ -161,9 +161,15 @@ def _voices_cb(e):
 def _open_patch(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
+    sh = _s.get('shell')
+    if sh is None:
+        return
+    instr = _active()
+    if instr and instr.get('type') == 'drums':
+        sh.push(kit_panel, "Kit", key='kit')       # drums pick a kit, not a patch
+    else:
         import instrument
-        _s['shell'].push(instrument.panel, "Patch", key='patch')
+        sh.push(instrument.panel, "Patch", key='patch')
 
 
 def _open_type(e):
@@ -178,11 +184,48 @@ def _set_type(t):
     deckcfg.set_instrument(iid, 'type', t)
     # reset the patch to the type's first patch so patch stays valid for the engine
     deckcfg.set_instrument(iid, 'patch', _TYPE_FIRST_PATCH.get(t, 0))
+    if t == 'drums':
+        deckcfg.set_instrument(iid, 'kit', 384)   # default TR-808
     deckcfg.apply_all()
     sh = _s.get('shell')
     if sh is not None:
         sh.refresh_chips()
         sh.back()      # pop Type; the deferred refill rebuilds the editor anew
+
+
+def _set_kit(kit):
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'kit', kit)
+    deckcfg.apply_all()
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.refresh_chips()
+    try:
+        import forwarder
+        forwarder.preview(iid, note=36)     # audition: a kick
+    except Exception:
+        pass
+    for b, k in _s.get('kitbtns', []):
+        b.set_style_bg_color(dk.c(dk.ACCENT if k == kit else dk.SURFACE), 0)
+
+
+def kit_panel(parent, shell=None):
+    _s['shell'] = shell
+    import drums_kit
+    w = tulip.screen_size()[0]
+    cur = (_active() or {}).get('kit', 384)
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+    dk.label(body, "Drum kit -- swaps all the sounds at once.", color=dk.MUTED,
+             font=dk.FONT_S)
+    _s['kitbtns'] = []
+    for kit, name in drums_kit.KITS:
+        b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
+                      bg=(dk.ACCENT if kit == cur else dk.SURFACE))
+        b.add_event_cb((lambda k: (lambda e: _set_kit(k)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(kit),
+                       lv.EVENT.CLICKED, None)
+        _s['kitbtns'].append((b, kit))
 
 
 def type_panel(parent, shell=None):
@@ -299,17 +342,21 @@ def _build_edit(parent, shell):
     is_drum = instr.get('type') == 'drums'
     r = dk.row(body)
     if is_drum:
-        dk.label(r, "Kit  TR-808", color=dk.TEXT)
+        import drums_kit
+        dk.label(r, "Kit  " + drums_kit.kit_name(instr.get('kit', 384)),
+                 color=dk.TEXT)
     else:
         dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
     nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
-    # Sound (per-instrument params) -> ParamEditor sub-panel
-    r = dk.row(body)
-    dk.label(r, "Sound", color=dk.TEXT)
-    nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
-    nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
+    # Sound (per-instrument params) -> ParamEditor sub-panel. Drums have no
+    # osc/filter design (per-pad tune/decay is a planned follow-up), so no Sound.
+    if not is_drum:
+        r = dk.row(body)
+        dk.label(r, "Sound", color=dk.TEXT)
+        nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+        nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
 
     # FX -> the OWNING DEVICE's FX bus (shared by all instruments on it)
     r = dk.row(body)
