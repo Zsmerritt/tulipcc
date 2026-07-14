@@ -73,6 +73,7 @@ The channel strip up top lets you use different patches for each of 16 MIDI chan
 |---------|-------------|
 | **Channel 1** (dropdown) | Select which of the 16 independent synth channels to edit. Each channel has its own patch, MIDI assignment, and parameter set. |
 | **Active** (checkbox) | Enable or disable this channel. Unchecking it silences the channel without losing its settings. |
+| **MPE** (checkbox, channels 1 and 16 only) | Enable an [MPE](https://midi.org/mpe-midi-polyphonic-expression) zone mastered by this channel: an attached MPE controller (Seaboard, LinnStrument, Osmose...) plays this channel's synth from every member channel, and each held note gets its own pitch bend, pressure, and slide. Pressure and slide (CC74) reach the patch as the `ext0` and `ext1` control coefficients. When enabled, a **Bend** field sets the per-note pitch bend range in semitones (MPE default 48). |
 | **Load Preset** (button) | Click to open the preset browser and load one of the 256 built-in presets into the current channel.  |
 | **Clear** | Reset all knobs on this channel to their default values. |
 | **Level** | Sets the relative volume of this channel |

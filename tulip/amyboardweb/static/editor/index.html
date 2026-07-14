@@ -1446,6 +1446,14 @@
                         <label class="form-check-label small" for="channel-active-checkbox">Active</label>
                       </div>
                     </div>
+                    <div class="col-12 col-md-auto mt-2 mt-md-0 d-flex align-items-center gap-2 d-none" id="mpe-controls">
+                      <div class="form-check ms-1" title="MPE: an attached MPE controller plays this channel's synth from every member channel, with per-note pitch bend, pressure (ext0), and slide/CC74 (ext1)">
+                        <input class="form-check-input" type="checkbox" id="mpe-active-checkbox" />
+                        <label class="form-check-label small" for="mpe-active-checkbox">MPE</label>
+                      </div>
+                      <label class="text-nowrap mb-0 text-white small d-none" id="mpe-bend-label" for="mpe-bend-range" title="Per-note pitch bend range (semitones)">Bend</label>
+                      <input type="number" class="form-control text-center knob-value d-none" id="mpe-bend-range" min="1" max="96" step="1" value="48" style="width:56px; font-size:0.7rem; padding:2px 4px;" title="Per-note pitch bend range (semitones)">
+                    </div>
                     <div class="col-12 col-md-auto mt-2 mt-md-0 d-flex align-items-center ms-md-2">
                       <button class="btn btn-sm text-white" type="button" id="patch-open-load-modal-btn" style="background-color:#2e7d32;">Load Preset</button>
                     </div>
@@ -1914,6 +1922,54 @@
           channelActiveCheckbox.checked = active;
         }
 
+        // ── MPE controls (visible on the zone master channels, 1 and 16) ──
+        const mpeControls = document.getElementById("mpe-controls");
+        const mpeActiveCheckbox = document.getElementById("mpe-active-checkbox");
+        const mpeBendRange = document.getElementById("mpe-bend-range");
+        const mpeBendLabel = document.getElementById("mpe-bend-label");
+        function syncMpeForChannel() {
+          if (!mpeControls) return;
+          const ch = Number(window.current_synth || 1);
+          const isZoneMaster = ch === 1 || ch === 16;
+          mpeControls.classList.toggle("d-none", !isZoneMaster);
+          if (!isZoneMaster) return;
+          const st = (typeof window.mpe_state_for_channel === "function")
+            ? window.mpe_state_for_channel(ch) : { enabled: false, bend: 48 };
+          const chActive = Array.isArray(window.active_channels) ? !!window.active_channels[ch] : ch === 1;
+          if (mpeActiveCheckbox) {
+            mpeActiveCheckbox.checked = !!st.enabled;
+            // An MPE zone routes member-channel notes to this channel's synth,
+            // so it needs the channel to be active.
+            mpeActiveCheckbox.disabled = !chActive;
+          }
+          if (mpeBendRange) {
+            mpeBendRange.value = st.bend;
+            mpeBendRange.classList.toggle("d-none", !st.enabled);
+          }
+          if (mpeBendLabel) mpeBendLabel.classList.toggle("d-none", !st.enabled);
+        }
+        window.sync_mpe_ui = syncMpeForChannel;
+        if (mpeActiveCheckbox) {
+          mpeActiveCheckbox.addEventListener("change", function() {
+            const ch = Number(window.current_synth || 1);
+            if (typeof window.set_mpe_for_channel === "function") {
+              window.set_mpe_for_channel(ch, mpeActiveCheckbox.checked, mpeBendRange ? mpeBendRange.value : 48);
+            }
+            syncMpeForChannel();
+          });
+        }
+        if (mpeBendRange) {
+          mpeBendRange.addEventListener("change", function() {
+            const ch = Number(window.current_synth || 1);
+            if (mpeActiveCheckbox && mpeActiveCheckbox.checked
+                && typeof window.set_mpe_for_channel === "function") {
+              // Re-sending the zone line updates the bend range; the structural
+              // key collapses it onto the existing knob-log entry.
+              window.set_mpe_for_channel(ch, true, mpeBendRange.value);
+            }
+          });
+        }
+
         if (midiChannelSelect) {
           midiChannelSelect.value = String(window.current_synth || 1);
           midiChannelSelect.addEventListener("change", function() {
@@ -1921,6 +1977,7 @@
             if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 16) {
               window.current_synth = parsed;
               syncActiveCheckboxForChannel();
+              syncMpeForChannel();
               syncSynthLevelForChannel();
               refreshLoadPatchChannelLabel();
               refreshPatchActiveNameLabel();
@@ -1947,6 +2004,7 @@
             if (typeof window.set_channel_active === "function") {
               window.set_channel_active(ch, channelActiveCheckbox.checked, { userToggle: true });
             }
+            syncMpeForChannel();
           });
         }
         const patchLoadModalButton = document.getElementById("patch-open-load-modal-btn");
@@ -2208,6 +2266,7 @@
           }
         }
         syncActiveCheckboxForChannel();
+        syncMpeForChannel();
         const keyboard = document.getElementById("amy-keyboard");
         if (keyboard) {
           const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];

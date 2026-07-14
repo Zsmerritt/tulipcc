@@ -310,13 +310,18 @@ STATIC mp_obj_t tulip_sysex_in(size_t n_args, const mp_obj_t *args) {
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_sysex_in_obj, 0, 0, tulip_sysex_in);
 
-extern void tulip_send_midi_out(uint8_t *, uint16_t);
+extern void tulip_send_midi_out_device(uint8_t *, uint16_t, int);
 
+// tulip.midi_out(bytes_or_list, [device]) -- device: omit/-1 = broadcast to all
+// USB-MIDI devices (+ AMY); 0 = primary device; 1.. = a specific extra device
+// (for addressing individual AMYboards in the fleet).
 STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
+    int device = -1;
+    if(n_args > 1) device = mp_obj_get_int(args[1]);
     if(mp_obj_get_type(args[0]) == &mp_type_bytes) {
         mp_buffer_info_t bufinfo;
         mp_get_buffer(args[0], &bufinfo, MP_BUFFER_READ);
-        tulip_send_midi_out((uint8_t*)bufinfo.buf, bufinfo.len);
+        tulip_send_midi_out_device((uint8_t*)bufinfo.buf, bufinfo.len, device);
     } else {
         mp_obj_t *items;
         size_t len;
@@ -325,13 +330,62 @@ STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
         for(uint16_t i=0;i<(uint16_t)len;i++) {
             b[i] = mp_obj_get_int(items[i]);
         }
-        tulip_send_midi_out(b, len);
+        tulip_send_midi_out_device(b, len, device);
         free_caps(b);
     }
     return mp_const_none;
 }
 
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 1, tulip_midi_out);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 2, tulip_midi_out);
+
+// tulip.num_midi_devices() -- count of connected USB-MIDI OUT devices (fleet size,
+// primary + extras). 1 on platforms without the USB host.
+#if defined(ESP_PLATFORM) && !defined(TDECK) && !defined(AMYBOARD)
+extern int usb_num_midi_out_devices(void);
+#endif
+STATIC mp_obj_t tulip_num_midi_devices(void) {
+#if defined(ESP_PLATFORM) && !defined(TDECK) && !defined(AMYBOARD)
+    return mp_obj_new_int(usb_num_midi_out_devices());
+#else
+    return mp_obj_new_int(1);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_num_midi_devices_obj, tulip_num_midi_devices);
+
+// --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
+// display.c provides these only on boards with the main LVGL LCD -- not on
+// AMYBOARD/TDECK, which don't compile display.c. Keep the Python functions
+// defined everywhere (so the module table is valid) but no-op where absent.
+#if !defined(AMYBOARD) && !defined(TDECK)
+extern void display_set_partial(int);
+extern void display_set_vsync(int);
+extern int display_get_partial(void);
+extern int display_get_vsync(void);
+#endif
+
+// tulip.display_partial([on]) -- buffered partial rendering: cleaner single-
+// element (touch) updates. Returns the current state.
+STATIC mp_obj_t tulip_display_partial(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK)
+    if(n_args > 0) display_set_partial(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_partial());
+#else
+    return mp_obj_new_int(0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_partial_obj, 0, 1, tulip_display_partial);
+
+// tulip.display_vsync([on]) -- gate the partial-mode copy to vsync (tear-free
+// vs lower latency). Only has an effect when display_partial is on.
+STATIC mp_obj_t tulip_display_vsync(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK)
+    if(n_args > 0) display_set_vsync(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_vsync());
+#else
+    return mp_obj_new_int(0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_vsync_obj, 0, 1, tulip_display_vsync);
 
 
 // Send a message on the "local bus", as if it was received from physical midi in
@@ -1697,6 +1751,9 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_seq_ticks), MP_ROM_PTR(&tulip_seq_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
+    { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) }, 

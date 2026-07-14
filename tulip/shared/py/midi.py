@@ -223,6 +223,27 @@ def setup_global_midi_cc_bindings():
 WARNED_MISSING_CHANNELS = set()
 BANK_MSB_PER_CHANNEL = {}  # channel -> last CC0 bank select MSB
 
+# MPE: member channels whose notes AMY routes to the zone master's synth in C.
+# midi_event_cb skips these so we don't warn about (or misroute) per-note
+# expression channels that intentionally have no Python-side synth.
+MPE_MEMBER_CHANNELS = set()
+
+def configure_mpe(num_members, bend_range=48, master=1):
+    """Enable an MPE zone on the master channel's synth (0 members = off).
+
+    Mirrors amy.send(synth=master, mpe="num_members,bend_range") and records
+    the member channels so midi.py's own routing leaves them to AMY's C layer.
+    """
+    global MPE_MEMBER_CHANNELS
+    amy.send(synth=master, mpe="%d,%s" % (num_members, bend_range))
+    if num_members:
+        if master == 16:  # upper zone: members descend from 15
+            MPE_MEMBER_CHANNELS = set(range(16 - num_members, 16))
+        else:             # lower zone: members ascend from master+1
+            MPE_MEMBER_CHANNELS = set(range(master + 1, master + 1 + num_members))
+    else:
+        MPE_MEMBER_CHANNELS = set()
+
 # This lets you set amy.override_send to midi.sysex_amy, for sending AMY messages over sysex to a connected AMYboard
 def sysex_amy(m):
     # the 0x00, 0x03, 0x45 is SPSS's "MIDI manufacturer code"
@@ -242,6 +263,10 @@ def midi_event_cb(midi_message):
     control = midi_message[1]
     value = midi_message[2] if len(midi_message) > 2 else None
     #print("MIDI in:", channel, message, control, value)
+    if channel in MPE_MEMBER_CHANNELS:
+        # AMY's C layer routes MPE member-channel notes and per-note
+        # expression to the zone synth; nothing for Python to do here.
+        return
     if message == 0xb0 and control in GLOBAL_MIDI_CC_BINDINGS:
         # Accept GLOBAL_MIDI_CC_BINDINGS regardless of channel.
         GLOBAL_MIDI_CC_BINDINGS[control](value)
