@@ -39,19 +39,23 @@ Today an instrument's engine is *inferred* from its patch number range. Make it 
    shared **aux/send FX buses** (like a mixer) that instruments route to with a send
    level — flexible without N reverbs. Decision pending; no change yet.
 
-2. **Return-to-Home "crash" (investigate on recurrence).** Reported: patch picker
-   left idle a while, device dropped to Home without rebooting. **Screensaver ruled
-   out** (dim/sleep thresholds are 0 = never; and it only changes brightness, never
-   navigates — verified). Likely a *caught exception* in the patch picker that the
-   app framework recovered by presenting Home. Not reproducible on demand. NEXT: when
-   it recurs, capture the REPL/console output (traceback) so we can pin the source;
-   suspects = the UIText search field / the 128-row list build / a stray deferred cb.
+2. **Return-to-Home "crash" — logging in place.** Reported: patch picker left idle a
+   while, device dropped to Home without rebooting. **Screensaver ruled out** (only
+   changes brightness, never navigates — and now validated: dim→sleep→wake works).
+   `decklog.py` records to `/user/deck.log` + serial (survives reboots): the
+   back/quit/home paths and panel-build exceptions log a traceback, and boot logs a
+   marker. NEXT time it happens: `mpremote fs cat :/user/deck.log` — a `Back tapped` /
+   `screen_quit_callback` / `panel build failed` line with no preceding `deck boot`
+   pins the source.
 
-3. **Auto-pick next free MIDI channel on Add / device change.** Adding an instrument
-   (and changing an instrument's device) should default its channel to the next
-   available channel on that device, instead of always channel 1.
+3. **Auto-pick next free MIDI channel on Add / device change.** — DONE
+   (deckcfg.next_free_channel; used on add + device change; device change keeps the
+   custom name).
 
-4. **On-screen keyboard.** (a) It rebuilds the whole keyboard on every keypress —
-   should at most repaint the one pressed key. (b) It should auto-appear when a
-   textbox is focused. (c) The patch-picker search field is too small for touch —
-   make it taller/finger-sized.
+4. **On-screen keyboard.** (a) whole-keyboard flash on each keypress — addressed by
+   switching to PARTIAL (tear-free) render only WHILE the keyboard is up, back to
+   fast DIRECT on close (ui_patch); needs a visual confirm. Edge: closing via the
+   keyboard's own close-key leaves PARTIAL on until the next toggle (self-corrects) —
+   hook lv_soft_kb_cb if it matters; a true double-buffered DIRECT mode would fix
+   flash globally but is a bigger firmware change. (b) auto-appear on focus — DONE.
+   (c) bigger search field — DONE.

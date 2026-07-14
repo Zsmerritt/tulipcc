@@ -65,6 +65,15 @@ except Exception:
 _installed = False
 
 
+def _log(msg):
+    # persistent breadcrumb for the "drops back to Home" glitch (decklog.py)
+    try:
+        import decklog
+        decklog.log(msg)
+    except Exception:
+        pass
+
+
 def _sym(name, fallback):
     """An lv.SYMBOL glyph if this build has it, else an ASCII fallback."""
     return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
@@ -282,6 +291,7 @@ def _make_back_cb(screen):
     def _cb(e):
         if e.get_code() != lv.EVENT.CLICKED:
             return
+        _log("Back tapped in app '%s'" % getattr(screen, 'name', '?'))
         if _back_keeps_alive(screen.name, screen):
             _go_home()                       # busy: leave it playing, show Home
         else:
@@ -329,11 +339,38 @@ def _apply_standalone_taskbar(screen):
         screen._quit_is_back = True
 
 
+def _install_keyboard_partial():
+    """The soft keyboard flashes in the default DIRECT render mode (LVGL draws
+    into the live framebuffer). Switch to PARTIAL -- tear-free -- only while the
+    keyboard is on screen, and back to fast DIRECT when it closes, so typing is
+    clean without making the rest of the UI feel sluggish."""
+    try:
+        import ui
+        _orig_kb = ui.keyboard
+
+        def _kb():
+            was_up = getattr(ui, 'lv_soft_kb', None) is not None
+            _orig_kb()
+            now_up = getattr(ui, 'lv_soft_kb', None) is not None
+            try:
+                if now_up and not was_up:
+                    tulip.display_partial(1)
+                elif was_up and not now_up:
+                    tulip.display_partial(0)
+            except Exception:
+                pass
+        ui.keyboard = _kb
+        tulip.keyboard = _kb     # the deck calls tulip.keyboard() (same object)
+    except Exception:
+        pass
+
+
 def apply():
     global _installed
     if _installed:
         return
     _installed = True
+    _install_keyboard_partial()
     _orig_draw = ui.UIScreen.draw_task_bar
     _orig_quit = ui.UIScreen.screen_quit_callback
 
@@ -368,6 +405,7 @@ def apply():
     def _patched_quit(self, e):
         # control-Q and the power button both land here. Return to Home instead
         # of the REPL; refuse to quit the REPL or the root (would orphan Home).
+        _log("screen_quit_callback for app '%s'" % getattr(self, 'name', '?'))
         target = _quit_target(self.name, ui.running_apps)
         if target is None:
             return

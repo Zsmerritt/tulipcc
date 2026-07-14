@@ -222,6 +222,12 @@ class HomeShell:
         try:
             builder(panel, self)
         except Exception as e:
+            try:
+                import decklog
+                decklog.log_exc("panel build failed (builder=%s)"
+                                % getattr(builder, '__name__', builder), e)
+            except Exception:
+                pass
             dk.label(panel, "panel error: %s" % e, 20, 20, color=dk.RED,
                      font=dk.FONT_S)
 

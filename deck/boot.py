@@ -16,6 +16,12 @@ def _boot():
     import tulip
 
     try:
+        import decklog
+        decklog.log("=== deck boot ===")   # marks reboots in the log
+    except Exception:
+        pass
+
+    try:
         import deckcfg
         cfg = deckcfg.load()
     except Exception as e:

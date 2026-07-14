@@ -14,7 +14,7 @@ import lvgl as lv
 # The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
 # patches -- so we build a small list, not all 257. Drums use the pad editor.
 _TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257)}
-_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano', 'drums': 'Drums'}
+_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano', 'drums': 'Kits'}
 
 _s = {}
 
@@ -170,24 +170,25 @@ def _rebuild_content():
                         lv.EVENT.CLICKED, None)
 
     # search field + on-screen keyboard button (filters the list live by name)
-    sw = w - 48 - 76
+    sw = w - 48 - 84
     t = tulip.UIText(text=_s.get('query', ''), placeholder="search patches",
-        w=sw, h=44, bg_color=dk.SURFACE2, fg_color=dk.TEXT, font=dk.FONT_S)
+        w=sw, h=60, bg_color=dk.SURFACE2, fg_color=dk.TEXT, font=dk.FONT_M)
     t.group.set_parent(content)
-    t.group.set_size(sw, 44)
+    t.group.set_size(sw, 60)
     t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
-    t.group.set_pos(24, 108)
+    t.group.set_pos(24, 100)
     _s['searchta'] = t.ta
     try:
         t.ta.add_event_cb(_search_changed, lv.EVENT.VALUE_CHANGED, None)
     except Exception:
         pass
-    dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
-        cb=lambda e: tulip.keyboard()).set_pos(w - 24 - 64, 108)
+    dk.autoshow_keyboard(t.ta)     # keyboard pops when you tap the field
+    dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60, bg=dk.SURFACE2,
+        cb=lambda e: tulip.keyboard()).set_pos(w - 24 - 72, 100)
 
     # patch list
-    body = dk.scroll_col(content, w - 48, chh - 168)
-    body.set_pos(24, 164)
+    body = dk.scroll_col(content, w - 48, chh - 176)
+    body.set_pos(24, 172)
     _s['listbody'] = body
     _build_list()
 

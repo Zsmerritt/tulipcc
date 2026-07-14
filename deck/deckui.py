@@ -199,6 +199,22 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22):
     return s
 
 
+def autoshow_keyboard(ta):
+    """Pop the on-screen keyboard when a text field is focused (tapped). Guards
+    against ui.keyboard()'s toggle by only opening it when it isn't already up."""
+    def _cb(e):
+        try:
+            import ui
+            if getattr(ui, 'lv_soft_kb', None) is None:
+                tulip.keyboard()
+        except Exception:
+            pass
+    try:
+        ta.add_event_cb(_cb, lv.EVENT.FOCUSED, None)
+    except Exception:
+        pass
+
+
 def switch(parent, value, on_change=None, color=GREEN):
     # A real toggle switch -- unambiguous on/off state (vs a button labelled
     # "On"/"Off", which reads as either the current state or the action).
