@@ -182,14 +182,6 @@ def _build(body, right, cw, screen):
     def connect_cb(e):
         s = ssid.ta.get_text() or cfg.get('wifi_ssid', '')
         p = pw.ta.get_text() or cfg.get('wifi_pass', '')
-        was_saved = bool(deckcfg.load().get('wifi_ssid'))
-        try:
-            # typed values must not linger on screen either
-            ssid.ta.set_text('')
-            pw.ta.set_text('')
-        except Exception:
-            pass
-        _mask_pw()
         status_lbl.set_text("connecting...")
         status_lbl.set_style_text_color(dk.c(dk.MUTED), 0)
 
@@ -200,14 +192,19 @@ def _build(body, right, cw, screen):
                 got = None
             if tulip.ip():
                 # save credentials only once they are PROVEN to work -- a typo
-                # must not overwrite a known-good password
+                # must not overwrite a known-good password. Clearing the boxes
+                # happens ONLY here: the typed text must not linger once it is
+                # a real (stored) credential.
                 deckcfg.set_value('wifi_ssid', s)
                 deckcfg.set_value('wifi_pass', p)
                 try:
+                    ssid.ta.set_text('')
+                    pw.ta.set_text('')
                     ssid.ta.set_placeholder_text("network name (saved)")
                     pw.ta.set_placeholder_text("password (saved)")
                 except Exception:
                     pass
+                _mask_pw()
                 status_lbl.set_text("connected  " + tulip.ip())
                 status_lbl.set_style_text_color(dk.c(dk.GREEN), 0)
                 dk.toast(screen, "Wi-Fi connected")
@@ -223,16 +220,11 @@ def _build(body, right, cw, screen):
                 except Exception:
                     pass
             else:
-                # nothing saved: fields already cleared, placeholders reflect
-                # whatever was stored before this attempt
-                try:
-                    ssid.ta.set_placeholder_text(
-                        "network name (saved)" if was_saved else "network name")
-                    pw.ta.set_placeholder_text(
-                        "password (saved)" if was_saved else "password")
-                except Exception:
-                    pass
-                status_lbl.set_text("connection failed -- not saved")
+                # FAILURE: keep the typed text (typing on the deck is slow --
+                # fixing one character beats retyping everything), keep the
+                # eye state, save nothing. What's on screen is only ever what
+                # the user just typed, never a stored credential.
+                status_lbl.set_text("connection failed -- not saved, edit and retry")
                 status_lbl.set_style_text_color(dk.c(dk.RED), 0)
         tulip.defer(do_connect, 0, 100)
 
