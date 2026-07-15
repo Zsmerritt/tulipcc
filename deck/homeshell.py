@@ -245,10 +245,7 @@ class HomeShell:
             pass
         self.stack.set_top(title, key, builder)
         self._fill(h, builder)
-        try:
-            h.invalidate()   # rebuilt widgets can render stale pixels (NEW-2)
-        except Exception:
-            pass
+        self._invalidate_top_later(self._refill_gen)  # stale pixels (NEW-2)
         self._sync_chrome()
         return h
 
@@ -291,6 +288,24 @@ class HomeShell:
             self._schedule_refill()
         self._sync_chrome()
 
+    def _invalidate_top_later(self, gen):
+        """Repaint the top panel one tick after a rebuild (see NEW-2 note in
+        _schedule_refill: a same-tick invalidate provably doesn't take)."""
+        def _inv(_x):
+            if not self._alive or gen != self._refill_gen:
+                return
+            h = self.stack.top_handle()
+            if h is None:
+                return
+            try:
+                h.invalidate()
+            except Exception:
+                pass
+        try:
+            tulip.defer(_inv, 0, 60)
+        except Exception:
+            _inv(None)
+
     def _schedule_refill(self):
         """Rebuild the current top panel from its builder, on a later tick.
 
@@ -311,14 +326,15 @@ class HomeShell:
             try:
                 h.clean()
                 self._fill(h, b)
-                # Panels rebuilt on this deferred tick DRAW STALE PIXELS until
-                # something invalidates them -- UX-REVIEW-7 NEW-2 root-caused
-                # the M3 green/blue switch flip-flop to exactly this: the
-                # rebuilt widget's resolved style was green, the glass showed
-                # the old blue until a forced invalidate.
-                h.invalidate()
             except Exception:
                 pass
+            # Panels rebuilt on this deferred tick DRAW STALE PIXELS until
+            # something invalidates them -- UX-REVIEW-7 NEW-2 root-caused the
+            # M3 green/blue switch flip-flop to this (styles resolved green,
+            # glass stayed blue). Empirically the invalidate must land on a
+            # LATER tick: issued in the same tick as the rebuild it doesn't
+            # take (verified on-device); one tick later it does.
+            self._invalidate_top_later(gen)
         try:
             tulip.defer(_do, 0, 10)
         except Exception:

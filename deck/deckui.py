@@ -337,14 +337,9 @@ def switch(parent, value, on_change=None, color=GREEN):
     # on_change(new_bool) fires on toggle.
     sw = lv.switch(parent)
     sw.set_size(64, 34)
-    if value:
-        sw.add_state(lv.STATE.CHECKED)
     sw.set_style_bg_color(c(SURFACE2), lv.PART.MAIN)
     sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)
-    # Set the indicator color for BOTH the plain and CHECKED-state selectors:
-    # with only the CHECKED variant, switches rebuilt on the shell's deferred
-    # back()-refill path rendered the theme-default blue instead of `color`
-    # (UX-REVIEW-6 M3 -- green/blue flip-flop on the rack's enable switch).
+    # Indicator color on BOTH the plain and CHECKED selectors (belt+braces).
     sw.set_style_bg_color(c(color), lv.PART.INDICATOR)
     sw.set_style_bg_color(c(color), lv.PART.INDICATOR | lv.STATE.CHECKED)
     sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.INDICATOR | lv.STATE.CHECKED)
@@ -353,6 +348,14 @@ def switch(parent, value, on_change=None, color=GREEN):
     sw.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)
     sw.set_style_bg_color(c(SURFACE2), lv.PART.INDICATOR | lv.STATE.DISABLED)
     sw.set_style_bg_color(c(MUTED), lv.PART.KNOB | lv.STATE.DISABLED)
+    if value:
+        # State LAST, styles first: add_state(CHECKED) starts the theme's
+        # style-transition ANIMATION toward whatever the CHECKED style is at
+        # that instant -- with the old order that was the theme's blue, the
+        # anim finished ~200ms later painting blue over our green, and nothing
+        # repainted until a much later invalidate. THE actual root cause of
+        # the M3 green/blue flip-flop (UX-REVIEW-6/7; verified on-device).
+        sw.add_state(lv.STATE.CHECKED)
     if on_change is not None:
         def _cb(e):
             try:
