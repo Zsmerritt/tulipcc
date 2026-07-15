@@ -11,6 +11,10 @@ import shellmodel as sm
 import lvgl as lv
 
 
+def _sym(name, fallback):
+    return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
+
+
 def _amy_volume(v):
     """Set AMY's global volume across firmware generations: older builds expose
     amy.volume(), the current pinned amy only amy.send(volume=). NEVER reference
@@ -152,19 +156,40 @@ def _build(body, right, cw, screen):
     except Exception:
         pass
 
+    # Eye toggle: reveal ONLY while actively typing a NEW password. The field
+    # is never prefilled from the store, so this can never expose a saved
+    # credential -- and Connect force-masks again.
+    _eye = {'shown': False}
+
+    def _toggle_eye(e, btn):
+        _eye['shown'] = not _eye['shown']
+        try:
+            pw.ta.set_password_mode(not _eye['shown'])
+            btn.get_child(0).set_text(
+                _sym('EYE_CLOSE', 'hide') if _eye['shown']
+                else _sym('EYE_OPEN', 'show'))
+        except Exception:
+            pass
+
+    def _mask_pw():
+        _eye['shown'] = False
+        try:
+            pw.ta.set_password_mode(True)
+            eyebtn.get_child(0).set_text(_sym('EYE_OPEN', 'show'))
+        except Exception:
+            pass
+
     def connect_cb(e):
         s = ssid.ta.get_text() or cfg.get('wifi_ssid', '')
         p = pw.ta.get_text() or cfg.get('wifi_pass', '')
-        deckcfg.set_value('wifi_ssid', s)
-        deckcfg.set_value('wifi_pass', p)
+        was_saved = bool(deckcfg.load().get('wifi_ssid'))
         try:
             # typed values must not linger on screen either
             ssid.ta.set_text('')
             pw.ta.set_text('')
-            ssid.ta.set_placeholder_text("network name (saved)")
-            pw.ta.set_placeholder_text("password (saved)")
         except Exception:
             pass
+        _mask_pw()
         status_lbl.set_text("connecting...")
         status_lbl.set_style_text_color(dk.c(dk.MUTED), 0)
 
@@ -174,6 +199,15 @@ def _build(body, right, cw, screen):
             except Exception:
                 got = None
             if tulip.ip():
+                # save credentials only once they are PROVEN to work -- a typo
+                # must not overwrite a known-good password
+                deckcfg.set_value('wifi_ssid', s)
+                deckcfg.set_value('wifi_pass', p)
+                try:
+                    ssid.ta.set_placeholder_text("network name (saved)")
+                    pw.ta.set_placeholder_text("password (saved)")
+                except Exception:
+                    pass
                 status_lbl.set_text("connected  " + tulip.ip())
                 status_lbl.set_style_text_color(dk.c(dk.GREEN), 0)
                 dk.toast(screen, "Wi-Fi connected")
@@ -189,11 +223,26 @@ def _build(body, right, cw, screen):
                 except Exception:
                     pass
             else:
-                status_lbl.set_text("connection failed")
+                # nothing saved: fields already cleared, placeholders reflect
+                # whatever was stored before this attempt
+                try:
+                    ssid.ta.set_placeholder_text(
+                        "network name (saved)" if was_saved else "network name")
+                    pw.ta.set_placeholder_text(
+                        "password (saved)" if was_saved else "password")
+                except Exception:
+                    pass
+                status_lbl.set_text("connection failed -- not saved")
                 status_lbl.set_style_text_color(dk.c(dk.RED), 0)
         tulip.defer(do_connect, 0, 100)
 
     dk.button(wcard, "Connect", w=150, h=44, bg=dk.ACCENT, cb=connect_cb).align(lv.ALIGN.TOP_RIGHT, 0, 66)
+    eyebtn = dk.button(wcard, _sym('EYE_OPEN', 'show'), w=64, h=44, bg=dk.SURFACE2)
+    eyebtn.add_event_cb(
+        (lambda b: (lambda e: _toggle_eye(e, b)
+                    if e.get_code() == lv.EVENT.CLICKED else None))(eyebtn),
+        lv.EVENT.CLICKED, None)
+    eyebtn.align(lv.ALIGN.TOP_RIGHT, -74, 118)
     dk.button(wcard, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
         cb=lambda e: dk.toggle_keyboard_for(ssid.ta)).align(lv.ALIGN.TOP_RIGHT, 0, 118)
 
