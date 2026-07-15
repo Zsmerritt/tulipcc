@@ -1,0 +1,294 @@
+{
+  "review": "UX-REVIEW-6",
+  "date": "2026-07-14",
+  "device": "Tulip CC, COM11, 1024x600",
+  "audited_commits": ["085c6392", "c92162fa", "cb5f7e3f", "97e2be9c"],
+  "verdict": "regression",
+  "fix_priority": ["C1", "H2", "M4", "M1", "M3", "M2", "L2", "L3", "L4", "L5", "L6", "L7", "L1"],
+  "verified_fixed": [
+    {
+      "id": "REV5-M1",
+      "title": "Drum instrument mislabeled as melodic patch in rack row",
+      "evidence": ["shots/s15_rack_kit.png"],
+      "note": "Row reads 'Tulip ch1 TR-808 kit'. shellmodel.instrument_sound() drum branch works."
+    },
+    {
+      "id": "REV5-M2",
+      "title": "Duplicate instrument names / no rename / no editor identity",
+      "evidence": ["shots/s17_rack_2up.png", "shots/s16_edit_tulip2.png", "shots/s03_edit_top.png"],
+      "note": "Unique default names (Tulip / Tulip 2), Name field with rename, breadcrumb shows instrument name. But see H2: the Name field renders clipped."
+    },
+    {
+      "id": "NEW-autochannel",
+      "title": "Auto-picked free MIDI channel on add/move",
+      "evidence": ["shots/s16_edit_tulip2.png"],
+      "note": "Second instrument landed on Channel 2 automatically."
+    }
+  ],
+  "findings": [
+    {
+      "id": "C1",
+      "severity": "critical",
+      "title": "Settings crashes on open; entire Settings surface unreachable",
+      "summary": "Tap System > Settings: screen flashes and bounces back to System with no visible error. Panel build throws AttributeError: 'module' object has no attribute 'volume' at settings.py:91 (live=amy.volume). On current firmware amy has only MAX_VOLUME; tulip.volume does not exist either (verified on device). Introduced by commit 97e2be9c which moved the amy.volume reference from a drag callback to build time.",
+      "evidence": ["serial traceback captured in review; no screenshot possible (screen never builds)"],
+      "location": {"file": "deck/settings.py", "line": 91, "symbol": "run / _val_slider(live=amy.volume)"},
+      "suggested_fix": "Use the volume API the pinned amy actually exposes (check amy pin da8b914; likely amy.send(volume=v) or equivalent). Never dereference optional module attributes at panel-build time; guard with getattr and degrade to a disabled slider. Smoke-test: every screen must open once on-device before merge.",
+      "status": "new-regression"
+    },
+    {
+      "id": "H1",
+      "severity": "high",
+      "title": "Interrupt-watchdog reboot on ordinary navigation (the 'drops back to Home' glitch); decklog cannot capture it",
+      "summary": "Reproduced: editor > MPE > Per-note expression > Back > Back > FX Edit in quick succession hard-rebooted the device (uptime reset; deck.log tail only '=== deck boot ===' markers). User lands on Home after boot = the reported glitch. WDT resets never run Python again so file logging is structurally blind to the cause. Second sighting across two review sessions (review 5 saw one during a patch-search rebuild).",
+      "evidence": ["deck.log boot markers", "uptime reset observed ~06:05 device time"],
+      "location": {"file": "deck/homeshell.py", "symbol": "_schedule_refill / back"},
+      "suggested_fix": "1) Log machine.reset_cause() (and ESP-IDF reset reason) inside the boot marker so WDT resets are identifiable in deck.log. 2) Chunk heavy panel builds (FX/Sound/MPE editors) across multiple tulip.defer ticks, or feed the WDT during rebuild. 3) Consider caching built panels and re-parenting instead of full rebuild on back().",
+      "status": "new (root cause of known user report)"
+    },
+    {
+      "id": "H2",
+      "severity": "high",
+      "title": "Text fields render clipped text: Name field content half-cut at bottom; search placeholder clipped at top and low-contrast",
+      "summary": "Name field shows 'Tulip' cut in half at the field's bottom edge on every editor. Patch-search placeholder 'search patches' is clipped at the top edge and rendered dim orange-brown on purple (fails contrast); typed text renders fine. Same tulip.UIText vertical-metrics bug family as review-5 L1; the bigger field (60px) did not fix metrics, and the new Name field reintroduced the bug on a new surface.",
+      "evidence": ["shots/s03_edit_top.png", "shots/s12_kit_editor.png", "shots/s18_rename_kb.png", "shots/s06_patch.png", "shots/s08_search_kb.png"],
+      "location": {"file": "deck/rack.py", "symbol": "_build_edit (Name UIText)", "also": "deck/instrument.py _rebuild_content (search UIText)"},
+      "suggested_fix": "Add one deckui helper wrapping tulip.UIText that vertically centers the textarea within its group and sets a legible placeholder color (>= dk.MUTED on SURFACE2); use it for search, Name, and Settings Wi-Fi fields.",
+      "status": "new-regression (partially carried rev5-L1)"
+    },
+    {
+      "id": "M1",
+      "severity": "medium",
+      "title": "Rename writes full config to flash on every keystroke",
+      "summary": "rack._name_cb fires on VALUE_CHANGED per character and calls deckcfg.set_instrument which always save()s (full JSON serialize + flash write) on the keyboard event tick. Contradicts the same round's commit-on-release policy (97e2be9c) that exists because per-tick flash writes stall both cores and wear the config sector.",
+      "evidence": ["code: deck/rack.py _name_cb; deck/deckcfg.py set_instrument"],
+      "location": {"file": "deck/rack.py", "symbol": "_name_cb"},
+      "suggested_fix": "Per keystroke: update RAM cache only (set_instrument needs a flush=False param like set_instrument_param). Commit once on lv.EVENT.DEFOCUSED or READY (keyboard close).",
+      "status": "new"
+    },
+    {
+      "id": "M2",
+      "severity": "medium",
+      "title": "MPE panel: dependent controls look fully live while Enable MPE is off",
+      "summary": "With the master switch off, Member channels / Pitch bend / Listen channel / Per-note expression render full-color and interactive; only cue is tiny muted 'MPE off' bottom-left.",
+      "evidence": ["shots/s22_mpe.png"],
+      "location": {"file": "deck/mpe.py", "symbol": "panel"},
+      "suggested_fix": "Add lv.STATE.DISABLED + reduced opacity to dependent cards while gate is off; move the on/off status text next to the switch.",
+      "status": "new"
+    },
+    {
+      "id": "M3",
+      "severity": "medium",
+      "title": "Rack enable-switch renders green on fresh build but blue after Back-refill rebuild",
+      "summary": "Fresh push: green (s02, s20). After back()'s deferred _schedule_refill rebuild: blue (s15, s17). rack.py:85 passes color=dk.GREEN in both cases. Green is the deck's 'enabled' color vocabulary; the flip-flop breaks state-color meaning on the primary toggle.",
+      "evidence": ["shots/s02_rack.png", "shots/s20_rack_after_remove.png", "shots/s15_rack_kit.png", "shots/s17_rack_2up.png"],
+      "location": {"file": "deck/deckui.py", "symbol": "switch", "also": "deck/homeshell.py _schedule_refill"},
+      "suggested_fix": "Debug why the INDICATOR|CHECKED style loses in the deferred-refill path; as a robust fallback set indicator color on PART.INDICATOR unconditionally (indicator only shows when checked on lv.switch).",
+      "status": "new"
+    },
+    {
+      "id": "M4",
+      "severity": "medium",
+      "title": "Search-as-you-type with keyboard up shows exactly one result row",
+      "summary": "Auto-popped keyboard covers bottom ~55%; results list does not resize, leaving one visible row between field and keys. Live-filter feedback (the feature's point) is mostly invisible while typing.",
+      "evidence": ["shots/s07_patch_kb.png", "shots/s08_search_kb.png"],
+      "location": {"file": "deck/instrument.py", "symbol": "_rebuild_content (listbody sizing)"},
+      "suggested_fix": "When ui.lv_soft_kb is present, shrink listbody height to end above the keyboard; restore on close (hook keyboard open/close or lv keyboard DELETE event).",
+      "status": "new"
+    },
+    {
+      "id": "L1",
+      "severity": "low",
+      "title": "Unstyled firmware keyboard is design-system whiplash, now on the main path via autoshow",
+      "evidence": ["shots/s07_patch_kb.png", "shots/s18_rename_kb.png"],
+      "location": {"file": "deck/deckui.py", "symbol": "autoshow_keyboard"},
+      "suggested_fix": "Restyle ui.lv_soft_kb (bg SURFACE, keys SURFACE2, accent checked) when opened from deck surfaces.",
+      "status": "new"
+    },
+    {
+      "id": "L2",
+      "severity": "low",
+      "title": "Picker page title duplicates selected row and goes stale under filter",
+      "evidence": ["shots/s06_patch.png", "shots/s08_search_kb.png"],
+      "location": {"file": "deck/instrument.py", "symbol": "_rebuild_content title"},
+      "suggested_fix": "Stable heading ('Juno-6 patches'); selection lives on the highlighted row only.",
+      "status": "carried (rev5-L2)"
+    },
+    {
+      "id": "L3",
+      "severity": "low",
+      "title": "'Drum machine (legacy)' tile clipped at both ends",
+      "evidence": ["shots/s28_apps.png"],
+      "location": {"file": "deck/home.py", "symbol": "_APPS"},
+      "suggested_fix": "Rename to 'Drums (legacy)'.",
+      "status": "carried (rev5-L3, untouched)"
+    },
+    {
+      "id": "L4",
+      "severity": "low",
+      "title": "System/Apps submenu grids cluster top-left; ~70% dead panel",
+      "evidence": ["shots/s27_system.png", "shots/s28_apps.png", "shots/s01_home.png"],
+      "location": {"file": "deck/home.py", "symbol": "_submenu_builder"},
+      "suggested_fix": "Apply the root grid's centered flex_align to submenus.",
+      "status": "carried (rev5-L4, untouched)"
+    },
+    {
+      "id": "L5",
+      "severity": "low",
+      "title": "Files: footer actions look enabled with no selection; off-palette colors; divergent Back",
+      "evidence": ["shots/s29_files.png"],
+      "location": {"file": "deck/files.py"},
+      "suggested_fix": "Disable Run/Edit until selection; deck palette (accent/green/red); shell-style Back.",
+      "status": "carried (rev5-L5, untouched)"
+    },
+    {
+      "id": "L6",
+      "severity": "low",
+      "title": "Type change silently resets patch and Sound edits",
+      "evidence": ["shots/s05_type.png"],
+      "location": {"file": "deck/rack.py", "symbol": "_set_type"},
+      "suggested_fix": "Hint line on Type picker: 'Changing type resets the patch and sound edits.'",
+      "status": "carried (rev5-L6, untouched)"
+    },
+    {
+      "id": "L7",
+      "severity": "low",
+      "title": "Unitless values; nonzero-minimum params (duty 0.50 at far-left) read as broken sliders",
+      "summary": "oscA_duty range is 0.50-0.99 so knob-at-min with '0.50' is correct but indistinguishable from a broken slider. FX level/liveness/damping unitless. 'sub tune 440 Hz' proves units are supported.",
+      "evidence": ["shots/s25_sound_basic.png", "shots/s26_sound_advanced.png", "shots/s24_fx.png"],
+      "location": {"file": "deck/amyparams.py", "also": "deck/parameditor.py _fmt_value"},
+      "suggested_fix": "Percent display for duty-type params; min/max microlabels at track ends; add units where known.",
+      "status": "carried (rev5-L7)"
+    },
+    {
+      "id": "L8",
+      "severity": "low",
+      "title": "32KB internal-SRAM alloc failure logged when keyboard opens on patch picker",
+      "summary": "'alloc failed size 32768 heap_caps_malloc internal 8bit' on keyboard open; keyboard still appeared via fallback. Memory headroom pressure on the hot path; related soil for H1.",
+      "evidence": ["serial log during s07 capture"],
+      "location": {"file": "deck/instrument.py", "symbol": "patch list rebuild per keystroke"},
+      "suggested_fix": "Heap audit of picker path; consider windowing the patch list instead of building all rows.",
+      "status": "new"
+    },
+    {
+      "id": "L9",
+      "severity": "low",
+      "title": "'Kits' is a patch-collection name, not an instrument Type; 'Drums' was the correct type label",
+      "evidence": ["shots/s05_type.png", "shots/s12_kit_editor.png"],
+      "location": {"file": "deck/rack.py _TYPE_LIST", "also": "deck/instrument.py _TYPE_NAME"},
+      "suggested_fix": "Type list: Juno-6 / DX7 / Piano / Drums. Keep 'Kit TR-808' as the patch-slot row label.",
+      "status": "new (judgement on c92162fa rename)"
+    },
+    {
+      "id": "L10",
+      "severity": "low",
+      "title": "Rack row stutters device name: 'Tulip / Tulip ch1 ...'",
+      "evidence": ["shots/s02_rack.png", "shots/s17_rack_2up.png"],
+      "location": {"file": "deck/shellmodel.py", "symbol": "instrument_summary"},
+      "suggested_fix": "Omit device prefix in subtitle when instrument is on the internal device (or when it prefixes the name).",
+      "status": "new"
+    },
+    {
+      "id": "N1",
+      "severity": "nit",
+      "title": "Top-bar clock shows confident wrong time when clock never set",
+      "evidence": ["shots/s01_home.png"],
+      "location": {"file": "deck/homeshell.py", "symbol": "_clock_str"},
+      "suggested_fix": "Show '--:--' (or hide) until time source exists.",
+      "status": "new"
+    },
+    {
+      "id": "N2",
+      "severity": "nit",
+      "title": "Reset-confirm backdrop dimming makes some tiles vanish entirely (RGB332 blend artifact)",
+      "evidence": ["shots/s30_reset_confirm.png"],
+      "location": {"file": "deck/deckui.py", "symbol": "confirm (backdrop opa 200)"},
+      "suggested_fix": "Raise backdrop opacity (~230+) so background uniformly darkens.",
+      "status": "new"
+    },
+    {
+      "id": "N3",
+      "severity": "nit",
+      "title": "Min-value slider knob overflows card corner",
+      "evidence": ["shots/s24_fx.png"],
+      "location": {"file": "deck/parameditor.py", "symbol": "_slider"},
+      "suggested_fix": "Inset slider a few px within card.",
+      "status": "carried (rev5-N3)"
+    },
+    {
+      "id": "N4",
+      "severity": "nit",
+      "title": "Inactive left-tab labels low contrast on purple",
+      "evidence": ["shots/s24_fx.png", "shots/s25_sound_basic.png"],
+      "location": {"file": "deck/parameditor.py tabs styling"},
+      "suggested_fix": "Lighten inactive tab text.",
+      "status": "carried (rev5-N2)"
+    },
+    {
+      "id": "N5",
+      "severity": "nit",
+      "title": "ASCII '->' and '--' in user-facing copy",
+      "evidence": ["shots/s23_mpe_expression.png", "shots/s13_kit_picker.png"],
+      "location": {"file": "deck/mpe.py, deck/rack.py copy strings"},
+      "suggested_fix": "Reword or use real glyphs if font supports.",
+      "status": "new"
+    },
+    {
+      "id": "N6",
+      "severity": "nit",
+      "title": "Welcome step cards look tappable but are not; footer leaks run('welcome') REPL syntax",
+      "evidence": ["shots/s33_welcome.png"],
+      "location": {"file": "deck/welcome.py"},
+      "suggested_fix": "Either make cards tappable (jump to that step) or flatten card chrome; reword footer.",
+      "status": "new"
+    },
+    {
+      "id": "N7",
+      "severity": "nit",
+      "title": "Submenu tile label color drifts cream/yellow vs root white",
+      "evidence": ["shots/s27_system.png", "shots/s01_home.png"],
+      "location": {"file": "deck/home.py", "symbol": "_sub_tile vs _tile"},
+      "suggested_fix": "Verify label color path; unify to WHITE.",
+      "status": "new"
+    }
+  ],
+  "structural": [
+    {
+      "id": "S1",
+      "title": "Make the rack the home screen; demote the launcher",
+      "summary": "Root screen currently spends 1024x544 on three abstract tiles + dead space while the state screen (rack) is a level down; the main performer loop (change my instrument's sound) takes 4 taps. Make rack.panel the root panel; Devices/System become top-bar icons or two small tiles; keep + Add instrument at bottom.",
+      "evidence": ["shots/s01_home.png", "shots/s17_rack_2up.png"],
+      "effort": "medium",
+      "priority": "do after criticals; highest-value structural change"
+    },
+    {
+      "id": "S2",
+      "title": "Two-column editor layouts; kill the portrait-form-on-landscape anti-pattern",
+      "summary": "Editor rows are full-width cards with ~700px of dead space between left label and right control, forcing scroll. On 1024x600 the instrument editor fits without scrolling as two columns: left identity/routing (Name/Device/Channel/Voices), right sound (Type/Patch/Sound/FX/MPE), Remove full-width bottom. Same treatment for MPE and revived Settings.",
+      "evidence": ["shots/s03_edit_top.png", "shots/s04_edit_bottom.png", "shots/s22_mpe.png"],
+      "effort": "medium",
+      "priority": "second structural change"
+    },
+    {
+      "id": "S3",
+      "title": "Fold Settings (then Files) into shell panels; retire standalone chrome for first-party tools",
+      "summary": "Settings/Files as separate tulip.run apps fork the chrome (divergent Back, L5) and bypass the shell's panel-error surface (why C1 bounces silently). Split Settings into Network/Display/Audio/System shell panels. Borrowed heavy apps (Editor, Wordpad, Tulip World) stay standalone.",
+      "evidence": ["shots/s29_files.png"],
+      "effort": "medium-large",
+      "priority": "optional third; pairs naturally with the C1 fix"
+    },
+    {
+      "id": "S-KEEP",
+      "title": "Explicitly keep: shell architecture, chips, confirm vocabulary, shellmodel test split, tabs+search patch picker",
+      "summary": "No full rewrite. The panel-stack shell and unit-tested shellmodel are sound; the picker needs M4/H2/L2, not a rethink."
+    }
+  ],
+  "modernization_2026": [
+    {"id": "MOD1", "title": "Add motion: 150-200ms ease-out slide/fade for panel push/pop, modal fade, switch thumb animation; add reduce-motion toggle", "priority": 1},
+    {"id": "MOD2", "title": "Icon pass: pair an LVGL symbol/glyph with every tile and nav row (8-10 glyphs total)", "priority": 2},
+    {"id": "MOD3", "title": "Show sound: live voice meter in the device chip, MIDI-activity flicker on instrument rows, audition indicator in pickers", "priority": 3},
+    {"id": "MOD4", "title": "Depth tokens: soft shadow or 1px border on cards + pressed 'sink' state", "priority": 4},
+    {"id": "MOD5", "title": "Typography axis: semibold titles, regular body, tabular/mono numerals for values", "priority": 5},
+    {"id": "MOD6", "title": "Home dashboard layer: now-playing patch, last MIDI device, volume in the dead lower half", "priority": 6}
+  ]
+}
