@@ -275,7 +275,7 @@ def _val_slider(body, key, name, value, lo, hi, live, commit, color, fmt="%d"):
     col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START,
                        lv.FLEX_ALIGN.START)
     dk.label(col, name, color=dk.TEXT, font=dk.FONT_M)
-    _sv[key] = dk.label(col, fmt % value, color=dk.TEAL, font=dk.FONT_S)
+    _sv[key] = dk.label(col, fmt % value, color=dk.TEAL, font=dk.FONT_MONO)
 
     def cb(e):
         v = e.get_target_obj().get_value()

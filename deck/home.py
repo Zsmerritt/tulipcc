@@ -49,6 +49,14 @@ def _open_files(shell):
         shell.push(files.panel, "Files", key='files')
 
 
+def _open_midimon(shell):
+    import midimon
+    if sm.open_panel_action(shell.top_key(), 'midimon') == 'rebuild':
+        shell.rebuild_top(midimon.panel, "MIDI monitor", key='midimon')
+    else:
+        shell.push(midimon.panel, "MIDI monitor", key='midimon')
+
+
 def _open_devices(shell):
     import devices
     if sm.open_panel_action(shell.top_key(), 'devices') == 'rebuild':
@@ -63,15 +71,22 @@ def _open_devices_chip(shell, device):
 
 
 # --- submenus (a tile that pushes a panel of items; Back returns to Home) ---
-def _sub_tile(parent, shell, label, kind, target, color):
+def _sub_tile(parent, shell, icon, label, kind, target, color):
     b = lv.button(parent)
     b.set_size(200, 96)
     dk._flat(b, radius=16, bg=color)
+    dk.pressable(b)
+    if icon:
+        ic = lv.label(b)
+        ic.set_text(icon)
+        ic.set_style_text_color(dk.c(dk.WHITE), 0)
+        ic.set_style_text_font(dk.FONT_M, 0)
+        ic.align(lv.ALIGN.TOP_LEFT, 14, 12)
     lb = lv.label(b)
     lb.set_text(label)
     lb.set_style_text_color(dk.c(dk.WHITE), 0)
     lb.set_style_text_font(dk.FONT_M, 0)
-    lb.center()
+    lb.align(lv.ALIGN.BOTTOM_LEFT, 14, -12)
 
     def cb(e):
         if e.get_code() != lv.EVENT.CLICKED:
@@ -100,8 +115,8 @@ def _submenu_builder(items):
                                   lv.FLEX_ALIGN.CENTER)
         except Exception:
             pass
-        for label, kind, target, color in items:
-            _sub_tile(parent, shell, label, kind, target, color)
+        for icon, label, kind, target, color in items:
+            _sub_tile(parent, shell, icon, label, kind, target, color)
     return build
 
 
@@ -114,27 +129,28 @@ def _open_submenu(shell, title, key, items):
 
 
 _APPS = [
-    ("Editor",      "call", tulip.edit,     dk.GREEN),
-    ("Wordpad",     "run",  "wordpad",      dk.GREEN),
-    ("Tulip World", "run",  "worldui",      dk.PURPLE),
-    ("Keyboard",    "call", tulip.keyboard, dk.GRAY),
-    ("Drums (legacy)", "run", "drums", dk.GRAY),  # drums are now instruments
-    ("Voices (legacy)", "run", "voices",     dk.GRAY),
+    (lv.SYMBOL.EDIT,     "Editor",      "call", tulip.edit,     dk.GREEN),
+    (lv.SYMBOL.FILE,     "Wordpad",     "run",  "wordpad",      dk.GREEN),
+    (lv.SYMBOL.GPS,      "Tulip World", "run",  "worldui",      dk.PURPLE),
+    (lv.SYMBOL.KEYBOARD, "Keyboard",    "call", tulip.keyboard, dk.GRAY),
+    (lv.SYMBOL.AUDIO, "Drums (legacy)", "run", "drums", dk.GRAY),
+    (lv.SYMBOL.AUDIO, "Voices (legacy)", "run", "voices", dk.GRAY),
 ]
 
 
 def _open_system(shell):
     # System is the catch-all: Files + Apps (nested) + device config. Built inline
     # so it can reference _open_apps (defined below) at call time.
-    # Settings/Files open as SHELL PANELS now (S3): same Back/breadcrumb as
-    # everything else, and a crash shows the shell's panel-error label instead
-    # of silently bouncing (the way Settings died in UX-REVIEW-6 C1).
+    # Settings/Files/MIDI monitor open as SHELL PANELS (S3): same Back/
+    # breadcrumb as everything else, and a crash shows the shell's panel-error
+    # label instead of silently bouncing (the way Settings died in C1).
     items = [
-        ("Files",    "panel", _open_files,    dk.GREEN),
-        ("Apps",     "panel", _open_apps,     dk.PURPLE),
-        ("Settings", "panel", _open_settings, dk.GREEN),
-        ("Terminal", "call",  _terminal,      dk.GRAY),
-        ("Reset",    "call",  _reset,         dk.RED),
+        (lv.SYMBOL.DIRECTORY, "Files",        "panel", _open_files,    dk.GREEN),
+        (lv.SYMBOL.LIST,      "Apps",         "panel", _open_apps,     dk.PURPLE),
+        (lv.SYMBOL.SETTINGS,  "Settings",     "panel", _open_settings, dk.GREEN),
+        (lv.SYMBOL.EYE_OPEN,  "MIDI monitor", "panel", _open_midimon,  dk.TEAL),
+        (lv.SYMBOL.KEYBOARD,  "Terminal",     "call",  _terminal,      dk.GRAY),
+        (lv.SYMBOL.POWER,     "Reset",        "call",  _reset,         dk.RED),
     ]
     _open_submenu(shell, "System", 'system', items)
 
@@ -142,7 +158,7 @@ def _open_system(shell):
 def _open_apps(shell):
     items = list(_APPS)
     for name, mod in _discover_user():
-        items.append((name, "run", mod, dk.TEAL))
+        items.append((lv.SYMBOL.FILE, name, "run", mod, dk.TEAL))
     _open_submenu(shell, "Apps", 'apps', items)
 
 
@@ -194,12 +210,31 @@ def _root_footer(shell):
         r.set_style_pad_column(12, 0)
         r.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER,
                          lv.FLEX_ALIGN.CENTER)
-        for label, opener, color in (("Devices", _open_devices, dk.TEAL),
-                                     ("System", _open_system, dk.GRAY)):
-            b = dk.button(r, label, w=470, h=60, bg=color, font=dk.FONT_M)
+        for icon, label, opener, color in (
+                (lv.SYMBOL.USB, "Devices", _open_devices, dk.TEAL),
+                (lv.SYMBOL.SETTINGS, "System", _open_system, dk.GRAY)):
+            b = dk.button(r, icon + "  " + label, w=470, h=60, bg=color,
+                          font=dk.FONT_M)
             b.add_event_cb((lambda op: (lambda e: (op(shell)
                             if e.get_code() == lv.EVENT.CLICKED else None)))(opener),
                            lv.EVENT.CLICKED, None)
+
+        # status line: glanceable state in what used to be dead space
+        try:
+            import deckcfg
+            from patches import patches
+            instr = deckcfg.get_instrument(deckcfg.active_instrument()) or {}
+            if instr.get('type') == 'drums':
+                import drums_kit
+                sound = drums_kit.kit_name(instr.get('kit', 384))
+            else:
+                sound = patches[instr.get('patch', 0)]
+            # ASCII separators only: the compiled montserrat range is ASCII
+            txt = "%s  %s   |   vol %s" % (instr.get('name', '?'), sound,
+                                           deckcfg.get('volume', 4))
+            dk.label(body, txt, color=dk.MUTED, font=dk.FONT_S)
+        except Exception:
+            pass
     return footer
 
 

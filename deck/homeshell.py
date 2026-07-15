@@ -59,6 +59,9 @@ class HomeShell:
         self.W, self.H = tulip.screen_size()
         self.stack = sm.PanelStack(root_title)
         self._chip_btns = []
+        self._chip_live = []
+        self._meter_running = False
+        self._last_act = -1
         self._alive = True
         # Generation counter for deferred back()-refills: bumped on every nav so a
         # pending refill for a panel that's since been popped/replaced is cancelled
@@ -73,6 +76,7 @@ class HomeShell:
         self.refresh_chips()
         self._sync_chrome()
         self._schedule_clock()
+        self._start_meter()
 
     # ----- top bar --------------------------------------------------------
     def _build_bar(self):
@@ -125,6 +129,7 @@ class HomeShell:
             except Exception:
                 pass
         self._chip_btns = []
+        self._chip_live = []      # (bar, dot, base_color, capacity) for meters
         specs = sm.device_chip_specs(self._read_devices())
         n = max(1, len(specs))
         cw = 168 if len(specs) <= 3 else max(110, int((self.W - LEFT_ZONE -
@@ -132,6 +137,7 @@ class HomeShell:
         for spec in specs:
             self._chip_btns.append(self._make_device_chip(spec, cw))
         self._render_wifi_clock()
+        self._start_meter()      # (re)arm: a chip rebuild kills the old tick
 
     def _read_devices(self):
         try:
@@ -160,6 +166,18 @@ class HomeShell:
         lb.align(lv.ALIGN.LEFT_MID, 24, 0)
         b.add_event_cb((lambda d: (lambda e: self._on_chip(d)))(spec['device']),
                        lv.EVENT.CLICKED, None)
+        if spec['device'] == 'internal':
+            # live voice meter along the chip's bottom edge (the router knows
+            # exactly how many internal voices are sounding -- see
+            # forwarder.live_voices); updated by _start_meter's tick.
+            bar = lv.obj(b)
+            bar.set_size(1, 4)
+            dk._flat(bar, radius=2, bg=dk.GREEN)
+            bar.align(lv.ALIGN.BOTTOM_LEFT, 6, -2)
+            self._chip_live.append(
+                {'bar': bar, 'dot': dot, 'base': dotcol,
+                 'cap': max(1, spec.get('capacity', 32)), 'w': cw - 12,
+                 'lastw': 1, 'flick': False})
         return b
 
     def _on_chip(self, device):
@@ -340,6 +358,7 @@ class HomeShell:
                     pass
             self._render_wifi_clock()      # snap time + wifi current NOW
             self._start_clock()
+            self._start_meter()            # live chip meter resumes too
         try:
             self.screen.activate_callback = _on_activate
         except Exception:
@@ -352,6 +371,55 @@ class HomeShell:
             return ui.current_app_string == getattr(self.screen, 'name', None)
         except Exception:
             return True    # can't tell: keep ticking (the old behavior)
+
+    # ----- live chip meter ------------------------------------------------
+    def _start_meter(self):
+        """A ~4 Hz tick painting live state into the chips: voice-meter bar
+        width (internal AMY) + a MIDI-activity flicker on the dot. Dirty
+        regions are a few hundred pixels, unchanged frames are skipped, and
+        the tick pauses whenever Home isn't the presented screen."""
+        if self._meter_running or not self._alive:
+            return
+        self._meter_running = True
+
+        def _tick(x):
+            if not self._alive:
+                self._meter_running = False
+                return
+            if not self._home_presented():
+                self._meter_running = False   # resumed by _on_activate
+                return
+            try:
+                import forwarder
+                v = forwarder.live_voices()
+                a = forwarder.activity()
+            except Exception:
+                v, a = 0, self._last_act
+            active = (a != self._last_act)
+            self._last_act = a
+            for m in self._chip_live:
+                try:
+                    bw = max(1, min(m['w'], int(m['w'] * v / m['cap'])))
+                    if bw != m['lastw']:
+                        m['bar'].set_width(bw)
+                        m['bar'].set_style_bg_color(
+                            dk.c(dk.RED if v >= m['cap'] * 0.9 else
+                                 (dk.ORANGE if v >= m['cap'] * 0.7
+                                  else dk.GREEN)), 0)
+                        m['lastw'] = bw
+                    if active != m['flick']:
+                        # flicker: dot goes white while messages stream
+                        m['dot'].set_style_bg_color(
+                            dk.c(dk.WHITE if active else m['base']), 0)
+                        m['flick'] = active
+                except Exception:
+                    self._meter_running = False
+                    return       # chips rebuilt/deleted; refresh restarts us
+            tulip.defer(_tick, 0, 250)
+        try:
+            tulip.defer(_tick, 0, 250)
+        except Exception:
+            self._meter_running = False
 
     def _start_clock(self):
         if self._clock_running or not self._alive:

@@ -33,6 +33,7 @@ _state = {
     'registered': False,
     'has_device_arg': None,  # firmware supports tulip.midi_out(msg, device)?
     'err_iids': set(),   # instrument ids whose synth already logged a failure
+    'seen': 0,           # messages seen (activity flicker in the top-bar chips)
 }
 
 _EMPTY = ((), ())        # shared empty route (no per-message allocation)
@@ -77,6 +78,7 @@ def _route(m):
     # MicroPython GC pauses out of the note timing.
     if not _state['on'] or not m:
         return
+    _state['seen'] += 1          # activity counter (chip flicker reads this)
     status = m[0] & 0xF0
     ch = (m[0] & 0x0F) + 1
     if ch in _state['mpe_members']:
@@ -355,3 +357,17 @@ def stop():
 def status():
     return {'on': _state['on'], 'channels': sorted(_state['routes'].keys()),
             'synths': len(_state['synths']), 'held': len(_state['notes'])}
+
+
+def live_voices():
+    """Internal voices sounding right now (from the held-note table -- already
+    maintained in RAM, so this is just sums, no AMY query)."""
+    n = 0
+    for iids in _state['notes'].values():
+        n += len(iids)
+    return n
+
+
+def activity():
+    """Monotonic count of MIDI messages routed; delta > 0 = activity."""
+    return _state['seen']

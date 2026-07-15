@@ -32,6 +32,28 @@ PURPLE   = tulip.color(160, 96, 200)
 RED      = tulip.color(214, 72, 72)
 GRAY     = tulip.color(92, 94, 112)
 TEAL     = tulip.color(64, 168, 184)
+EDGE     = SURFACE2                    # 1px card edge (elevation, no shadows)
+
+
+def edge(o):
+    """A 1px lighter edge on a card -- the cheap elevation language. Real LVGL
+    shadows are software blurs recomputed on every redraw (a permanent tax on
+    the panel builds that already flirt with the WDT); a border is free."""
+    try:
+        o.set_style_border_width(1, 0)
+        o.set_style_border_color(c(EDGE), 0)
+    except Exception:
+        pass
+
+
+def pressable(b):
+    """Pressed 'sink': the control nudges down and darkens while touched --
+    feedback with a tiny dirty region and no animation cost."""
+    try:
+        b.set_style_translate_y(2, lv.STATE.PRESSED)
+        b.set_style_bg_opa(200, lv.PART.MAIN | lv.STATE.PRESSED)
+    except Exception:
+        pass
 
 
 def _pick(*names):
@@ -45,6 +67,9 @@ def _pick(*names):
 FONT_S = _pick('font_montserrat_12')
 FONT_M = _pick('font_montserrat_18', 'font_montserrat_12')
 FONT_L = _pick('font_montserrat_24', 'font_montserrat_18')
+# Monospace (tabular figures) for VALUES -- "440 Hz", "ch2", "50 %" -- so
+# numbers don't jump around as they change. unscii_16 ships in the firmware.
+FONT_MONO = _pick('font_unscii_16', 'font_montserrat_12')
 
 
 def c(pal):
@@ -158,6 +183,7 @@ def row(parent, h=76, bg=SURFACE):
     r.set_width(lv.pct(100))
     r.set_height(h)
     _flat(r, radius=16, bg=bg)
+    edge(r)
     r.set_style_pad_hor(20, 0)
     r.set_flex_flow(lv.FLEX_FLOW.ROW)
     r.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER,
@@ -170,6 +196,7 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     b = lv.button(parent)
     b.set_size(w, h)
     _flat(b, radius=radius, bg=bg)
+    pressable(b)
     lb = lv.label(b)
     lb.set_text(text)
     lb.set_style_text_color(c(fg), 0)

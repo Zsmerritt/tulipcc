@@ -112,7 +112,7 @@ class ParamEditor:
         name = dk.label(cell, self.label_for(d), color=dk.TEXT)
         name.align(lv.ALIGN.TOP_LEFT, 20, 12)
         val = dk.label(cell, self._fmt_value(d, cur), color=dk.TEAL,
-                       font=dk.FONT_M, w=140, align=lv.TEXT_ALIGN.RIGHT)
+                       font=dk.FONT_MONO, w=150, align=lv.TEXT_ALIGN.RIGHT)
         val.align(lv.ALIGN.TOP_RIGHT, -20, 12)
         s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
                       int(round(d['max'] * scale)), w=lv.pct(84),

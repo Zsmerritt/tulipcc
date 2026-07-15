@@ -130,7 +130,8 @@ def device_chip_specs(devices):
         m = device_meter(d)
         specs.append({'device': d.get('device'), 'name': m['name'],
                       'text': m['text'], 'connected': m['connected'],
-                      'warn': m['fraction'] >= 0.85})
+                      'warn': m['fraction'] >= 0.85,
+                      'capacity': d.get('capacity', 32)})
     return specs
 
 

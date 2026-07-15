@@ -87,8 +87,14 @@ def _inst_row(body, shell, instr):
     b.set_width(lv.pct(100))
     b.set_height(76)
     dk._flat(b, radius=16, bg=dk.SURFACE)
-    dk.label(b, instr.get('name', '?'), 16, 10, color=dk.WHITE, font=dk.FONT_M)
-    dk.label(b, sm.instrument_summary(instr), 16, 42, color=dk.MUTED,
+    dk.edge(b)
+    dk.pressable(b)
+    # a glyph makes the row scannable at arm's length: note = melodic, bars = kit
+    icon = dk.label(b, lv.SYMBOL.BARS if instr.get('type') == 'drums'
+                    else lv.SYMBOL.AUDIO, color=dk.TEAL, font=dk.FONT_M)
+    icon.align(lv.ALIGN.LEFT_MID, 16, 0)
+    dk.label(b, instr.get('name', '?'), 52, 10, color=dk.WHITE, font=dk.FONT_M)
+    dk.label(b, sm.instrument_summary(instr), 52, 42, color=dk.MUTED,
              font=dk.FONT_S)
     # Per-instrument ON/OFF. Enabled instruments all play at once (multitimbral) --
     # there is no single "active" instrument; tapping the row just opens its editor.
