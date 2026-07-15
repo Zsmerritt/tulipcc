@@ -456,13 +456,17 @@ static void mount_gm_fonts(void) {
         fprintf(stderr, "gm: no fonts partition, GM presets unavailable\n");
         return;
     }
-    const void *small = mount_fonts_range(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
-    if (small != NULL)
-        amy_set_gm_pcm((const int16_t *)small);
+    // Largest map first: the free vaddr pool is only ~128KB bigger than the
+    // big bank's 9.5MB, so it must grab its contiguous block before the
+    // smaller maps fragment the space (observed live: big-bank mmap short by
+    // exactly two MMU pages when mounted after the others).
     const void *big = mount_fonts_range(part, GM_BIG_BYTE_OFFSET,
                                         part->size - GM_BIG_BYTE_OFFSET, "big bank");
     if (big != NULL)
         amy_set_gm_big_pcm((const int16_t *)big);
+    const void *small = mount_fonts_range(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
+    if (small != NULL)
+        amy_set_gm_pcm((const int16_t *)small);
 }
 #endif
 
@@ -504,11 +508,14 @@ void run_amy(uint8_t midi_out_pin) {
 #ifndef AMYBOARD
     amy_config.features.startup_bleep = 1;
 #endif
-#if defined(GAMMA9001) && defined(ESP_PLATFORM)
-    mount_gamma9001_drums();
-#endif
+// Mount order matters: the fonts partition's big bank needs a 9.5MB
+// contiguous vaddr block out of a pool barely larger -- it goes first,
+// before the drums map can split the pool.
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
     mount_gm_fonts();
+#endif
+#if defined(GAMMA9001) && defined(ESP_PLATFORM)
+    mount_gamma9001_drums();
 #endif
     amy_start(amy_config);
     external_map = malloc_caps(amy_config.max_oscs, MALLOC_CAP_INTERNAL);
