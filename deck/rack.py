@@ -413,7 +413,10 @@ def _build_edit(parent, shell):
     cols.remove_flag(lv.obj.FLAG.SCROLLABLE)
     cols.set_flex_flow(lv.FLEX_FLOW.ROW)
     cols.set_style_pad_column(16, 0)
-    cw = (w - 48 - 16) // 2
+    # body is a scroll_col with an 18px right scrollbar gutter -- subtract it
+    # or the right column overflows and its card borders clip at the screen
+    # edge (UX-REVIEW-8 R-4).
+    cw = (w - 48 - 18 - 16) // 2
     left = _vcol2(cols, cw)
     right = _vcol2(cols, cw)
 

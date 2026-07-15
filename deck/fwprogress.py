@@ -52,8 +52,9 @@ def show(total, title="Firmware update"):
                          color=dk.MUTED, font=dk.FONT_S, w=576)
     # playing MIDI (or anything that makes the console chatty) can disturb
     # the serial transfer -- warn, since idle hands reach for keys
-    dk.label(card, "Please don't play or touch the deck until this finishes.",
-             32, 96, color=dk.ORANGE, font=dk.FONT_S, w=576)
+    _s['warn'] = dk.label(
+        card, "Please don't play or touch the deck until this finishes.",
+        32, 96, color=dk.ORANGE, font=dk.FONT_S, w=576)
 
     barw = 640 - 64
     track = lv.obj(card)
@@ -88,11 +89,21 @@ def update(done, total=None, note=None):
     frac = done / t
     try:
         _s['bar'].set_width(max(1, int(_s['barw'] * frac)))
-        _s['pct'].set_text("%d%%   (%d/%d)" % (int(frac * 100), done, t))
+        _s['pct'].set_text("%d%%   (%s/%s)" % (int(frac * 100),
+                                               _amt(done), _amt(t)))
         if note and _s['sub'] is not None:
             _s['sub'].set_text(note)
     except Exception:
         _close_refs()
+
+
+def _amt(n):
+    """Counts read as-is; byte totals read as KB/MB (UX-REVIEW-8 R-5)."""
+    if n >= 1024 * 1024:
+        return "%.1fMB" % (n / (1024 * 1024))
+    if n >= 10000:
+        return "%dKB" % (n // 1024)
+    return "%d" % n
 
 
 def stage(text):
@@ -125,6 +136,9 @@ def fail(text="Update failed. Please try again."):
     try:
         _s['sub'].set_style_text_color(dk.c(dk.RED), 0)
         _s['pct'].set_text("tap to dismiss")
+        # the caution line contradicts "tap to dismiss" once we've failed
+        if _s.get('warn') is not None:
+            _s['warn'].add_flag(lv.obj.FLAG.HIDDEN)
     except Exception:
         pass
     ov = _s['ov']
