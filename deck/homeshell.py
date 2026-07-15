@@ -62,6 +62,7 @@ class HomeShell:
         self._chip_live = []
         self._meter_running = False
         self._last_act = -1
+        self._has_level = None    # firmware has tulip.amy_level()? (lazy probe)
         self._alive = True
         # Generation counter for deferred back()-refills: bumped on every nav so a
         # pending refill for a panel that's since been popped/replaced is cancelled
@@ -167,17 +168,27 @@ class HomeShell:
         b.add_event_cb((lambda d: (lambda e: self._on_chip(d)))(spec['device']),
                        lv.EVENT.CLICKED, None)
         if spec['device'] == 'internal':
-            # live voice meter along the chip's bottom edge (the router knows
-            # exactly how many internal voices are sounding -- see
-            # forwarder.live_voices); updated by _start_meter's tick.
-            bar = lv.obj(b)
-            bar.set_size(1, 4)
-            dk._flat(bar, radius=2, bg=dk.GREEN)
-            bar.align(lv.ALIGN.BOTTOM_LEFT, 6, -2)
+            # Live meter along the chip's bottom edge, with an ALWAYS-VISIBLE
+            # track so the meter is discoverable at idle (the first cut's bare
+            # 4px bar was invisible until something played). Driven by AMY's
+            # real output level on firmware with tulip.amy_level(), else by
+            # voices-in-use (forwarder.live_voices). _start_meter ticks it.
+            dot.align(lv.ALIGN.LEFT_MID, 8, -5)
+            lb.align(lv.ALIGN.LEFT_MID, 24, -5)
+            track = lv.obj(b)
+            track.set_size(cw - 14, 8)
+            dk._flat(track, radius=4, bg=dk.BG)
+            track.remove_flag(lv.obj.FLAG.SCROLLABLE)
+            track.align(lv.ALIGN.BOTTOM_MID, 0, -3)
+            bar = lv.obj(track)
+            bar.set_size(1, 8)
+            dk._flat(bar, radius=4, bg=dk.GREEN)
+            bar.remove_flag(lv.obj.FLAG.SCROLLABLE)
+            bar.align(lv.ALIGN.LEFT_MID, 0, 0)
             self._chip_live.append(
                 {'bar': bar, 'dot': dot, 'base': dotcol,
-                 'cap': max(1, spec.get('capacity', 32)), 'w': cw - 12,
-                 'lastw': 1, 'flick': False})
+                 'cap': max(1, spec.get('capacity', 32)), 'w': cw - 14,
+                 'lastw': 1, 'flick': False, 'disp': 0.0})
         return b
 
     def _on_chip(self, device):
@@ -373,11 +384,30 @@ class HomeShell:
             return True    # can't tell: keep ticking (the old behavior)
 
     # ----- live chip meter ------------------------------------------------
+    def _meter_fraction(self):
+        """0..1 for the chip meter: AMY's real output peak when the firmware
+        has the tap (tulip.amy_level -- sqrt for a perceptual curve), else
+        voices-in-use / capacity as the fallback."""
+        if self._has_level is None:
+            self._has_level = hasattr(tulip, 'amy_level')
+        if self._has_level:
+            try:
+                lvl = tulip.amy_level()
+                return (lvl ** 0.5) if lvl > 0 else 0.0
+            except Exception:
+                self._has_level = False
+        try:
+            import forwarder
+            cap = self._chip_live[0]['cap'] if self._chip_live else 32
+            return min(1.0, forwarder.live_voices() / cap)
+        except Exception:
+            return 0.0
+
     def _start_meter(self):
-        """A ~4 Hz tick painting live state into the chips: voice-meter bar
-        width (internal AMY) + a MIDI-activity flicker on the dot. Dirty
-        regions are a few hundred pixels, unchanged frames are skipped, and
-        the tick pauses whenever Home isn't the presented screen."""
+        """A 10 Hz tick painting live state into the chips: a level bar
+        (audio peak or voice count) + a MIDI-activity flicker on the dot.
+        Dirty regions are a few hundred pixels, unchanged frames are skipped,
+        and the tick pauses whenever Home isn't the presented screen."""
         if self._meter_running or not self._alive:
             return
         self._meter_running = True
@@ -389,22 +419,25 @@ class HomeShell:
             if not self._home_presented():
                 self._meter_running = False   # resumed by _on_activate
                 return
+            frac = self._meter_fraction()
             try:
                 import forwarder
-                v = forwarder.live_voices()
                 a = forwarder.activity()
             except Exception:
-                v, a = 0, self._last_act
+                a = self._last_act
             active = (a != self._last_act)
             self._last_act = a
             for m in self._chip_live:
                 try:
-                    bw = max(1, min(m['w'], int(m['w'] * v / m['cap'])))
+                    # VU-style fall: jump up instantly, drift down (~1s full-
+                    # scale) so short notes still register visually
+                    m['disp'] = frac if frac > m['disp'] else max(0.0, m['disp'] - 0.10)
+                    bw = max(1, min(m['w'], int(m['w'] * m['disp'])))
                     if bw != m['lastw']:
                         m['bar'].set_width(bw)
                         m['bar'].set_style_bg_color(
-                            dk.c(dk.RED if v >= m['cap'] * 0.9 else
-                                 (dk.ORANGE if v >= m['cap'] * 0.7
+                            dk.c(dk.RED if m['disp'] >= 0.9 else
+                                 (dk.ORANGE if m['disp'] >= 0.7
                                   else dk.GREEN)), 0)
                         m['lastw'] = bw
                     if active != m['flick']:
@@ -415,9 +448,9 @@ class HomeShell:
                 except Exception:
                     self._meter_running = False
                     return       # chips rebuilt/deleted; refresh restarts us
-            tulip.defer(_tick, 0, 250)
+            tulip.defer(_tick, 0, 100)
         try:
-            tulip.defer(_tick, 0, 250)
+            tulip.defer(_tick, 0, 100)
         except Exception:
             self._meter_running = False
 

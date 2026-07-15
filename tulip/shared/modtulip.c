@@ -352,6 +352,21 @@ STATIC mp_obj_t tulip_num_midi_devices(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_num_midi_devices_obj, tulip_num_midi_devices);
 
+// tulip.amy_level() -- AMY's output peak (0..1) since the last call, for UI
+// level meters (amy_get_level is a peak-hold that resets on read). The deck
+// also probes hasattr(tulip, 'amy_level') as its level-meter capability check.
+#ifndef AMY_IS_EXTERNAL
+extern float amy_get_level(void);
+#endif
+STATIC mp_obj_t tulip_amy_level(void) {
+#ifndef AMY_IS_EXTERNAL
+    return mp_obj_new_float((mp_float_t)amy_get_level());
+#else
+    return mp_obj_new_float((mp_float_t)0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_level_obj, tulip_amy_level);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
 // AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
@@ -1754,6 +1769,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
