@@ -197,10 +197,14 @@ class FxEditor(ParamEditor):
                          on_change=on_change, show_advanced=True,
                          group_headers=group_headers)
         self.device = device
+        # FX the active patch itself applies: sliders must start from what is
+        # actually sounding (a juno's chorus), not from zeros the user then
+        # "lowers" in confusion.
+        self._pfx = amyparams.device_patch_fx(device)
 
     def _get(self, d):
-        v = deckcfg.device_fx(self.device).get(d['bus'], {}).get(d['name'])
-        return v if v is not None else d['default']
+        return amyparams.fx_value(deckcfg.device_fx(self.device), self._pfx,
+                                  d['bus'], d['name'])
 
     def _set(self, d, value, flush=True):
         deckcfg.set_device_fx(self.device, d['bus'], d['name'], value,

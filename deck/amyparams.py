@@ -368,20 +368,71 @@ def synth_send_calls(params):
     return calls
 
 
-def fx_calls(fx):
-    """Given a device's stored FX overrides, return [(bus, kwargs)] for the
-    fn-applied buses amy.reverb()/chorus()/echo(). Only buses the user has
-    actually touched are emitted: patch strings set their own FX (juno
-    patches configure chorus/EQ as part of their sound), so sending our
-    level-0 defaults for untouched buses stripped the patch's character --
-    boot sounded like a Juno, then the UI loaded and dried it into an EP.
-    Missing values within a touched bus still fall back to defaults."""
+def patch_fx(patch):
+    """FX values the baked patch string itself applies in AMY (chorus/EQ for
+    the junos, etc.), from the generated patchfx table. {} = none/unknown."""
+    try:
+        import patchfx
+        return patchfx.patch_fx(patch)
+    except Exception:
+        return {}
+
+
+def device_patch_fx(device):
+    """The patch-applied FX context for a device's FX panel/router apply:
+    the ACTIVE instrument's patch if it lives on this device, else the first
+    enabled internal instrument's. (FX buses are global per device, so with
+    layered instruments AMY holds the last-loaded patch's values; the active
+    instrument is the least surprising stand-in.)"""
+    if device != 'internal':
+        return {}
+    try:
+        import deckcfg
+        cfg = deckcfg.load()
+        cand = [deckcfg.get_instrument(deckcfg.active_instrument())]
+        cand += cfg.get('instruments', [])
+        for ins in cand:
+            if (ins and ins.get('device') == 'internal'
+                    and ins.get('enabled', True)
+                    and ins.get('type', 'juno6') in ('juno6', 'dx7', 'piano')):
+                return patch_fx(ins.get('patch', 0))
+    except Exception:
+        pass
+    return {}
+
+
+def _merge_fx(fx, pfx):
+    """Layer: defaults < patch-applied values < user overrides. Returns
+    (merged, touched-bus-set). Patch strings set their own FX (juno patches
+    configure chorus/EQ as part of their sound), so both the editor and the
+    apply path must treat the PATCH values -- not zeros -- as the baseline;
+    zeroing untouched buses is what dried the boot Juno into an EP."""
     merged = default_fx()
+    for bus, vals in (pfx or {}).items():
+        if bus in merged and isinstance(vals, dict):
+            merged[bus].update(vals)
     touched = set()
     for bus, vals in (fx or {}).items():
         if bus in merged and isinstance(vals, dict) and vals:
             merged[bus].update(vals)
             touched.add(bus)
+    return merged, touched
+
+
+def fx_value(fx, pfx, bus, name):
+    """One effective FX value for the editor: user > patch > default."""
+    merged, _ = _merge_fx(fx, pfx)
+    return merged[bus][name]
+
+
+def fx_calls(fx, pfx=None):
+    """Given a device's stored FX overrides (and the active patch's own FX
+    as the baseline), return [(bus, kwargs)] for amy.reverb()/chorus()/
+    echo(). Only user-touched buses are emitted -- the patch already applied
+    its own values when it loaded -- but within a touched bus the unset
+    fields keep the PATCH's values, not defaults (nudging chorus level must
+    not reset the patch's rate/depth)."""
+    merged, touched = _merge_fx(fx, pfx)
     out = []
     for bus in FX_BUSES:
         if bus not in touched:
@@ -391,11 +442,12 @@ def fx_calls(fx):
     return out
 
 
-def fx_eq_string(fx):
+def fx_eq_string(fx, pfx=None):
     """The device's EQ as an amy.send(eq=...) string 'low,mid,high', or None
-    when the user never set EQ (leave the patch's own EQ alone)."""
+    when the user never set EQ (leave the patch's own EQ alone). User values
+    layer over the patch's own EQ, not over zeros."""
     if not (fx and isinstance(fx.get('eq'), dict) and fx['eq']):
         return None
-    eq = default_fx()['eq']
-    eq.update(fx['eq'])
+    merged, _ = _merge_fx(fx, pfx)
+    eq = merged['eq']
     return "%s,%s,%s" % (_fmt(eq['low']), _fmt(eq['mid']), _fmt(eq['high']))

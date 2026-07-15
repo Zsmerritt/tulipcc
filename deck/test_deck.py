@@ -918,6 +918,34 @@ def test_fx_calls_map_to_amy_kwargs():
     assert 'eq' not in calls
 
 
+def test_fx_layering_patch_values_are_the_baseline():
+    import amyparams as ap
+    pfx = {'chorus': {'level': 1, 'freq': 0.83, 'depth': 0.5}}
+    # editor shows the patch's value when the user never touched the bus
+    assert ap.fx_value({}, pfx, 'chorus', 'level') == 1
+    assert ap.fx_value({}, pfx, 'chorus', 'freq') == 0.83
+    # a user override wins...
+    assert ap.fx_value({'chorus': {'level': 0.2}}, pfx, 'chorus', 'level') == 0.2
+    # ...and the resulting SEND keeps the patch's other fields, not defaults
+    calls = dict(ap.fx_calls({'chorus': {'level': 0.2}}, pfx))
+    assert calls['chorus']['level'] == 0.2 and calls['chorus']['freq'] == 0.83
+    # untouched bus still not sent even though the patch sets it
+    assert dict(ap.fx_calls({}, pfx)) == {}
+    # eq: user layer over patch values
+    pfx2 = {'eq': {'low': 7, 'mid': -3, 'high': -3}}
+    assert ap.fx_eq_string({}, pfx2) is None
+    assert ap.fx_eq_string({'eq': {'low': 0}}, pfx2) == '0,-3,-3'
+
+
+def test_patchfx_table():
+    import patchfx
+    # juno chorus II patches carry level 1 / rate 0.83
+    assert any(v.get('chorus', {}).get('freq') == 0.83
+               for v in patchfx.FX.values())
+    assert patchfx.patch_fx(103)['eq'] == {'low': -15, 'mid': 8, 'high': 8}
+    assert patchfx.patch_fx(9999) == {}
+
+
 # --- D2: EQ-as-device-FX + FX defs + live re-apply ---
 def test_eq_is_device_fx_not_synth_param():
     import amyparams as ap

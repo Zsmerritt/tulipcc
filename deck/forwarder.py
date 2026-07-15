@@ -179,7 +179,8 @@ def _apply_device_fx(cfg, synth_nums):
     except Exception:
         return
     fx = deckcfg.device_fx('internal', cfg)
-    for bus, kw in amyparams.fx_calls(fx):
+    pfx = amyparams.device_patch_fx('internal')   # patch-applied baseline
+    for bus, kw in amyparams.fx_calls(fx, pfx):
         fn = getattr(amy, bus, None)
         if fn is not None:
             try:
@@ -189,7 +190,7 @@ def _apply_device_fx(cfg, synth_nums):
     if synth_nums:
         try:
             amy.send(synth=synth_nums[0], bus=0)   # ensure it's on the device FX bus
-            eq = amyparams.fx_eq_string(fx)
+            eq = amyparams.fx_eq_string(fx, pfx)
             if eq is not None:                     # None = user never set EQ
                 amy.send(synth=synth_nums[0], eq=eq)
         except Exception:
