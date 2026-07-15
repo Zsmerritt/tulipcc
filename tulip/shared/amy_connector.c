@@ -444,6 +444,10 @@ static const void *mount_fonts_range(const esp_partition_t *part,
     if (err != ESP_OK || map == NULL) {
         fprintf(stderr, "gm: %s mmap failed (%d): need %u, largest free vaddr block %u\n",
                 what, (int)err, (unsigned)size, (unsigned)free_blk);
+        // Name every occupant of the vaddr space: the free pool measures ~6MB
+        // smaller than the PSRAM+rodata ledger predicts, and whatever holds
+        // the difference decides how the three PCM maps ever fit together.
+        esp_mmu_map_dump_mapped_blocks(stdout);
         return NULL;
     }
     return map;
@@ -464,6 +468,13 @@ static void mount_gm_fonts(void) {
                                         part->size - GM_BIG_BYTE_OFFSET, "big bank");
     if (big != NULL)
         amy_set_gm_big_pcm((const int16_t *)big);
+}
+
+static void mount_gm_fonts_small(void) {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
+    if (part == NULL)
+        return;
     const void *small = mount_fonts_range(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
     if (small != NULL)
         amy_set_gm_pcm((const int16_t *)small);
@@ -508,14 +519,17 @@ void run_amy(uint8_t midi_out_pin) {
 #ifndef AMYBOARD
     amy_config.features.startup_bleep = 1;
 #endif
-// Mount order matters: the fonts partition's big bank needs a 9.5MB
-// contiguous vaddr block out of a pool barely larger -- it goes first,
-// before the drums map can split the pool.
+// Mount order = size order (big bank, drums, GeneralUser): the pool is
+// tight enough that the largest map must allocate first, and if something
+// has to lose, it must not be the Kits (drums) the deck already ships.
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
     mount_gm_fonts();
 #endif
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
     mount_gamma9001_drums();
+#endif
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+    mount_gm_fonts_small();
 #endif
     amy_start(amy_config);
     external_map = malloc_caps(amy_config.max_oscs, MALLOC_CAP_INTERNAL);
