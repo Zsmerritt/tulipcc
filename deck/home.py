@@ -33,13 +33,20 @@ def _reset():
                _do, yes_text="Reset")
 
 
-def _open_rack(shell):
-    # The Instruments rack (list of all instruments; tap a row to edit).
-    import rack
-    if sm.open_panel_action(shell.top_key(), 'rack') == 'rebuild':
-        shell.rebuild_top(rack.panel, "Instruments", key='rack')
+def _open_settings(shell):
+    import settings
+    if sm.open_panel_action(shell.top_key(), 'settings') == 'rebuild':
+        shell.rebuild_top(settings.panel, "Settings", key='settings')
     else:
-        shell.push(rack.panel, "Instruments", key='rack')
+        shell.push(settings.panel, "Settings", key='settings')
+
+
+def _open_files(shell):
+    import files
+    if sm.open_panel_action(shell.top_key(), 'files') == 'rebuild':
+        shell.rebuild_top(files.panel, "Files", key='files')
+    else:
+        shell.push(files.panel, "Files", key='files')
 
 
 def _open_devices(shell):
@@ -119,12 +126,15 @@ _APPS = [
 def _open_system(shell):
     # System is the catch-all: Files + Apps (nested) + device config. Built inline
     # so it can reference _open_apps (defined below) at call time.
+    # Settings/Files open as SHELL PANELS now (S3): same Back/breadcrumb as
+    # everything else, and a crash shows the shell's panel-error label instead
+    # of silently bouncing (the way Settings died in UX-REVIEW-6 C1).
     items = [
-        ("Files",    "run",   "files",    dk.GREEN),
-        ("Apps",     "panel", _open_apps, dk.PURPLE),
-        ("Settings", "run",   "settings", dk.GREEN),
-        ("Terminal", "call",  _terminal,  dk.GRAY),
-        ("Reset",    "call",  _reset,     dk.RED),
+        ("Files",    "panel", _open_files,    dk.GREEN),
+        ("Apps",     "panel", _open_apps,     dk.PURPLE),
+        ("Settings", "panel", _open_settings, dk.GREEN),
+        ("Terminal", "call",  _terminal,      dk.GRAY),
+        ("Reset",    "call",  _reset,         dk.RED),
     ]
     _open_submenu(shell, "System", 'system', items)
 
@@ -136,24 +146,10 @@ def _open_apps(shell):
     _open_submenu(shell, "Apps", 'apps', items)
 
 
-# Home tiles (~6). Two open submenus via the panel stack.
-# (label, kind, target, color)
-#   kind 'run'   -> tulip.run(target)
-#   kind 'call'  -> target()
-#   kind 'panel' -> target(_shell)  (opens an in-shell panel / submenu)
-_BUILTIN = [
-    ("Instruments", "panel", _open_rack,    dk.ACCENT),
-    ("Devices",     "panel", _open_devices, dk.TEAL),
-    ("System",      "panel", _open_system,  dk.GRAY),   # Files + Apps + config live here
-]
-
-_actions = {}
-
-
 def _discover_user():
     import os
     apps = []
-    known = {lbl for (lbl, _, _, _) in _BUILTIN}
+    known = {'Instruments', 'Devices', 'System'}
     try:
         entries = sorted(os.listdir('/user'))
     except OSError:
@@ -183,77 +179,46 @@ def _discover_user():
     return apps
 
 
-def _cb(e):
-    if e.get_code() != lv.EVENT.CLICKED:
-        return
-    label = e.get_target_obj().get_child(0).get_text()
-    act = _actions.get(label)
-    if act is None:
-        return
-    kind, target = act
-    if kind == 'run':
-        tulip.run(target)
-    elif kind == 'panel':
-        if _shell is not None:
-            target(_shell)
-    else:
-        target()
-
-
-def _tile(parent, label, color, subtitle=None):
-    b = lv.button(parent)
-    b.set_size(300, 150)     # larger tiles fill the panel + are easier to hit
-    dk._flat(b, radius=18, bg=color)
-    lb = lv.label(b)
-    lb.set_text(label)
-    lb.set_style_text_color(dk.c(dk.WHITE), 0)
-    lb.set_style_text_font(dk.FONT_L, 0)
-    if subtitle:
-        lb.align(lv.ALIGN.TOP_LEFT, 18, 18)
-        sub = lv.label(b)
-        sub.set_text(subtitle)
-        sub.set_style_text_color(dk.c(dk.WHITE), 0)
-        sub.set_style_text_font(dk.FONT_S, 0)
-        sub.align(lv.ALIGN.BOTTOM_LEFT, 18, -18)
-    else:
-        lb.align(lv.ALIGN.TOP_LEFT, 18, 18)
-    b.add_event_cb(_cb, lv.EVENT.CLICKED, None)
+def _root_footer(shell):
+    """The bottom entries of the rack-as-home root: Devices + System, side by
+    side. (Devices is also always one chip-tap away in the top bar.)"""
+    def footer(body):
+        r = lv.obj(body)
+        r.set_width(lv.pct(100))
+        r.set_height(64)
+        r.set_style_border_width(0, 0)
+        r.set_style_pad_all(0, 0)
+        r.set_style_bg_opa(lv.OPA.TRANSP, 0)
+        r.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        r.set_flex_flow(lv.FLEX_FLOW.ROW)
+        r.set_style_pad_column(12, 0)
+        r.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER,
+                         lv.FLEX_ALIGN.CENTER)
+        for label, opener, color in (("Devices", _open_devices, dk.TEAL),
+                                     ("System", _open_system, dk.GRAY)):
+            b = dk.button(r, label, w=470, h=60, bg=color, font=dk.FONT_M)
+            b.add_event_cb((lambda op: (lambda e: (op(shell)
+                            if e.get_code() == lv.EVENT.CLICKED else None)))(opener),
+                           lv.EVENT.CLICKED, None)
+    return footer
 
 
 def _build_root(parent, shell):
-    # The root panel: a wrapping grid of app tiles. `parent` is a full-size
-    # scrollable panel supplied by the shell.
-    parent.set_flex_flow(lv.FLEX_FLOW.ROW_WRAP)
-    parent.set_style_pad_all(24, 0)
-    parent.set_style_pad_row(20, 0)
-    parent.set_style_pad_column(20, 0)
-    parent.set_scroll_dir(lv.DIR.VER)
-    # Center the grid so the tiles use the panel instead of clustering top-left.
-    try:
-        parent.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER,
-                              lv.FLEX_ALIGN.CENTER)
-    except Exception:
-        pass
-
-    # Root tiles are the fixed six; discovered /user apps live under Apps.
-    # per-tile subtitles (Devices shows the live board count)
-    subs = {}
-    try:
-        import deckcfg
-        subs['Devices'] = sm.devices_subtitle(deckcfg.device_list())
-    except Exception:
-        pass
-
-    _actions.clear()
-    for label, kind, target, color in _BUILTIN:
-        _actions[label] = (kind, target)
-        _tile(parent, label, color, subs.get(label))
+    # S1: Home IS the rack. The screen a performer glances at (instruments,
+    # their sounds, enable switches) is the root, not a tile grid one level up
+    # -- patch changes drop from four taps to three, and the root shows state
+    # instead of navigation. Devices/System live in a footer row (and the
+    # top-bar chips still open Devices).
+    import rack
+    rack.panel(parent, shell, footer=_root_footer(shell))
 
 
 def run(screen):
     global _shell
-    _shell = homeshell.HomeShell(screen, root_title="Home")
+    _shell = homeshell.HomeShell(screen, root_title="Instruments")
     _shell.on_chip = _open_devices_chip
-    _shell.push(_build_root, "Home")
+    # key='rack' so rack's own "am I on top?" checks (_do_remove's rebuild,
+    # open_panel_action) treat the root as the rack panel it is.
+    _shell.push(_build_root, "Instruments", key='rack')
     screen.present()
     return _shell

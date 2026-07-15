@@ -262,34 +262,78 @@ def _rebuild():
                             color=(dk.GREEN if on else dk.MUTED), font=dk.FONT_S)
     dk.switch(r, on, _switch_enabled)
 
+    # S2: two-column pairs on the landscape panel, so the whole MPE config
+    # fits without scrolling. Sliders get a card each (title stacked above the
+    # track so the track keeps its width).
+    cw = (w - 48 - 16) // 2
     dep = []
-    r = dk.row(body, h=92)
-    dep.append(r)
-    col = _vcol(r, "Member channels")
-    _w['mlabel'] = dk.label(col, "%d channels" % m.get('members', 15),
-                            color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(r, m.get('members', 15), 1, 15, w=360, cb=_members_cb,
-              color=dk.ACCENT, on_release=_members_done)
 
-    r = dk.row(body, h=92)
-    dep.append(r)
-    col = _vcol(r, "Pitch bend range")
-    _w['blabel'] = dk.label(col, "+/- %d semitones" % m.get('bend', 48),
-                            color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(r, m.get('bend', 48), 1, 96, w=360, cb=_bend_cb, color=dk.ORANGE,
-              on_release=_bend_done)
+    def _pair():
+        p = lv.obj(body)
+        p.set_width(lv.pct(100))
+        p.set_height(lv.SIZE_CONTENT)
+        p.set_style_border_width(0, 0)
+        p.set_style_pad_all(0, 0)
+        p.set_style_bg_opa(lv.OPA.TRANSP, 0)
+        p.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        p.set_flex_flow(lv.FLEX_FLOW.ROW)
+        p.set_style_pad_column(16, 0)
+        return p
 
-    r = dk.row(body, h=92)
+    def _slider_card(pair, title, sub, value, vmin, vmax, cb, done, color):
+        card = lv.obj(pair)
+        card.set_size(cw, 110)
+        dk._flat(card, radius=16, bg=dk.SURFACE)
+        card.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        card.set_style_pad_all(0, 0)
+        dk.label(card, title, color=dk.TEXT, font=dk.FONT_M).align(
+            lv.ALIGN.TOP_LEFT, 20, 12)
+        lab = dk.label(card, sub, color=dk.MUTED, font=dk.FONT_S)
+        lab.align(lv.ALIGN.TOP_RIGHT, -20, 16)
+        s = dk.slider(card, value, vmin, vmax, w=cw - 48, cb=cb, color=color,
+                      h=24, on_release=done)
+        s.align(lv.ALIGN.BOTTOM_MID, 0, -18)
+        return card, lab
+
+    p = _pair()
+    card, _w['mlabel'] = _slider_card(p, "Member channels",
+                                      "%d channels" % m.get('members', 15),
+                                      m.get('members', 15), 1, 15,
+                                      _members_cb, _members_done, dk.ACCENT)
+    dep.append(card)
+    card, _w['blabel'] = _slider_card(p, "Pitch bend range",
+                                      "+/- %d semitones" % m.get('bend', 48),
+                                      m.get('bend', 48), 1, 96,
+                                      _bend_cb, _bend_done, dk.ORANGE)
+    dep.append(card)
+
+    p = _pair()
+    r = lv.obj(p)
+    r.set_size(cw, 92)
+    dk._flat(r, radius=16, bg=dk.SURFACE)
+    r.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    r.set_style_pad_hor(20, 0)
+    r.set_flex_flow(lv.FLEX_FLOW.ROW)
+    r.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER,
+                     lv.FLEX_ALIGN.CENTER)
     dep.append(r)
     col = _vcol(r, "Listen channel")
+    col.set_size(180, 60)
     _w['chlabel'] = dk.label(col, "Zone: %s" %
                              ("upper" if instr.get('channel', 1) == 16
                               else "lower"), color=dk.MUTED, font=dk.FONT_S)
-    dk.stepper(r, instr.get('channel', 1), 1, 16, _channel_cb, fmt="Channel %d",
-               w=230)
+    dk.stepper(r, instr.get('channel', 1), 1, 16, _channel_cb, fmt="Ch %d",
+               w=210)
 
     # Per-note expression -> a deeper sub-panel (push) in the shell.
-    r = dk.row(body)
+    r = lv.obj(p)
+    r.set_size(cw, 92)
+    dk._flat(r, radius=16, bg=dk.SURFACE)
+    r.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    r.set_style_pad_hor(20, 0)
+    r.set_flex_flow(lv.FLEX_FLOW.ROW)
+    r.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER,
+                     lv.FLEX_ALIGN.CENTER)
     dep.append(r)
     dk.label(r, "Per-note expression", color=dk.TEXT)
     nav = dk.button(r, "Edit  " + _sym('RIGHT', ">"), w=150, h=52,

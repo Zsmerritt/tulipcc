@@ -26,21 +26,51 @@ def _is_dir(path):
         return False
 
 
+# Guard rails: the firmware editor chokes on binary / huge files (the "crashed
+# when I opened certain files" report), and Run only makes sense for .py.
+_TEXT_EXT = ('.py', '.txt', '.json', '.md', '.log', '.cfg', '.ini', '.csv')
+_EDIT_MAX = 131072      # bytes; bigger than any deck file, smaller than trouble
+
+
+def _editable(path):
+    n = path.lower()
+    if not any(n.endswith(x) for x in _TEXT_EXT):
+        return False
+    try:
+        return os.stat(path)[6] <= _EDIT_MAX
+    except OSError:
+        return False
+
+
+def _toast(msg, color=None):
+    scr = _s.get('screen')
+    if scr is not None:
+        try:
+            dk.toast(scr, msg, color if color is not None else dk.ORANGE)
+        except Exception:
+            pass
+
+
+def _set_btn(k, on):
+    b = _s.get(k)
+    if b is None:
+        return
+    try:
+        b.set_style_opa(255 if on else 102, 0)
+        if on:
+            b.remove_state(lv.STATE.DISABLED)
+        else:
+            b.add_state(lv.STATE.DISABLED)
+    except Exception:
+        pass
+
+
 def _set_actions(on):
     # Dim AND disable Run/Edit/Delete when nothing is selected -- they looked
     # armed with no selection (UX-REVIEW-6 L5; the old lv.OPA._40 attribute
     # doesn't exist on this build, so the dim silently never applied).
     for k in ('run', 'edit', 'delbtn'):
-        b = _s.get(k)
-        if b is not None:
-            try:
-                b.set_style_opa(255 if on else 102, 0)
-                if on:
-                    b.remove_state(lv.STATE.DISABLED)
-                else:
-                    b.add_state(lv.STATE.DISABLED)
-            except Exception:
-                pass
+        _set_btn(k, on)
 
 
 def _update_up():
@@ -72,7 +102,10 @@ def _select(path, name, btn):
     _s['selname'].set_text(name)
     _s['delbtn'].get_child(0).set_text("Delete")
     _s['delbtn'].set_style_bg_color(dk.c(dk.SURFACE2), 0)
-    _set_actions(True)
+    # per-file capability: Run only for .py, Edit only for small text files
+    _set_btn('run', path.endswith('.py'))
+    _set_btn('edit', _editable(path))
+    _set_btn('delbtn', True)
 
 
 def _open(path):
@@ -134,15 +167,28 @@ def _run_cb(e):
     if not _s.get('sel'):
         return
     name = _s['sel'].rsplit('/', 1)[-1]
-    if name.endswith('.py'):
+    if not name.endswith('.py'):
+        _toast("Only .py files can run")
+        return
+    try:
         import upysh
         upysh.cd(_s['path'])
         tulip.run(name[:-3])
+    except Exception as ex:
+        _toast("Run failed: %r" % ex, dk.RED)
 
 
 def _edit_cb(e):
-    if _s.get('sel'):
-        tulip.edit(_s['sel'])
+    p = _s.get('sel')
+    if not p:
+        return
+    if not _editable(p):
+        _toast("Only small text files can be edited")
+        return
+    try:
+        tulip.edit(p)
+    except Exception as ex:
+        _toast("Edit failed: %r" % ex, dk.RED)
 
 
 def _delete_cb(e):
@@ -166,25 +212,27 @@ def _up_cb(e):
         _open(p.rsplit('/', 1)[0] or '/')
 
 
-def run(screen):
-    dk.frame(screen, "Files", "browse /user")
-    _s.clear()
+def _build(base, w, h, top, screen):
+    """Everything below the title: path + Up, the file list, the action bar.
+    `base` is either a shell panel (panel mode) or screen.group (standalone);
+    (w, h) is the drawable area, `top` where content starts."""
     _s['path'] = '/user'
+    _s['screen'] = screen     # toast host
 
-    # header controls (top-right area is clear of task bar? put on left under title)
-    _s['pathlbl'] = dk.label(screen.group, "/user", 300, 40, color=dk.MUTED, font=dk.FONT_S)
-    _s['upbtn'] = dk.button(screen.group, lv.SYMBOL.UP + " Up", w=110, h=44,
+    _s['pathlbl'] = dk.label(base, "/user", 24, top + 12, color=dk.MUTED,
+                             font=dk.FONT_S)
+    _s['upbtn'] = dk.button(base, lv.SYMBOL.UP + " Up", w=110, h=44,
         bg=dk.SURFACE2, font=dk.FONT_S, cb=_up_cb)
-    _s['upbtn'].set_pos(470, 30)
+    _s['upbtn'].set_pos(w - 24 - 110, top)
 
-    _s['body'] = dk.scroll_body(screen, top=118)
-    # leave room for the action bar
-    _s['body'].set_height(tulip.screen_size()[1] - 118 - 88)
+    body = dk.scroll_col(base, w - 48, h - top - 56 - 88)
+    body.set_pos(24, top + 52)
+    _s['body'] = body
 
     # action bar
-    bar = lv.obj(screen.group)
-    bar.set_size(tulip.screen_size()[0] - 48, 64)
-    bar.set_pos(24, tulip.screen_size()[1] - 76)
+    bar = lv.obj(base)
+    bar.set_size(w - 48, 64)
+    bar.set_pos(24, h - 76)
     dk._flat(bar, radius=16, bg=dk.SURFACE)
     bar.set_style_pad_hor(16, 0)
     bar.set_flex_flow(lv.FLEX_FLOW.ROW)
@@ -198,4 +246,22 @@ def run(screen):
     _set_actions(False)     # nothing selected yet
     _update_up()            # hide Up at the /user root
     _refresh()
+
+
+def panel(parent, shell=None):
+    """Files as a shell panel (S3): shell Back/breadcrumb + the panel-error
+    safety net; standalone chrome retired from the main path."""
+    import homeshell
+    _s.clear()
+    w, H = tulip.screen_size()
+    _build(parent, w, H - homeshell.BAR_H, 8,
+           shell.screen if shell is not None else None)
+
+
+def run(screen):
+    # standalone (REPL launcher) -- same content under a frame header
+    _s.clear()
+    dk.frame(screen, "Files", "browse /user")
+    w, H = tulip.screen_size()
+    _build(screen.group, w, H, 118, screen)
     screen.present()

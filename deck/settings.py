@@ -69,6 +69,25 @@ def run(screen):
 def _run(screen):
     dk.frame(screen, "Settings", "device configuration")
     body = dk.scroll_body(screen)
+    _build(body, screen)
+    screen.handle_keyboard = True
+    screen.present()
+
+
+def panel(parent, shell=None):
+    """Settings as a SHELL PANEL (S3): same Back/breadcrumb as every other
+    panel, and a build failure shows the shell's panel-error label instead of
+    silently bouncing (how C1 hid). The standalone run() stays for the
+    launcher menu."""
+    import homeshell
+    w, h = tulip.screen_size()
+    body = dk.scroll_col(parent, w - 48, h - homeshell.BAR_H - 16)
+    body.set_pos(24, 8)
+    _build(body, shell.screen if shell is not None else None)
+
+
+def _build(body, screen):
+    # `screen` hosts the toasts (the shell's screen in panel mode).
     cfg = deckcfg.load()
 
     # --- Wi-Fi ---
@@ -203,9 +222,6 @@ def _run(screen):
         cb=lambda e: tulip.run('calib'))
     dk.button(g, "Upgrade", w=140, h=48, bg=dk.PURPLE, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
-
-    screen.handle_keyboard = True
-    screen.present()
 
 
 def _apply_partial(v):

@@ -28,9 +28,13 @@ def _panel_h():
 
 
 # ---------------- rack list ----------------
-def panel(parent, shell=None):
+def panel(parent, shell=None, footer=None):
+    """The instruments rack. As of the S1 rework this is also the HOME ROOT
+    (home._build_root wraps it); `footer(body)` lets the root append its
+    Devices/System entries under the Add button."""
     _s['shell'] = shell
     _s['list_parent'] = parent
+    _s['footer'] = footer
     _build_list(parent, shell)
 
 
@@ -56,6 +60,12 @@ def _build_list(parent, shell):
     add.add_event_cb(lambda e: (_add(shell)
                      if e.get_code() == lv.EVENT.CLICKED else None),
                      lv.EVENT.CLICKED, None)
+    f = _s.get('footer')
+    if f is not None:
+        try:
+            f(body)
+        except Exception:
+            pass
 
 
 def _mk_enable(iid):
@@ -289,9 +299,10 @@ def _do_remove():
     sh = _s.get('shell')
     if sh is not None:
         sh.refresh_chips()
+        # back()'s deferred refill rebuilds the revealed rack from its stored
+        # builder -- including the home root's footer (an explicit rebuild_top
+        # with rack.panel here would rebuild the root WITHOUT it).
         sh.back()
-        if sh.top_key() == 'rack':
-            sh.rebuild_top(panel, "Instruments", key='rack')
 
 
 def _remove(e):
@@ -302,6 +313,21 @@ def _remove(e):
     dk.confirm("Remove instrument?",
                "Delete \"%s\"? This can't be undone." % name,
                _do_remove, yes_text="Remove")
+
+
+def _vcol2(parent, cw):
+    """A transparent fixed-width flex column -- one column of the two-column
+    editor layout (S2). dk.row(pct 100) children size to the column."""
+    col = lv.obj(parent)
+    col.set_width(cw)
+    col.set_height(lv.SIZE_CONTENT)
+    col.set_style_border_width(0, 0)
+    col.set_style_pad_all(0, 0)
+    col.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    col.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+    col.set_style_pad_row(12, 0)
+    return col
 
 
 def _build_edit(parent, shell):
@@ -316,9 +342,26 @@ def _build_edit(parent, shell):
     body.set_pos(24, 8)
     iid = instr.get('id')
 
+    # S2: two columns on the landscape panel -- left = identity/routing,
+    # right = sound -- so the editor fits without scrolling instead of
+    # stretching phone-portrait rows across 1024 px.
+    cols = lv.obj(body)
+    cols.set_width(lv.pct(100))
+    cols.set_height(lv.SIZE_CONTENT)
+    cols.set_style_border_width(0, 0)
+    cols.set_style_pad_all(0, 0)
+    cols.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    cols.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    cols.set_flex_flow(lv.FLEX_FLOW.ROW)
+    cols.set_style_pad_column(16, 0)
+    cw = (w - 48 - 16) // 2
+    left = _vcol2(cols, cw)
+    right = _vcol2(cols, cw)
+
+    # --- LEFT column: identity / routing ---
     # Name (rename via the on-screen keyboard) -- so several instruments on one
     # device don't all read the same, and you can tell which you're editing.
-    ncard = lv.obj(body)
+    ncard = lv.obj(left)
     ncard.set_width(lv.pct(100))
     ncard.set_height(76)
     dk._flat(ncard, radius=16, bg=dk.SURFACE)
@@ -327,10 +370,10 @@ def _build_edit(parent, shell):
     dk.label(ncard, "Name", color=dk.TEXT, font=dk.FONT_M).align(
         lv.ALIGN.LEFT_MID, 20, 0)
     nt = dk.text_field(ncard, text=instr.get('name', ''),
-                       placeholder="instrument name", w=460, h=44)
-    nt.group.align(lv.ALIGN.RIGHT_MID, -84, 0)
-    dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=56, h=44, bg=dk.SURFACE2,
-              cb=lambda e: tulip.keyboard()).align(lv.ALIGN.RIGHT_MID, -16, 0)
+                       placeholder="instrument name", w=250, h=44)
+    nt.group.align(lv.ALIGN.RIGHT_MID, -76, 0)
+    dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
+              cb=lambda e: tulip.keyboard()).align(lv.ALIGN.RIGHT_MID, -14, 0)
 
     # Per keystroke: RAM cache only (a full config flash write per keypress was
     # UX-REVIEW-6 M1 -- the exact pattern the perf round outlawed for sliders).
@@ -356,13 +399,13 @@ def _build_edit(parent, shell):
         pass
 
     # Device chooser (internal + each board)
-    r = dk.row(body, h=76)
+    r = dk.row(left, h=76)
     dk.label(r, "Device", color=dk.WHITE)
-    g = dk.hgroup(r, w=w - 260, h=52)
+    g = dk.hgroup(r, w=cw - 150, h=52)
     cur_dev = instr.get('device')
     for d in deckcfg.device_list():
         dev = d['device']
-        bb = dk.button(g, sm.name_short(d['name']), w=100, h=52,
+        bb = dk.button(g, sm.name_short(d['name']), w=96, h=52,
                        bg=(dk.ACCENT if dev == cur_dev else dk.SURFACE2),
                        font=dk.FONT_S)
         bb.add_event_cb((lambda dv: (lambda e: (_set_device(dv)
@@ -370,21 +413,22 @@ def _build_edit(parent, shell):
                         lv.EVENT.CLICKED, None)
 
     # MIDI channel
-    r = dk.row(body, h=76)
+    r = dk.row(left, h=76)
     dk.label(r, "MIDI channel", color=dk.TEXT)
     dk.stepper(r, instr.get('channel', 1), 1, 16, _channel_cb, fmt="Channel %d",
                w=230)
 
     # Voices
-    r = dk.row(body, h=76)
+    r = dk.row(left, h=76)
     _s['vlabel'] = dk.label(r, "%d voices" % instr.get('num_voices', 10),
                             color=dk.TEXT)
-    dk.slider(r, instr.get('num_voices', 10), 1, 32, w=340, cb=_voices_cb,
+    dk.slider(r, instr.get('num_voices', 10), 1, 32, w=250, cb=_voices_cb,
               color=dk.GREEN, on_release=_voices_done)
 
+    # --- RIGHT column: sound ---
     # Type (engine) -> mode switch. Scopes the patch picker + drives the Sound
     # editor (a synth gets Sound tabs; a drum gets the pad list).
-    r = dk.row(body)
+    r = dk.row(right)
     dk.label(r, "Type", color=dk.TEXT)
     nav = dk.button(r, _TYPE_NAMES.get(instr.get('type', 'juno6'), 'Juno-6')
                     + "  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
@@ -392,26 +436,31 @@ def _build_edit(parent, shell):
 
     # Patch (or Kit for drums) -> picker sub-panel
     is_drum = instr.get('type') == 'drums'
-    r = dk.row(body)
+    r = dk.row(right)
     if is_drum:
         import drums_kit
-        dk.label(r, "Kit  " + drums_kit.kit_name(instr.get('kit', 384)),
-                 color=dk.TEXT)
+        pl = dk.label(r, "Kit  " + drums_kit.kit_name(instr.get('kit', 384)),
+                      color=dk.TEXT, w=cw - 240)
     else:
-        dk.label(r, "Patch  " + patches[instr.get('patch', 0)], color=dk.TEXT)
+        pl = dk.label(r, "Patch  " + patches[instr.get('patch', 0)],
+                      color=dk.TEXT, w=cw - 240)
+    try:
+        pl.set_long_mode(lv.label.LONG.DOT)   # long patch names ellipsize
+    except Exception:
+        pass
     nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
     # Sound (per-instrument params) -> ParamEditor sub-panel. Drums have no
     # osc/filter design (per-pad tune/decay is a planned follow-up), so no Sound.
     if not is_drum:
-        r = dk.row(body)
+        r = dk.row(right)
         dk.label(r, "Sound", color=dk.TEXT)
         nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
         nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
 
     # FX -> the OWNING DEVICE's FX bus (shared by all instruments on it)
-    r = dk.row(body)
+    r = dk.row(right)
     dk.label(r, "FX (device)", color=dk.TEXT)
     nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_fx_row, lv.EVENT.CLICKED, None)
@@ -419,14 +468,14 @@ def _build_edit(parent, shell):
     # MPE -> sub-panel, only when the global MPE gate is on (C.4). When off,
     # no MPE button shows and the MPE panel is unreachable.
     if deckcfg.mpe_enabled():
-        r = dk.row(body)
+        r = dk.row(right)
         dk.label(r, "MPE", color=dk.TEXT)
         on = instr.get('mpe', {}).get('enabled')
         nav = dk.button(r, ("On" if on else "Off") + "  >", w=150, h=52,
                         bg=(dk.GREEN if on else dk.SURFACE2), font=dk.FONT_S)
         nav.add_event_cb(_open_mpe, lv.EVENT.CLICKED, None)
 
-    # Remove
+    # Remove -- full width, below both columns
     rm = dk.button(body, "Remove instrument", w=lv.pct(100), h=56, bg=dk.RED,
                    font=dk.FONT_M)
     rm.add_event_cb(_remove, lv.EVENT.CLICKED, None)
