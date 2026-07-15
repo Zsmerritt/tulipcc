@@ -187,7 +187,8 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
         try:
             amy.send(synth=t['synth'], bus=t['bus'])
             base = amyparams.fx_bus_baseline(t['pfx'])
-            amy.send(bus=t['bus'], chorus=base['chorus'], echo=base['echo'])
+            amy.send(bus=t['bus'], chorus=base['chorus'], echo=base['echo'],
+                     reverb_send=t.get('send', 1.0))
             amy.send(synth=t['synth'], eq=base['eq'])
             over = amyparams.fx_send_strings(fx, t['pfx'])
             if over:
@@ -350,7 +351,8 @@ def start():
                            ('juno6', 'dx7', 'piano') else {})
                     _state['fx_targets'].append(
                         {'bus': min(_next_bus, 3), 'synth': sn, 'pfx': pfx,
-                         'iid': instr['id']})
+                         'iid': instr['id'],
+                         'send': instr.get('reverb_send', 1.0)})
                     _next_bus += 1
             route[0].append(instr['id'])
             # MPE only when the global gate AND this instrument both enable it.

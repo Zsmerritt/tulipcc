@@ -506,8 +506,12 @@ def _build_edit(parent, shell):
         pl = dk.label(r, "Kit  " + drums_kit.kit_name(instr.get('kit', 384)),
                       color=dk.TEXT, w=cw - 240)
     else:
-        pl = dk.label(r, "Patch  " + patches[instr.get('patch', 0)],
-                      color=dk.TEXT, w=cw - 240)
+        if instr.get('type') in ('gm', 'gm2'):
+            import gm as _gmnames
+            pname = _gmnames.name(instr.get('patch', 0))
+        else:
+            pname = patches[instr.get('patch', 0)]
+        pl = dk.label(r, "Patch  " + pname, color=dk.TEXT, w=cw - 240)
     try:
         pl.set_long_mode(lv.label.LONG.DOT)   # long patch names ellipsize
     except Exception:
@@ -528,6 +532,29 @@ def _build_edit(parent, shell):
     dk.label(r, "FX (device)", color=dk.TEXT)
     nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_fx_row, lv.EVENT.CLICKED, None)
+
+    # Reverb send: how much of THIS instrument feeds the shared room
+    # (AMY aux-send; 1.0 = classic everything-in-the-room, 0 = dry).
+    if instr.get('device') == 'internal':
+        def _set_send(v, commit):
+            val = v / 100.0
+            if commit:
+                deckcfg.set_instrument(iid, 'reverb_send', val)
+            try:
+                import forwarder
+                for t in (forwarder._state.get('fx_targets') or ()):
+                    if t.get('iid') == iid:
+                        import amy
+                        amy.send(bus=t['bus'], reverb_send=val)
+                        t['send'] = val
+                        break
+            except Exception:
+                pass
+        r = dk.row(right)
+        dk.label(r, "Reverb send", color=dk.TEXT)
+        dk.slider(r, int(instr.get('reverb_send', 1.0) * 100), 0, 100,
+                  w=cw - 260, cb=lambda v: _set_send(v, False),
+                  on_release=lambda v: _set_send(v, True))
 
     # MPE -> sub-panel, only when the global MPE gate is on (C.4). When off,
     # no MPE button shows and the MPE panel is unreachable.
