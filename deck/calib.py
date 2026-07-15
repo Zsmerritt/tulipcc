@@ -107,7 +107,25 @@ def _cancel(e):
     _back()
 
 
+def _retry(e):
+    # Restart the whole capture pass (run() clears state + the screen), so a
+    # botched tap doesn't force Apply-bad-values or a round trip via Settings.
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    run(_st['screen'])
+
+
+def _reactivate(scr):
+    # tulip.run('calib') on a still-running app just RE-PRESENTS its screen --
+    # run() isn't called again, so a finished pass showed its stale result
+    # card forever. The screen's activate_callback fires on every present;
+    # restart fresh if the last pass already ended.
+    if _st.get('stale'):
+        run(scr)
+
+
 def _show_result(nx, ny, cs, old):
+    _st['stale'] = True     # a re-present after this must start a fresh pass
     # Remove every capture-phase widget so the result card stands alone.
     for k in ('capture', 'dot', 'prompt', 'cancel'):
         w = _st.get(k)
@@ -126,8 +144,10 @@ def _show_result(nx, ny, cs, old):
              42, 184, color=dk.MUTED, font=dk.FONT_S)
     dk.button(screen.group, "Apply", w=200, h=64, bg=dk.GREEN,
               cb=_apply).set_pos(42, 240)
+    dk.button(screen.group, "Retry", w=200, h=64, bg=dk.ACCENT,
+              cb=_retry).set_pos(262, 240)
     dk.button(screen.group, "Cancel", w=200, h=64, bg=dk.SURFACE2,
-              cb=_cancel).set_pos(262, 240)
+              cb=_cancel).set_pos(482, 240)
 
 
 def run(screen):
@@ -136,6 +156,10 @@ def run(screen):
     _st['targets'] = _targets()
     _st['samples'] = []
     _st['i'] = 0
+    try:
+        screen.activate_callback = _reactivate
+    except Exception:
+        pass
 
     # Start from a clean slate even if the UIScreen is being re-used (otherwise
     # widgets from a previous calibration pass pile up on top of each other).
