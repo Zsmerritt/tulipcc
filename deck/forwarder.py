@@ -224,6 +224,12 @@ def start():
     _release_synths()
     _state['routes'] = {}
     _state['notes'] = {}
+    # Masters whose MPE zone was configured in AMY's C layer last rebuild.
+    # Zones OUTLIVE the rebuild (AMY keeps grabbing member-channel notes and
+    # applying per-note expression), so any master not re-enabled this pass
+    # must be explicitly cleared or MPE keeps playing with the toggle off.
+    prev_mpe_masters = set(_state.get('mpe_masters') or ())
+    _state['mpe_masters'] = set()
     _state['mpe_members'] = set()
     _state['err_iids'] = set()
     _state['c_channels'] = set()
@@ -326,6 +332,7 @@ def start():
                     _state['mpe_members'].add(mc)
                 try:
                     midi.configure_mpe(members, mpe.get('bend', 48), master=ch)
+                    _state['mpe_masters'].add(ch)
                 except Exception:
                     pass
         else:
@@ -335,6 +342,15 @@ def start():
             except Exception:
                 pass
             route[1].append(dev)
+
+    # Tear down MPE zones that are no longer configured (toggle turned off,
+    # instrument disabled, or master channel moved).
+    if hasattr(midi, 'configure_mpe'):
+        for m in prev_mpe_masters - _state['mpe_masters']:
+            try:
+                midi.configure_mpe(0, master=m)
+            except Exception:
+                pass
 
     _apply_device_fx(cfg, internal_synths)   # internal (Tulip) FX bus
 
