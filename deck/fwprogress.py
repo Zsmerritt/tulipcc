@@ -50,6 +50,10 @@ def show(total, title="Firmware update"):
     dk.label(card, title, 32, 28, color=dk.WHITE, font=dk.FONT_L)
     _s['sub'] = dk.label(card, "Copying firmware to the device...", 32, 74,
                          color=dk.MUTED, font=dk.FONT_S, w=576)
+    # playing MIDI (or anything that makes the console chatty) can disturb
+    # the serial transfer -- warn, since idle hands reach for keys
+    dk.label(card, "Please don't play or touch the deck until this finishes.",
+             32, 96, color=dk.ORANGE, font=dk.FONT_S, w=576)
 
     barw = 640 - 64
     track = lv.obj(card)
