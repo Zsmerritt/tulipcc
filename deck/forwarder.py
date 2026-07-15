@@ -169,30 +169,41 @@ def _apply_params(syn, params):
             pass
 
 
-def _apply_device_fx(cfg, synth_nums):
-    """Apply the internal (Tulip) device's FX bus globally on its AMY:
-    reverb/chorus/echo via the amy.<bus>() fns, and EQ via amy.send(eq=...) to
-    one of the bus's synths. Boards' FX go over the per-board link later."""
+def _apply_device_fx(cfg, targets, prev_buses=()):
+    """Per-instrument FX buses (C.5). Baked patch strings always land their
+    chorus/EQ on AMY bus 0, so with several instruments the LAST-loaded patch
+    used to win for everyone. Each internal synth now renders into its own
+    bus (0..3; a 5th+ instrument shares the last), and after ALL patches have
+    loaded every bus is re-sent its own deterministic baseline -- defaults
+    merged with ITS instrument's patch FX (patchfx table) -- then the user's
+    device-level FX overlay on top. targets = [{'bus','synth','pfx'}...]."""
     try:
         import amy
         import amyparams
     except Exception:
         return
     fx = deckcfg.device_fx('internal', cfg)
-    pfx = amyparams.device_patch_fx('internal')   # patch-applied baseline
-    for bus, kw in amyparams.fx_calls(fx, pfx):
-        fn = getattr(amy, bus, None)
-        if fn is not None:
-            try:
-                fn(**kw)
-            except Exception:
-                pass
-    if synth_nums:
+    for t in targets:
         try:
-            amy.send(synth=synth_nums[0], bus=0)   # ensure it's on the device FX bus
-            eq = amyparams.fx_eq_string(fx, pfx)
+            amy.send(synth=t['synth'], bus=t['bus'])
+            base = amyparams.fx_bus_baseline(t['pfx'])
+            amy.send(bus=t['bus'], chorus=base['chorus'],
+                     reverb=base['reverb'], echo=base['echo'])
+            amy.send(synth=t['synth'], eq=base['eq'])
+            over = amyparams.fx_send_strings(fx, t['pfx'])
+            if over:
+                amy.send(bus=t['bus'], **over)
+            eq = amyparams.fx_eq_string(fx, t['pfx'])
             if eq is not None:                     # None = user never set EQ
-                amy.send(synth=synth_nums[0], eq=eq)
+                amy.send(synth=t['synth'], eq=eq)
+        except Exception:
+            pass
+    # Silence FX on buses that fell out of use -- a stale reverb keeps costing
+    # CPU even when nothing renders into its bus.
+    used = {t['bus'] for t in targets}
+    for b in set(prev_buses) - used:
+        try:
+            amy.send(bus=b, chorus='0', reverb='0', echo='0')
         except Exception:
             pass
 
@@ -210,10 +221,8 @@ def reapply_params(iid):
 
 
 def reapply_fx():
-    """Re-apply the internal device FX bus to the live synths (live audition)."""
-    nums = [n for n in (getattr(s, 'synth', None)
-                        for s in _state['synths'].values()) if n is not None]
-    _apply_device_fx(deckcfg.load(), nums)
+    """Re-apply the per-bus FX to the live synths (live audition)."""
+    _apply_device_fx(deckcfg.load(), _state.get('fx_targets') or [])
 
 
 def start():
@@ -234,6 +243,10 @@ def start():
     prev_mpe_masters = set(_state.get('mpe_masters') or ())
     _state['mpe_masters'] = set()
     _state['mpe_members'] = set()
+    # per-instrument FX bus map, rebuilt each pass (C.5)
+    prev_fx_buses = {t['bus'] for t in (_state.get('fx_targets') or ())}
+    _state['fx_targets'] = []
+    _next_bus = 0
     _state['err_iids'] = set()
     _state['c_channels'] = set()
     _state['has_device_arg'] = None    # re-probe (firmware can't change, but
@@ -317,18 +330,22 @@ def start():
                     except Exception as e:
                         print("forwarder: synth init failed:", e)
                 sn = getattr(syn, 'synth', None)
-                if instr.get('type') == 'drums':
-                    # drums carry no osc/filter params; just route to the FX bus
-                    if sn is not None:
-                        try:
-                            import amy
-                            amy.send(synth=sn, bus=0)
-                        except Exception:
-                            pass
-                else:
+                if instr.get('type') != 'drums':
+                    # (drums carry no osc/filter params)
                     _apply_params(syn, instr.get('params', {}))
                 if sn is not None:
                     internal_synths.append(sn)
+                    # per-instrument FX bus: routing + this patch's FX baseline
+                    # are applied in one deterministic pass after ALL patches
+                    # load (_apply_device_fx) -- see patchfx.py.
+                    import amyparams as _ap
+                    pfx = (_ap.patch_fx(instr.get('patch', 0))
+                           if instr.get('type', 'juno6') in
+                           ('juno6', 'dx7', 'piano') else {})
+                    _state['fx_targets'].append(
+                        {'bus': min(_next_bus, 3), 'synth': sn, 'pfx': pfx,
+                         'iid': instr['id']})
+                    _next_bus += 1
             route[0].append(instr['id'])
             # MPE only when the global gate AND this instrument both enable it.
             if is_mpe and hasattr(midi, 'configure_mpe'):
@@ -360,19 +377,17 @@ def start():
             except Exception:
                 pass
 
-    _apply_device_fx(cfg, internal_synths)   # internal (Tulip) FX bus
+    _apply_device_fx(cfg, _state['fx_targets'], prev_fx_buses)
 
     # Re-assert the configured GLOBAL VOLUME: the synth rebuild resets AMY
     # state, so without this every patch switch reverted volume to the default
     # -- the preset-audition note (and everything after) ignored Settings.
+    # Sent as a 4-slot list: with per-instrument FX buses in play, a single
+    # value would only set bus 0.
     try:
         import amy
         vol = cfg.get('volume', 4)
-        vfn = getattr(amy, 'volume', None)
-        if vfn is not None:
-            vfn(vol)
-        else:
-            amy.send(volume=vol)
+        amy.send(volume="%s,%s,%s,%s" % ((vol,) * 4))
     except Exception:
         pass
 
@@ -386,10 +401,13 @@ def start():
     try:
         import decklog
         decklog.dbg("router: %d synths, c_channels=%s, mpe_masters=%s, "
-                    "mpe_members=%s" % (len(_state['synths']),
-                                        sorted(_state['c_channels']),
-                                        sorted(_state['mpe_masters']),
-                                        sorted(_state['mpe_members'])))
+                    "mpe_members=%s, fx_buses=%s"
+                    % (len(_state['synths']),
+                       sorted(_state['c_channels']),
+                       sorted(_state['mpe_masters']),
+                       sorted(_state['mpe_members']),
+                       [(t['synth'], t['bus'])
+                        for t in _state['fx_targets']]))
     except Exception:
         pass
 

@@ -937,6 +937,22 @@ def test_fx_layering_patch_values_are_the_baseline():
     assert ap.fx_eq_string({'eq': {'low': 0}}, pfx2) == '0,-3,-3'
 
 
+def test_fx_bus_baseline_and_overlay():
+    import amyparams as ap
+    juno = {'chorus': {'level': 1, 'freq': 0.83, 'depth': 0.5},
+            'eq': {'low': 7, 'mid': -3, 'high': -3}}
+    base = ap.fx_bus_baseline(juno)
+    assert base['chorus'] == '1,,0.83,0.5'
+    assert base['eq'] == '7,-3,-3'
+    # an instrument whose patch sets no FX gets a clean (defaults) baseline --
+    # this is what makes multi-instrument bus state deterministic
+    assert ap.fx_bus_baseline({})['chorus'].startswith('0,')
+    # user overlay: touched bus only, unset fields keep the patch's values
+    o = ap.fx_send_strings({'chorus': {'level': 0.2}}, juno)
+    assert o == {'chorus': '0.2,,0.83,0.5'}
+    assert ap.fx_send_strings({}, juno) == {}
+
+
 def test_patchfx_table():
     import patchfx
     # juno chorus II patches carry level 1 / rate 0.83

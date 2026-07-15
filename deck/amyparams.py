@@ -425,6 +425,42 @@ def fx_value(fx, pfx, bus, name):
     return merged[bus][name]
 
 
+def _bus_strings(merged):
+    """Wire list-strings for one bus's FX state. Wire slot orders: chorus
+    k=[level,max_delay,lfo_freq,depth], reverb h=[level,liveness,damping,
+    xover], echo M=[level,delay_ms,max_delay_ms,feedback,filter_coef] --
+    slots we don't manage stay empty (AMY keeps its current/default)."""
+    ch, rv, ec, eq = (merged['chorus'], merged['reverb'], merged['echo'],
+                      merged['eq'])
+    return {
+        'chorus': "%s,,%s,%s" % (_fmt(ch['level']), _fmt(ch['freq']),
+                                 _fmt(ch['depth'])),
+        'reverb': "%s,%s,%s" % (_fmt(rv['level']), _fmt(rv['liveness']),
+                                _fmt(rv['damping'])),
+        'echo': "%s,%s,,%s" % (_fmt(ec['level']), _fmt(ec['delay_ms']),
+                               _fmt(ec['feedback'])),
+        'eq': "%s,%s,%s" % (_fmt(eq['low']), _fmt(eq['mid']),
+                            _fmt(eq['high'])),
+    }
+
+
+def fx_bus_baseline(pfx):
+    """A bus's deterministic FX baseline: defaults merged with the FX its
+    instrument's PATCH applies (patchfx table). Sent to every internal bus
+    after all patches load, because baked patch strings always land their
+    chorus/EQ on bus 0 -- without this, load order decided every bus's FX."""
+    merged, _ = _merge_fx(None, pfx)
+    return _bus_strings(merged)
+
+
+def fx_send_strings(fx, pfx=None):
+    """User-touched FX buses as {bus_kw: wire-string} for amy.send(bus=B,...),
+    layered over the patch baseline (same semantics as fx_calls)."""
+    merged, touched = _merge_fx(fx, pfx)
+    s = _bus_strings(merged)
+    return {b: s[b] for b in ('chorus', 'reverb', 'echo') if b in touched}
+
+
 def fx_calls(fx, pfx=None):
     """Given a device's stored FX overrides (and the active patch's own FX
     as the baseline), return [(bus, kwargs)] for amy.reverb()/chorus()/
