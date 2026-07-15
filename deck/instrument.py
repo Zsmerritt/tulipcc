@@ -85,10 +85,10 @@ def _select_patch(patch):
         b.set_style_bg_color(dk.c(dk.ACCENT if n == patch else dk.SURFACE), 0)
 
 
-def _toggle_fav(n, star):
+def _toggle_fav(n, icon):
     fav = deckcfg.toggle_favorite(_fav_key(n))
     try:
-        star.set_style_bg_color(dk.c(dk.ORANGE if fav else dk.SURFACE2), 0)
+        dk.star_set(icon, fav)
     except Exception:
         pass
     if _s.get('fav_only'):
@@ -110,11 +110,12 @@ def _row(body, n, cur, favs):
                    lv.EVENT.CLICKED, None)
     # star toggles favorite (orange when starred). As a child button it captures
     # its own taps, so starring doesn't also select the patch.
-    star = dk.button(b, "*", w=48, h=44, font=dk.FONT_L,
-                     bg=(dk.ORANGE if _fav_key(n) in favs else dk.SURFACE2))
+    star = dk.button(b, "", w=48, h=44, bg=dk.SURFACE2)
+    icon = dk.star(star, _fav_key(n) in favs)
+    icon.center()
     star.align(lv.ALIGN.RIGHT_MID, -8, 0)
-    star.add_event_cb((lambda pn, st: (lambda e: _toggle_fav(pn, st)
-                       if e.get_code() == lv.EVENT.CLICKED else None))(n, star),
+    star.add_event_cb((lambda pn, ic: (lambda e: _toggle_fav(pn, ic)
+                       if e.get_code() == lv.EVENT.CLICKED else None))(n, icon),
                       lv.EVENT.CLICKED, None)
     _s['rows'].append((b, n))
 
@@ -164,7 +165,7 @@ def _build_list():
     _s['shown'] = 0
     if not _s['matches']:
         if _s.get('fav_only') and not q:
-            msg = "No favorites in %s yet -- tap the * on a patch." % \
+            msg = "No favorites in %s yet -- tap the star on a patch." % \
                 _TYPE_NAME.get(_type(), '')
         else:
             msg = "No patches match \"%s\"." % _s.get('query', '')
@@ -312,8 +313,10 @@ def _rebuild_content():
     _s['name'] = dk.label(content, "current: " + _pname(cur), 24, 52,
                           color=dk.MUTED, font=dk.FONT_S)
     # favorites filter (right)
-    favbtn = dk.button(content, "* Favorites", w=180, h=44, font=dk.FONT_S,
+    favbtn = dk.button(content, "  Favorites", w=180, h=44, font=dk.FONT_S,
                        bg=(dk.ORANGE if _s['fav_only'] else dk.SURFACE2))
+    ficon = dk.star(favbtn, True, size=22, on_color=dk.WHITE)
+    ficon.align(lv.ALIGN.LEFT_MID, 10, 0)
     favbtn.set_pos(w - 24 - 180, 44)
     favbtn.add_event_cb((lambda bt: (lambda e: _toggle_favonly(bt)
                         if e.get_code() == lv.EVENT.CLICKED else None))(favbtn),

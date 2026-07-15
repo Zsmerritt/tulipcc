@@ -370,22 +370,32 @@ def synth_send_calls(params):
 
 def fx_calls(fx):
     """Given a device's stored FX overrides, return [(bus, kwargs)] for the
-    fn-applied buses amy.reverb()/chorus()/echo(). (EQ is separate --
-    fx_eq_string.) Missing values fall back to defaults."""
+    fn-applied buses amy.reverb()/chorus()/echo(). Only buses the user has
+    actually touched are emitted: patch strings set their own FX (juno
+    patches configure chorus/EQ as part of their sound), so sending our
+    level-0 defaults for untouched buses stripped the patch's character --
+    boot sounded like a Juno, then the UI loaded and dried it into an EP.
+    Missing values within a touched bus still fall back to defaults."""
     merged = default_fx()
+    touched = set()
     for bus, vals in (fx or {}).items():
-        if bus in merged and isinstance(vals, dict):
+        if bus in merged and isinstance(vals, dict) and vals:
             merged[bus].update(vals)
+            touched.add(bus)
     out = []
     for bus in FX_BUSES:
+        if bus not in touched:
+            continue
         kw = {p['arg']: merged[bus][p['name']] for p in FX[bus]}
         out.append((bus, kw))
     return out
 
 
 def fx_eq_string(fx):
-    """The device's EQ as an amy.send(eq=...) string 'low,mid,high'."""
+    """The device's EQ as an amy.send(eq=...) string 'low,mid,high', or None
+    when the user never set EQ (leave the patch's own EQ alone)."""
+    if not (fx and isinstance(fx.get('eq'), dict) and fx['eq']):
+        return None
     eq = default_fx()['eq']
-    if fx and isinstance(fx.get('eq'), dict):
-        eq.update(fx['eq'])
+    eq.update(fx['eq'])
     return "%s,%s,%s" % (_fmt(eq['low']), _fmt(eq['mid']), _fmt(eq['high']))

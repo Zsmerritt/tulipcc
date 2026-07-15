@@ -908,8 +908,12 @@ def test_fx_calls_map_to_amy_kwargs():
     import amyparams as ap
     calls = dict(ap.fx_calls({'reverb': {'level': 0.4}}))
     assert calls['reverb'] == {'level': 0.4, 'liveness': 0.85, 'damping': 0.5}
-    assert calls['chorus']['level'] == 0 and calls['chorus']['amp'] == 0.5
-    assert calls['echo']['delay_ms'] == 500
+    # ONLY touched buses are emitted: patch strings set their own chorus/EQ
+    # (juno character), so untouched buses must not be zeroed by the UI.
+    assert 'chorus' not in calls and 'echo' not in calls
+    assert dict(ap.fx_calls({})) == {}
+    calls = dict(ap.fx_calls({'chorus': {'level': 0.3}}))
+    assert calls['chorus']['level'] == 0.3 and calls['chorus']['amp'] == 0.5
     # eq is not a fn-applied bus
     assert 'eq' not in calls
 
@@ -928,7 +932,8 @@ def test_eq_is_device_fx_not_synth_param():
 
 def test_fx_eq_string():
     import amyparams as ap
-    assert ap.fx_eq_string({}) == '0,0,0'
+    # None = user never touched EQ -> leave the patch's own EQ alone
+    assert ap.fx_eq_string({}) is None
     assert ap.fx_eq_string({'eq': {'low': -3, 'high': 6}}) == '-3,0,6'
 
 

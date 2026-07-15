@@ -31,6 +31,58 @@ def _sym(name, fallback):
     return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
 
 
+def _clock_ms():
+    # 30s is plenty for a clock; debug mode repaints every 2s so the RAM
+    # readout is actually live.
+    try:
+        import decklog
+        if decklog.debug_on():
+            return 2000
+    except Exception:
+        pass
+    return 30000
+
+
+def _reset_cause_str():
+    try:
+        import machine
+        rc = machine.reset_cause()
+        names = {}
+        for attr, short in (('PWRON_RESET', 'pwron'), ('HARD_RESET', 'hard'),
+                            ('WDT_RESET', 'WDT'), ('DEEPSLEEP_RESET', 'dsleep'),
+                            ('SOFT_RESET', 'soft')):
+            v = getattr(machine, attr, None)
+            if v is not None:
+                names[v] = short
+        return names.get(rc, 'rst%s' % rc)
+    except Exception:
+        return '?'
+
+
+_BOOT_CAUSE = _reset_cause_str()
+_boot_logged = False
+
+
+def _debug_str():
+    """One compact status-bar line for debug mode: why we booted + free RAM
+    (MicroPython heap in PSRAM, and the always-tight internal SRAM)."""
+    parts = [_BOOT_CAUSE]
+    try:
+        import gc
+        parts.append("py %dK" % (gc.mem_free() // 1024))
+    except Exception:
+        pass
+    try:
+        import esp32
+        info = esp32.idf_heap_info(esp32.HEAP_DATA)
+        # internal SRAM regions are the small ones; the PSRAM region is MBs
+        internal = sum(r[1] for r in info if r[0] < 400 * 1024)
+        parts.append("int %dK" % (internal // 1024))
+    except Exception:
+        pass
+    return "  ".join(parts)
+
+
 def _clock_str():
     try:
         import time
@@ -132,6 +184,20 @@ class HomeShell:
                                   color=dk.MUTED, font=dk.FONT_S, w=RIGHT_ZONE - 90)
         self._clock_lbl = dk.label(bar, "", self.W - 76, 18, color=dk.WHITE,
                                    font=dk.FONT_M, w=68, align=lv.TEXT_ALIGN.RIGHT)
+        # debug readout (reset cause + free RAM), hidden unless debug mode
+        self._dbg_lbl = dk.label(bar, "", self.W - RIGHT_ZONE - 260, 20,
+                                 color=dk.MUTED, font=dk.FONT_S, w=250,
+                                 align=lv.TEXT_ALIGN.RIGHT)
+        self._dbg_lbl.add_flag(lv.obj.FLAG.HIDDEN)
+        self._dbg_tick = 0
+        global _boot_logged
+        if not _boot_logged:
+            _boot_logged = True
+            try:
+                import decklog
+                decklog.log("boot: reset cause %s" % _BOOT_CAUSE)
+            except Exception:
+                pass
 
     def refresh_chips(self):
         for b in self._chip_btns:
@@ -228,6 +294,16 @@ class HomeShell:
         self._wifi_lbl.set_style_text_color(
             dk.c(dk.GREEN if online else dk.MUTED), 0)
         self._clock_lbl.set_text(_clock_str())
+        # debug readout rides the same repaint cadence
+        try:
+            import decklog
+            if decklog.debug_on():
+                self._dbg_lbl.remove_flag(lv.obj.FLAG.HIDDEN)
+                self._dbg_lbl.set_text(_debug_str())
+            else:
+                self._dbg_lbl.add_flag(lv.obj.FLAG.HIDDEN)
+        except Exception:
+            pass
 
     # ----- content / panel stack -----------------------------------------
     def _build_content(self):
@@ -515,8 +591,8 @@ class HomeShell:
                 self._alive = False
                 self._clock_running = False
                 return
-            tulip.defer(_tick, 0, 30000)
+            tulip.defer(_tick, 0, _clock_ms())
         try:
-            tulip.defer(_tick, 0, 30000)
+            tulip.defer(_tick, 0, _clock_ms())
         except Exception:
             self._clock_running = False

@@ -47,6 +47,33 @@ def log(msg):
         pass
 
 
+_DBG = None    # tri-state: None = read config lazily on first dbg()
+
+
+def debug_on():
+    global _DBG
+    if _DBG is None:
+        try:
+            import deckcfg
+            _DBG = bool(deckcfg.load().get('debug'))
+        except Exception:
+            _DBG = False
+    return _DBG
+
+
+def set_debug(on):
+    """Settings toggle hook -- flips verbose logging without a reboot."""
+    global _DBG
+    _DBG = bool(on)
+    log("debug mode %s" % ("ON" if _DBG else "off"))
+
+
+def dbg(msg):
+    """Verbose line: only logged while debug mode (Settings) is on."""
+    if debug_on():
+        log(msg)
+
+
 def log_exc(msg, e=None):
     log(msg + ((": " + repr(e)) if e is not None else ""))
     if e is not None:

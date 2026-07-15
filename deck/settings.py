@@ -218,9 +218,25 @@ def _build(body, right, cw, screen):
             home._shell.refresh_status()   # repaint the bar clock now
         except Exception:
             pass
+    def _debug_switch(v):
+        deckcfg.set_value('debug', v)
+        try:
+            import decklog
+            decklog.set_debug(v)
+        except Exception:
+            pass
+        try:
+            import home
+            home._shell.refresh_status()   # show/hide the bar readout now
+        except Exception:
+            pass
+
+    # clock format + debug mode share one row (the no-scroll columns are full)
     r = dk.row(body, h=56)
     dk.label(r, "24-hour clock", color=dk.TEXT)
     dk.switch(r, bool(cfg.get('clock_24h', True)), _clock_switch)
+    dk.label(r, "Debug", color=dk.TEXT)
+    dk.switch(r, bool(cfg.get('debug', False)), _debug_switch)
 
     # --- REPL font size (active size highlighted) ---
     r = dk.row(body, h=56)

@@ -189,7 +189,9 @@ def _apply_device_fx(cfg, synth_nums):
     if synth_nums:
         try:
             amy.send(synth=synth_nums[0], bus=0)   # ensure it's on the device FX bus
-            amy.send(synth=synth_nums[0], eq=amyparams.fx_eq_string(fx))
+            eq = amyparams.fx_eq_string(fx)
+            if eq is not None:                     # None = user never set EQ
+                amy.send(synth=synth_nums[0], eq=eq)
         except Exception:
             pass
 
@@ -375,6 +377,15 @@ def start():
         except Exception as e:
             print("forwarder: add_callback failed:", e)
     _state['on'] = True
+    try:
+        import decklog
+        decklog.dbg("router: %d synths, c_channels=%s, mpe_masters=%s, "
+                    "mpe_members=%s" % (len(_state['synths']),
+                                        sorted(_state['c_channels']),
+                                        sorted(_state['mpe_masters']),
+                                        sorted(_state['mpe_members'])))
+    except Exception:
+        pass
 
 
 def _safe_off(syn, note):

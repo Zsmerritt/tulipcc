@@ -191,6 +191,70 @@ def scroll_col(parent, w, h, gap=12):
     return body
 
 
+# --- star icon (favorites) ---------------------------------------------------
+# LVGL's built-in symbol font has no star, so we rasterize one 5-point star
+# once into a shared ARGB8888 image (white + alpha, 2x2 supersampled edges)
+# and recolor it per use. Keep both dsc and buffer referenced forever.
+_STAR = {}
+
+
+def star_src(size=28):
+    got = _STAR.get(size)
+    if got is not None:
+        return got[0]
+    import math
+    cx = cy = (size - 1) / 2
+    R = size * 0.48
+    r = R * 0.42
+    pts = []
+    for i in range(10):
+        ang = -math.pi / 2 + i * math.pi / 5
+        rad = R if i % 2 == 0 else r
+        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+
+    def inside(px, py):
+        cnt = 0
+        for i in range(10):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % 10]
+            if (y1 > py) != (y2 > py):
+                if x1 + (py - y1) * (x2 - x1) / (y2 - y1) > px:
+                    cnt ^= 1
+        return cnt
+
+    buf = bytearray(size * size * 4)
+    idx = 0
+    for y in range(size):
+        for x in range(size):
+            hits = (inside(x + 0.25, y + 0.25) + inside(x + 0.75, y + 0.25)
+                    + inside(x + 0.25, y + 0.75) + inside(x + 0.75, y + 0.75))
+            buf[idx] = buf[idx + 1] = buf[idx + 2] = 255   # B,G,R
+            buf[idx + 3] = (0, 64, 128, 192, 255)[hits]    # A
+            idx += 4
+    dsc = lv.image_dsc_t()
+    dsc.header.cf = lv.COLOR_FORMAT.ARGB8888
+    dsc.header.w = size
+    dsc.header.h = size
+    dsc.header.stride = size * 4
+    dsc.data_size = len(buf)
+    dsc.data = buf
+    _STAR[size] = (dsc, buf)
+    return dsc
+
+
+def star(parent, filled, size=28, on_color=ORANGE, off_color=MUTED):
+    """A star lv.image; use star_set(img, filled) to flip its state."""
+    img = lv.image(parent)
+    img.set_src(star_src(size))
+    img.set_style_image_recolor_opa(255, 0)
+    img.set_style_image_recolor(c(on_color if filled else off_color), 0)
+    return img
+
+
+def star_set(img, filled, on_color=ORANGE, off_color=MUTED):
+    img.set_style_image_recolor(c(on_color if filled else off_color), 0)
+
+
 def row(parent, h=76, bg=SURFACE):
     # A full-width rounded card that lays its children out left-to-right,
     # pushing the first to the left edge and the last to the right edge.

@@ -79,6 +79,9 @@ DEFAULTS = {
     'fx': {},
     # favorite patch numbers (starred in the patch picker; sorted to the top)
     'favorites': [],
+    # debug mode (Settings): status-bar shows reset cause + free RAM, and
+    # decklog.dbg() lines (router rebuilds etc.) get written. See decklog.py.
+    'debug': False,
 }
 
 
