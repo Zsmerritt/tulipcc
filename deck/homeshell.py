@@ -245,6 +245,10 @@ class HomeShell:
             pass
         self.stack.set_top(title, key, builder)
         self._fill(h, builder)
+        try:
+            h.invalidate()   # rebuilt widgets can render stale pixels (NEW-2)
+        except Exception:
+            pass
         self._sync_chrome()
         return h
 
@@ -307,6 +311,12 @@ class HomeShell:
             try:
                 h.clean()
                 self._fill(h, b)
+                # Panels rebuilt on this deferred tick DRAW STALE PIXELS until
+                # something invalidates them -- UX-REVIEW-7 NEW-2 root-caused
+                # the M3 green/blue switch flip-flop to exactly this: the
+                # rebuilt widget's resolved style was green, the glass showed
+                # the old blue until a forced invalidate.
+                h.invalidate()
             except Exception:
                 pass
         try:

@@ -23,6 +23,8 @@ SURFACE  = tulip.color(64, 64, 96)     # card / row background (dark gray)
 SURFACE2 = tulip.color(96, 96, 128)    # lighter surface / inputs / dividers
 TEXT     = tulip.color(230, 230, 230)  # primary text
 MUTED    = tulip.color(140, 140, 168)  # secondary text
+PLACEHOLDER = tulip.color(178, 178, 200)  # one step lighter than MUTED --
+                                          # fields sit on SURFACE2 (NEW-4)
 WHITE    = tulip.color(255, 255, 255)
 
 ACCENT   = tulip.color(64, 132, 224)   # blue
@@ -197,6 +199,7 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     b.set_size(w, h)
     _flat(b, radius=radius, bg=bg)
     pressable(b)
+    b.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)  # NEW-3
     lb = lv.label(b)
     lb.set_text(text)
     lb.set_style_text_color(c(fg), 0)
@@ -223,7 +226,13 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22,
     s.set_style_bg_color(c(SURFACE2), lv.PART.MAIN)
     s.set_style_bg_color(c(color), lv.PART.INDICATOR)
     s.set_style_bg_color(c(WHITE), lv.PART.KNOB)
-    s.set_style_pad_all(max(8, h // 2), lv.PART.KNOB)
+    # knob pad h//3 (was h//2): the fatter knob poked past card corners at the
+    # range ends (UX-REVIEW-7 N3); target stays ~40px with the track height
+    s.set_style_pad_all(max(6, h // 3), lv.PART.KNOB)
+    # flat, intentional disabled colors (not the theme's RGB332 alarm-hue mix)
+    s.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)
+    s.set_style_bg_color(c(SURFACE2), lv.PART.INDICATOR | lv.STATE.DISABLED)
+    s.set_style_bg_color(c(MUTED), lv.PART.KNOB | lv.STATE.DISABLED)
     s.set_range(vmin, vmax)
     s.set_value(int(value), lv.ANIM.OFF)
     if cb is not None:
@@ -270,7 +279,9 @@ def text_field(parent, text='', placeholder='', w=300, h=44, font=None):
     except Exception:
         pass
     try:
-        t.ta.set_style_text_color(c(MUTED), lv.PART.TEXTAREA_PLACEHOLDER)
+        # PLACEHOLDER, not MUTED: MUTED on SURFACE2 failed arm's-length
+        # legibility in search + both Wi-Fi fields (UX-REVIEW-7 NEW-4)
+        t.ta.set_style_text_color(c(PLACEHOLDER), lv.PART.TEXTAREA_PLACEHOLDER)
     except Exception:
         pass
     autoshow_keyboard(t.ta)
@@ -305,7 +316,13 @@ def autoshow_keyboard(ta):
             import ui
             if getattr(ui, 'lv_soft_kb', None) is None:
                 tulip.keyboard()
-                style_keyboard()
+                # restyle on a later tick -- the open tick is already the
+                # heaviest one (keyboard build + render-mode switch), and
+                # stacking onto it is the WDT pattern (UX-REVIEW-7 NEW-1)
+                try:
+                    tulip.defer(lambda x: style_keyboard(), 0, 120)
+                except Exception:
+                    style_keyboard()
         except Exception:
             pass
     try:
@@ -332,6 +349,10 @@ def switch(parent, value, on_change=None, color=GREEN):
     sw.set_style_bg_color(c(color), lv.PART.INDICATOR | lv.STATE.CHECKED)
     sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.INDICATOR | lv.STATE.CHECKED)
     sw.set_style_bg_color(c(WHITE), lv.PART.KNOB)
+    # flat disabled colors (theme mix + RGB332 = alarm hues, NEW-3)
+    sw.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)
+    sw.set_style_bg_color(c(SURFACE2), lv.PART.INDICATOR | lv.STATE.DISABLED)
+    sw.set_style_bg_color(c(MUTED), lv.PART.KNOB | lv.STATE.DISABLED)
     if on_change is not None:
         def _cb(e):
             try:

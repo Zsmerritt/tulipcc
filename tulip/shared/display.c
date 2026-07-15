@@ -1023,12 +1023,6 @@ void display_teardown(void) {
 //     are tiled and degrade gracefully. ~PARTIAL_BUF rows of scratch memory only.
 #define PARTIAL_BUF_ROWS 96
 #define PARTIAL_BUF_BYTES (H_RES * PARTIAL_BUF_ROWS * BYTES_PER_PIXEL)
-// Internal-SRAM buffer size (preferred): LVGL's software renderer does heavy
-// read-modify-write on the draw buffer, which runs several times faster in
-// internal SRAM than through the PSRAM cache. Smaller means more tiles per big
-// redraw, but tiles are just memcpys (and only the first waits for vsync).
-#define PARTIAL_BUF_ROWS_INTERNAL 32
-#define PARTIAL_BUF_BYTES_INTERNAL (H_RES * PARTIAL_BUF_ROWS_INTERNAL * BYTES_PER_PIXEL)
 volatile uint8_t render_mode = 0;
 volatile uint8_t render_vsync = 1;
 uint8_t * partial_buf = NULL;
@@ -1180,18 +1174,14 @@ void setup_lvgl() {
 void display_set_partial(int on) {
     if(on) {
         if(partial_buf == NULL) {
-            // Prefer a smaller internal-SRAM buffer: LVGL software rendering
-            // is several times faster there than through the PSRAM cache,
-            // which was a big part of why PARTIAL mode felt sluggish. Fall
-            // back to the larger PSRAM buffer if internal RAM is tight.
-            partial_buf_bytes = PARTIAL_BUF_BYTES_INTERNAL;
+            // PSRAM only: Tulip's internal heap is designed-full at steady
+            // state (AMY/I2S/USB/sprites claim it at boot; ~0 bytes free), so
+            // the old prefer-internal attempt failed on EVERY first enable,
+            // firing the alloc-failed logger inside the keyboard-open tick
+            // (UX-REVIEW-7 NEW-1 / L8).
+            partial_buf_bytes = PARTIAL_BUF_BYTES;
             partial_buf = (uint8_t*)malloc_caps(partial_buf_bytes,
-                                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if(partial_buf == NULL) {
-                partial_buf_bytes = PARTIAL_BUF_BYTES;
-                partial_buf = (uint8_t*)malloc_caps(partial_buf_bytes,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            }
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         }
         if(partial_buf == NULL) { partial_buf_bytes = 0; return; }  // stay in DIRECT
         lv_display_set_buffers(lv_display, partial_buf, NULL, partial_buf_bytes,
@@ -1203,7 +1193,12 @@ void display_set_partial(int on) {
                                LV_DISPLAY_RENDER_MODE_DIRECT);
         render_mode = 0;
     }
-    lv_obj_invalidate(lv_screen_active());  // force a full redraw after the switch
+    // NO full-screen invalidate on the switch: `bg` is already current in both
+    // directions (DIRECT renders straight into it; PARTIAL copies every flush
+    // into it), so the old forced invalidate only bought a whole-screen
+    // software repaint -- tiled through the PARTIAL buffer -- inside the same
+    // tick as the keyboard build: the biggest single contributor to the
+    // keyboard-open WDT window (UX-REVIEW-7 NEW-1).
 }
 
 // Toggle vsync-gating of the partial-mode copy (tear-free vs lower latency).

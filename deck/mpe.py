@@ -185,7 +185,7 @@ def _render_strip():
                          % (instr.get('channel', 1), m.get('members', 15)),
                          dk.MUTED)
         else:
-            msg, colr = ("%s Zone overlaps ch %s -- shrink it or move those"
+            msg, colr = ("%s Zone overlaps ch %s: shrink it or move those"
                          % (_sym('WARNING', '!'),
                             ",".join(str(c) for c in conflicts)), dk.ORANGE)
         dk.label(card, msg, 16, 92, color=colr, font=dk.FONT_S,
@@ -245,8 +245,8 @@ def _rebuild():
     top = 6
     if not supported:
         dk.label(content,
-                 _sym('WARNING', "!") + "  This firmware has no MPE support -- "
-                 "flash your MPE build to activate. Settings are saved and "
+                 _sym('WARNING', "!") + "  This firmware has no MPE support. "
+                 "Flash your MPE build to activate. Settings are saved and "
                  "applied then.", 24, 6, color=dk.ORANGE, font=dk.FONT_S,
                  w=w - 48)
         top = 40
@@ -365,8 +365,8 @@ def expression_panel(parent, shell=None):
     # What expression routes to -- static descriptions, NOT interactive rows, so
     # they're plain text (no card chrome) to avoid looking tappable.
     dk.label(body, "What it does", color=dk.MUTED, font=dk.FONT_S)
-    for title, desc in (("Pressure", "channel pressure -> voice level"),
-                        ("Slide (CC74)", "timbre slide -> filter cutoff")):
+    for title, desc in (("Pressure", "channel pressure controls voice level"),
+                        ("Slide (CC74)", "timbre slide controls filter cutoff")):
         dk.label(body, title, color=dk.TEXT, font=dk.FONT_M)
         dk.label(body, desc, color=dk.MUTED, font=dk.FONT_S)
 

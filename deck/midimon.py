@@ -54,29 +54,32 @@ def _cb(m):
     _s['dirty'] = True
 
 
-def _fmt(t, m):
+def _fmt(dt, m):
+    # dt = ms since the PREVIOUS message -- the number MIDI debugging actually
+    # needs (UX-REVIEW-7 NEW-7); raw boot-ticks told you nothing.
+    t = "+%dms" % dt if dt < 10000 else "+%ds" % (dt // 1000)
     st = m[0] & 0xF0
     ch = (m[0] & 0x0F) + 1
     if m[0] >= 0xF0:
         n = {0xF8: 'clock', 0xFA: 'start', 0xFB: 'continue', 0xFC: 'stop',
              0xF0: 'sysex', 0xFE: 'sense', 0xFF: 'reset'}.get(m[0], 'sys %02X' % m[0])
-        return "%7d       %s" % (t, n)
+        return "%8s       %s" % (t, n)
     if st == 0x90 and len(m) > 2 and m[2] > 0:
-        return "%7d ch%-2d  note-on   %-4s vel %d" % (t, ch, _note_name(m[1]), m[2])
+        return "%8s ch%-2d  note-on   %-4s vel %d" % (t, ch, _note_name(m[1]), m[2])
     if st == 0x80 or (st == 0x90 and len(m) > 2):
-        return "%7d ch%-2d  note-off  %-4s" % (t, ch, _note_name(m[1]))
+        return "%8s ch%-2d  note-off  %-4s" % (t, ch, _note_name(m[1]))
     if st == 0xB0 and len(m) > 2:
-        return "%7d ch%-2d  cc %-3d    val %d" % (t, ch, m[1], m[2])
+        return "%8s ch%-2d  cc %-3d    val %d" % (t, ch, m[1], m[2])
     if st == 0xC0:
-        return "%7d ch%-2d  program   %d" % (t, ch, m[1])
+        return "%8s ch%-2d  program   %d" % (t, ch, m[1])
     if st == 0xD0:
-        return "%7d ch%-2d  pressure  %d" % (t, ch, m[1])
+        return "%8s ch%-2d  pressure  %d" % (t, ch, m[1])
     if st == 0xE0 and len(m) > 2:
         bend = ((m[2] << 7) | m[1]) - 8192
-        return "%7d ch%-2d  bend      %+d" % (t, ch, bend)
+        return "%8s ch%-2d  bend      %+d" % (t, ch, bend)
     if st == 0xA0 and len(m) > 2:
-        return "%7d ch%-2d  polytouch %-4s val %d" % (t, ch, _note_name(m[1]), m[2])
-    return "%7d ch%-2d  %02X %s" % (t, ch, m[0],
+        return "%8s ch%-2d  polytouch %-4s val %d" % (t, ch, _note_name(m[1]), m[2])
+    return "%8s ch%-2d  %02X %s" % (t, ch, m[0],
                                     " ".join("%02X" % x for x in m[1:]))
 
 
@@ -85,7 +88,15 @@ def _render():
     if lbl is None:
         return
     buf = _s['buf']
-    lines = [_fmt(t, m) for (t, m) in buf[-_SHOW:]]
+    window = buf[-(_SHOW + 1):]          # one extra for the first delta
+    lines = []
+    prev = window[0][0] if window else 0
+    for i, (t, m) in enumerate(window):
+        dt = max(0, t - prev)
+        prev = t
+        if len(window) > _SHOW and i == 0:
+            continue                     # the extra row only seeds the delta
+        lines.append(_fmt(dt, m))
     if not lines:
         lines = ["waiting for MIDI..."]
     lbl.set_text("\n".join(lines))

@@ -15,6 +15,7 @@ def _big_card(parent, x, y, title, sub, color, cb):
     b.set_size(300, 150)
     b.set_pos(x, y)
     dk._flat(b, radius=18, bg=color)
+    dk.pressable(b)   # these cards ARE tappable -- give them press feedback
     t = lv.label(b)
     t.set_text(title)
     t.set_style_text_color(dk.c(dk.WHITE), 0)
@@ -39,10 +40,10 @@ def run(screen):
     screen.bg_color = dk.BG
     dk.label(screen.group, "Welcome to Tulip", 60, 60, color=dk.WHITE, font=dk.FONT_L)
     dk.label(screen.group,
-        "A tiny Python computer for making music. Let's set it up -- you can",
+        "A tiny Python computer for making music. Tap a step to set it up.",
         60, 104, color=dk.MUTED, font=dk.FONT_M)
     dk.label(screen.group,
-        "always change any of this later from Settings.",
+        "You can always change any of this later from Settings.",
         60, 130, color=dk.MUTED, font=dk.FONT_M)
 
     _big_card(screen.group, 60, 190, "1. Wi-Fi",
@@ -58,7 +59,6 @@ def run(screen):
     dk.button(screen.group, "Get started  " + lv.SYMBOL.RIGHT, w=280, h=68,
         bg=dk.GREEN, font=dk.FONT_L,
         cb=lambda e: _done_and_run('home')).set_pos(60, 400)
-    dk.label(screen.group, "You can reopen this with  run('welcome')",
-        60, 500, color=dk.MUTED, font=dk.FONT_S)
+    # (no REPL syntax in onboarding copy -- UX-REVIEW-7 N6)
 
     screen.present()

@@ -97,9 +97,14 @@ def instrument_sound(instr):
 
 
 def instrument_summary(instr):
-    """One-line rack-row summary of an instrument (ASCII only)."""
-    return "%s  ch%d  %s" % (device_name(instr.get('device', 'internal')),
-                             instr.get('channel', 1), instrument_sound(instr))
+    """One-line rack-row summary of an instrument (ASCII only). The device
+    name only appears for BOARD instruments -- on internal ones it stuttered
+    the row title ("Tulip / Tulip ch1 ...", UX-REVIEW-7 L10)."""
+    dev = instr.get('device', 'internal')
+    core = "ch%d  %s" % (instr.get('channel', 1), instrument_sound(instr))
+    if dev == 'internal':
+        return core
+    return "%s  %s" % (device_name(dev), core)
 
 
 def device_meter(dev):

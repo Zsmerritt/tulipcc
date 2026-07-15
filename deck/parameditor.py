@@ -249,7 +249,9 @@ def _style_tabview(tv):
             btn.set_style_bg_opa(lv.OPA.COVER, 0)
             btn.set_style_bg_color(dk.c(dk.SURFACE2), 0)
             btn.set_style_bg_color(dk.c(dk.ACCENT), lv.STATE.CHECKED)
-            btn.set_style_text_color(dk.c(dk.MUTED), 0)
+            # PLACEHOLDER (lighter than MUTED): inactive tab labels were below
+            # arm's-length contrast on SURFACE2 (UX-REVIEW-7 N4)
+            btn.set_style_text_color(dk.c(dk.PLACEHOLDER), 0)
             btn.set_style_text_color(dk.c(dk.WHITE), lv.STATE.CHECKED)
             btn.set_style_radius(10, 0)
             btn.set_style_border_width(0, 0)

@@ -14,7 +14,8 @@ import lvgl as lv
 # The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
 # patches -- so we build a small list, not all 257. Drums use the pad editor.
 _TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257)}
-_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano', 'drums': 'Kits'}
+_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano',
+              'drums': 'Drums'}
 
 _s = {}
 
@@ -94,28 +95,58 @@ def _row(body, n, cur, favs):
     _s['rows'].append((b, n))
 
 
+_WINDOW = 40   # rows built per batch -- building all ~130 at once was the
+               # relayout cost stacking into the keyboard-open tick (NEW-1)
+
+
+def _append_rows(body, cur, favs):
+    """Build the next window of result rows + a 'Show more' tail if needed."""
+    mb = _s.pop('morebtn', None)
+    if mb is not None:
+        try:
+            mb.delete()
+        except Exception:
+            pass
+    matches = _s.get('matches', [])
+    start = _s.get('shown', 0)
+    end = min(len(matches), start + _WINDOW)
+    for n in matches[start:end]:
+        _row(body, n, cur, favs)
+    _s['shown'] = end
+    left = len(matches) - end
+    if left > 0:
+        b = dk.button(body, "Show %d more..." % min(_WINDOW, left),
+                      w=lv.pct(100), h=56, bg=dk.SURFACE2, font=dk.FONT_S)
+
+        def _more(e):
+            if e.get_code() == lv.EVENT.CLICKED:
+                _append_rows(body, cur, favs)
+        b.add_event_cb(_more, lv.EVENT.CLICKED, None)
+        _s['morebtn'] = b
+
+
 def _build_list():
     body = _s.get('listbody')
     if body is None:
         return
     body.clean()
     _s['rows'] = []
+    _s['morebtn'] = None
     cur = (_inst() or {}).get('patch', 0)
     favs = set(deckcfg.favorites())      # loaded once for the whole list
     q = _s.get('query', '').strip().lower()
-    shown = 0
-    for n in _nums(favs):
-        if q and q not in patches[n].lower():
-            continue
-        _row(body, n, cur, favs)
-        shown += 1
-    if shown == 0:
+    _s['matches'] = [n for n in _nums(favs)
+                     if not q or q in patches[n].lower()]
+    _s['shown'] = 0
+    if not _s['matches']:
         if _s.get('fav_only') and not q:
             msg = "No favorites in %s yet -- tap the * on a patch." % \
                 _TYPE_NAME.get(_type(), '')
         else:
             msg = "No patches match \"%s\"." % _s.get('query', '')
         dk.label(body, msg, color=dk.MUTED, font=dk.FONT_S)
+        return
+    _append_rows(body, cur, favs)
 
 
 def _toggle_favonly(btn):
@@ -148,19 +179,48 @@ def _kb_height():
 
 
 def _layout_list():
-    """Size the results list to the space above the soft keyboard, so live
-    search shows several rows instead of ONE while typing (UX-REVIEW-6 M4);
-    full height again once the keyboard closes."""
+    """Keyboard-aware layout: while the keyboard is up, COLLAPSE the header
+    (title/current/Favorites hidden, search lifted to the top) and size the
+    list to the remaining space -- otherwise live search shows a single row
+    (UX-REVIEW-7 NEW-5). Everything restores when the keyboard closes."""
     body = _s.get('listbody')
     if body is None:
         return
-    full = _s['ch'] - 176
-    h = full
+    w = tulip.screen_size()[0]
     kb = _kb_height()
+    collapsed = kb > 0
+    if collapsed != _s.get('collapsed'):
+        _s['collapsed'] = collapsed
+        for k in ('title', 'name', 'favbtn'):
+            o = _s.get(k)
+            if o is not None:
+                try:
+                    if collapsed:
+                        o.add_flag(lv.obj.FLAG.HIDDEN)
+                    else:
+                        o.remove_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+        sy = 8 if collapsed else 100        # search field y
+        ly = 80 if collapsed else 172       # list y
+        try:
+            _s['searchgrp'].set_pos(24, sy)
+            _s['kbbtn'].set_pos(w - 24 - 72, sy)
+            body.set_pos(24, ly)
+        except Exception:
+            pass
+        _s['list_y'] = ly
+    ly = _s.get('list_y', 172)
+    full = _s['ch'] - ly - 4
+    h = full
     if kb:
-        h = max(120, tulip.screen_size()[1] - kb - _s.get('list_top_abs', 236) - 8)
+        top_abs = _s.get('top_base', 64) + ly
+        h = max(120, tulip.screen_size()[1] - kb - top_abs - 8)
         if h > full:
             h = full
+    if h == _s.get('list_h'):
+        return              # unchanged: a redundant set_height still relayouts
+    _s['list_h'] = h
     try:
         body.set_height(h)
     except Exception:
@@ -168,10 +228,11 @@ def _layout_list():
 
 
 def _kb_layout_cb(e):
-    # after focus/defocus the keyboard may be opening/closing this tick; relayout
-    # on the next one so its size is real
+    # Relayout well after the open tick: keyboard build + render-mode switch
+    # already own that one, and the deferred restyle takes the next -- the
+    # resize (a full flex relayout of the list) gets its own slot (NEW-1).
     try:
-        tulip.defer(lambda x: _layout_list(), 0, 60)
+        tulip.defer(lambda x: _layout_list(), 0, 180)
     except Exception:
         _layout_list()
 
@@ -222,8 +283,8 @@ def _rebuild_content():
     # STABLE title = the collection ("Juno-6 patches"); the current selection
     # lives in the subtitle + highlighted row. The old selection-as-title
     # duplicated the row and went stale under a search filter (UX-REVIEW-6 L2).
-    dk.label(content, _TYPE_NAME.get(_type(), 'Patches') + " patches", 24, 6,
-             color=dk.WHITE, font=dk.FONT_L)
+    _s['title'] = dk.label(content, _TYPE_NAME.get(_type(), 'Patches')
+                           + " patches", 24, 6, color=dk.WHITE, font=dk.FONT_L)
     _s['name'] = dk.label(content, "current: " + patches[cur], 24, 52,
                           color=dk.MUTED, font=dk.FONT_S)
     # favorites filter (right)
@@ -233,6 +294,7 @@ def _rebuild_content():
     favbtn.add_event_cb((lambda bt: (lambda e: _toggle_favonly(bt)
                         if e.get_code() == lv.EVENT.CLICKED else None))(favbtn),
                         lv.EVENT.CLICKED, None)
+    _s['favbtn'] = favbtn
 
     # search field + on-screen keyboard button (filters the list live by name)
     sw = w - 48 - 84
@@ -240,6 +302,8 @@ def _rebuild_content():
                       placeholder="search patches", w=sw, h=60, font=dk.FONT_M)
     t.group.set_pos(24, 100)
     _s['searchta'] = t.ta
+    _s['searchgrp'] = t.group
+    _s['collapsed'] = False
     try:
         t.ta.add_event_cb(_search_changed, lv.EVENT.VALUE_CHANGED, None)
         # keyboard covers the bottom half: shrink the results list while it's
@@ -248,8 +312,10 @@ def _rebuild_content():
         t.ta.add_event_cb(_kb_layout_cb, lv.EVENT.DEFOCUSED, None)
     except Exception:
         pass
-    dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60, bg=dk.SURFACE2,
-        cb=lambda e: (tulip.keyboard(), _layout_list())).set_pos(w - 24 - 72, 100)
+    _s['kbbtn'] = dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60,
+                            bg=dk.SURFACE2,
+                            cb=lambda e: (tulip.keyboard(), _kb_layout_cb(e)))
+    _s['kbbtn'].set_pos(w - 24 - 72, 100)
 
     # patch list
     body = dk.scroll_col(content, w - 48, chh - 176)
@@ -267,8 +333,9 @@ def panel(parent, shell=None):
     _s['content'] = None
     _s['ctop'] = 8
     _s['ch'] = (tulip.screen_size()[1] - homeshell.BAR_H) - 8
-    # absolute screen y of the results list (for keyboard-aware sizing)
-    _s['list_top_abs'] = homeshell.BAR_H + _s['ctop'] + 172
+    # absolute screen y where the content area starts (keyboard-aware sizing)
+    _s['top_base'] = homeshell.BAR_H + _s['ctop']
+    _s['list_y'] = 172
     _rebuild_content()
 
 
@@ -281,7 +348,8 @@ def run(screen):
     _s['content'] = None
     _s['ctop'] = 118
     _s['ch'] = tulip.screen_size()[1] - 118
-    _s['list_top_abs'] = _s['ctop'] + 172
+    _s['top_base'] = _s['ctop']
+    _s['list_y'] = 172
     dk.frame(screen, "Patch", "pick a sound for the active instrument")
     _rebuild_content()
     screen.present()

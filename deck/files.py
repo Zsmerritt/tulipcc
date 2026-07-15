@@ -100,8 +100,10 @@ def _select(path, name, btn):
     _s['confirm'] = False
     btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
     _s['selname'].set_text(name)
+    _s['selname'].set_style_text_color(dk.c(dk.TEXT), 0)   # brighten on select
     _s['delbtn'].get_child(0).set_text("Delete")
-    _s['delbtn'].set_style_bg_color(dk.c(dk.SURFACE2), 0)
+    # destructive actions own red in this system (UX-REVIEW-7 NEW-6)
+    _s['delbtn'].set_style_bg_color(dk.c(dk.RED), 0)
     # per-file capability: Run only for .py, Edit only for small text files
     _set_btn('run', path.endswith('.py'))
     _set_btn('edit', _editable(path))
@@ -113,6 +115,10 @@ def _open(path):
     _s['sel'] = None
     _s['selbtn'] = None
     _s['selname'].set_text("nothing selected")
+    try:
+        _s['selname'].set_style_text_color(dk.c(dk.MUTED), 0)
+    except Exception:
+        pass
     _s['pathlbl'].set_text(path)
     _set_actions(False)
     _update_up()

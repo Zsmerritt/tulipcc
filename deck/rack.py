@@ -16,8 +16,10 @@ _s = {}
 
 # Instrument engine types (the mode switch). Drums is a sample/pad engine; the
 # rest are the melodic synth engines with curated Sound views.
+# Type = what the instrument IS (an engine); "Kit" stays the label of a drum
+# instrument's patch slot (UX-REVIEW-6 L9 / 7).
 _TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
-              ('drums', 'Kits')]   # 'drums' key kept; user-facing label is "Kits"
+              ('drums', 'Drums')]
 _TYPE_NAMES = dict(_TYPE_LIST)
 _TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'drums': 0}
 
@@ -294,7 +296,7 @@ def kit_panel(parent, shell=None):
     cur = (_active() or {}).get('kit', 384)
     body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
     body.set_pos(24, 8)
-    dk.label(body, "Drum kit -- swaps all the sounds at once.", color=dk.MUTED,
+    dk.label(body, "Drum kit: swaps all the sounds at once.", color=dk.MUTED,
              font=dk.FONT_S)
     _s['kitbtns'] = []
     for kit, name in drums_kit.KITS:
