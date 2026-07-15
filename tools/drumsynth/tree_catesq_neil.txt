@@ -1,0 +1,244 @@
+presets/mdaDrumLibrary/Acoustic/Brush1.ds
+presets/mdaDrumLibrary/Acoustic/Brush2.ds
+presets/mdaDrumLibrary/Acoustic/JazzKick.ds
+presets/mdaDrumLibrary/Acoustic/JazzSnr H.ds
+presets/mdaDrumLibrary/Acoustic/JazzSnr.ds
+presets/mdaDrumLibrary/Acoustic/K_Muffle.ds
+presets/mdaDrumLibrary/Acoustic/Kick.ds
+presets/mdaDrumLibrary/Acoustic/Plain Kick.ds
+presets/mdaDrumLibrary/Acoustic/Ride.ds
+presets/mdaDrumLibrary/Acoustic/Ride2.ds
+presets/mdaDrumLibrary/Acoustic/Ride3.ds
+presets/mdaDrumLibrary/Acoustic/Snare.ds
+presets/mdaDrumLibrary/CR78/Bongo_h.ds
+presets/mdaDrumLibrary/CR78/Bongo_l.ds
+presets/mdaDrumLibrary/CR78/Clave.ds
+presets/mdaDrumLibrary/CR78/Conga.ds
+presets/mdaDrumLibrary/CR78/Cymbal.ds
+presets/mdaDrumLibrary/CR78/Hihat.ds
+presets/mdaDrumLibrary/CR78/Kick.ds
+presets/mdaDrumLibrary/CR78/Maracas.ds
+presets/mdaDrumLibrary/CR78/Rim.ds
+presets/mdaDrumLibrary/CR78/Snare.ds
+presets/mdaDrumLibrary/CR78/Tamb.ds
+presets/mdaDrumLibrary/CR8000/Clap.ds
+presets/mdaDrumLibrary/CR8000/Clave.ds
+presets/mdaDrumLibrary/CR8000/Conga_l.ds
+presets/mdaDrumLibrary/CR8000/Conga_m.ds
+presets/mdaDrumLibrary/CR8000/Cowbell.ds
+presets/mdaDrumLibrary/CR8000/Cymbal.ds
+presets/mdaDrumLibrary/CR8000/Hat_c.ds
+presets/mdaDrumLibrary/CR8000/Hat_o.ds
+presets/mdaDrumLibrary/CR8000/Kick.ds
+presets/mdaDrumLibrary/CR8000/Rim.ds
+presets/mdaDrumLibrary/CR8000/Snare.ds
+presets/mdaDrumLibrary/Effects/Bubble.ds
+presets/mdaDrumLibrary/Effects/Cicada.ds
+presets/mdaDrumLibrary/Effects/Glass.ds
+presets/mdaDrumLibrary/Effects/Glass_rn.ds
+presets/mdaDrumLibrary/Effects/Gunshot.ds
+presets/mdaDrumLibrary/Effects/Hammer.ds
+presets/mdaDrumLibrary/Effects/Laser.ds
+presets/mdaDrumLibrary/Effects/Reverse.ds
+presets/mdaDrumLibrary/Effects/Ringing.ds
+presets/mdaDrumLibrary/Effects/Scissors.ds
+presets/mdaDrumLibrary/Effects/Sonar.ds
+presets/mdaDrumLibrary/Effects/dialing.ds
+presets/mdaDrumLibrary/Effects/hammer2.ds
+presets/mdaDrumLibrary/Effects/impulses.ds
+presets/mdaDrumLibrary/Effects/loop.ds
+presets/mdaDrumLibrary/Effects/thunder.ds
+presets/mdaDrumLibrary/Electro/Boom.ds
+presets/mdaDrumLibrary/Electro/H_closed.ds
+presets/mdaDrumLibrary/Electro/H_open.ds
+presets/mdaDrumLibrary/Electro/Hi-q.ds
+presets/mdaDrumLibrary/Electro/Hi-q_2.ds
+presets/mdaDrumLibrary/Electro/K_8bit.ds
+presets/mdaDrumLibrary/Electro/K_Linn.ds
+presets/mdaDrumLibrary/Electro/K_reverb.ds
+presets/mdaDrumLibrary/Electro/S_8bit.ds
+presets/mdaDrumLibrary/Electro/S_Linn.ds
+presets/mdaDrumLibrary/Electro/S_reverb.ds
+presets/mdaDrumLibrary/Electro/Syntom_1.ds
+presets/mdaDrumLibrary/Electro/Syntom_2.ds
+presets/mdaDrumLibrary/Electro/s_eq.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Bongo.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Cym.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Hat.ds
+presets/mdaDrumLibrary/Farfisa/Fisa K_H.ds
+presets/mdaDrumLibrary/Farfisa/Fisa K_K.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Kick.ds
+presets/mdaDrumLibrary/Farfisa/Fisa S_B.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Snare.ds
+presets/mdaDrumLibrary/Farfisa/Fisa Tom.ds
+presets/mdaDrumLibrary/Ferraro/curb meat bass.ds
+presets/mdaDrumLibrary/Ferraro/eel bass.ds
+presets/mdaDrumLibrary/Ferraro/feed this.ds
+presets/mdaDrumLibrary/Ferraro/gerbil snare.ds
+presets/mdaDrumLibrary/Ferraro/grumpy buzzard.ds
+presets/mdaDrumLibrary/Ferraro/jaguar hats.ds
+presets/mdaDrumLibrary/Ferraro/radio hats.ds
+presets/mdaDrumLibrary/Ferraro/worm bass.ds
+presets/mdaDrumLibrary/Hats/amen ride.ds
+presets/mdaDrumLibrary/Hats/band pass cymbal.ds
+presets/mdaDrumLibrary/Hats/basic hh.ds
+presets/mdaDrumLibrary/Hats/bright 808 hat 2.ds
+presets/mdaDrumLibrary/Hats/bright 808 hat 3.ds
+presets/mdaDrumLibrary/Hats/bright 808 hat.ds
+presets/mdaDrumLibrary/Hats/bring me out.ds
+presets/mdaDrumLibrary/Hats/clicky hat.ds
+presets/mdaDrumLibrary/Hats/close ride.ds
+presets/mdaDrumLibrary/Hats/default hi-hat.ds
+presets/mdaDrumLibrary/Hats/drama hat 2.ds
+presets/mdaDrumLibrary/Hats/drama hat.ds
+presets/mdaDrumLibrary/Hats/dusty simple hh.ds
+presets/mdaDrumLibrary/Hats/dusty simple oh.ds
+presets/mdaDrumLibrary/Hats/electro hh.ds
+presets/mdaDrumLibrary/Hats/electrometallic hat.ds
+presets/mdaDrumLibrary/Hats/errie ride.ds
+presets/mdaDrumLibrary/Hats/fedora hat.ds
+presets/mdaDrumLibrary/Hats/feelin' high hat 1.ds
+presets/mdaDrumLibrary/Hats/feelin' high hat 2.ds
+presets/mdaDrumLibrary/Hats/feelin' high hat 3.ds
+presets/mdaDrumLibrary/Hats/feelin' open high hat.ds
+presets/mdaDrumLibrary/Hats/flat cymbal.ds
+presets/mdaDrumLibrary/Hats/get out.ds
+presets/mdaDrumLibrary/Hats/hardhat 2.ds
+presets/mdaDrumLibrary/Hats/hardhat.ds
+presets/mdaDrumLibrary/Hats/hardly hh.ds
+presets/mdaDrumLibrary/Hats/heavy electrihat.ds
+presets/mdaDrumLibrary/Hats/hh.ds
+presets/mdaDrumLibrary/Hats/hip overtone hat.ds
+presets/mdaDrumLibrary/Hats/large open hh.ds
+presets/mdaDrumLibrary/Hats/lighthat.ds
+presets/mdaDrumLibrary/Hats/little hat.ds
+presets/mdaDrumLibrary/Hats/live hat.ds
+presets/mdaDrumLibrary/Hats/live sound hh.ds
+presets/mdaDrumLibrary/Hats/live sound oh.ds
+presets/mdaDrumLibrary/Hats/loaded hat.ds
+presets/mdaDrumLibrary/Hats/loaded open hat.ds
+presets/mdaDrumLibrary/Hats/oh so high hat.ds
+presets/mdaDrumLibrary/Hats/oil hat.ds
+presets/mdaDrumLibrary/Hats/pedal hh.ds
+presets/mdaDrumLibrary/Hats/q ride 2.ds
+presets/mdaDrumLibrary/Hats/q ride.ds
+presets/mdaDrumLibrary/Hats/sandy ride.ds
+presets/mdaDrumLibrary/Hats/scratchy hh.ds
+presets/mdaDrumLibrary/Hats/shaker ride long.ds
+presets/mdaDrumLibrary/Hats/shaker ride.ds
+presets/mdaDrumLibrary/Hats/simple ride.ds
+presets/mdaDrumLibrary/Hats/sleepy 1.ds
+presets/mdaDrumLibrary/Hats/sleepy 2.ds
+presets/mdaDrumLibrary/Hats/sleepy ride 2.ds
+presets/mdaDrumLibrary/Hats/sleepy ride.ds
+presets/mdaDrumLibrary/Hats/slick hat compressd open.ds
+presets/mdaDrumLibrary/Hats/slick hat half open.ds
+presets/mdaDrumLibrary/Hats/slick hat open.ds
+presets/mdaDrumLibrary/Hats/slick hat.ds
+presets/mdaDrumLibrary/Hats/slide hat.ds
+presets/mdaDrumLibrary/Hats/softie lo-fi hat.ds
+presets/mdaDrumLibrary/Hats/softie lo-fi open hat 2.ds
+presets/mdaDrumLibrary/Hats/softie lo-fi open hat.ds
+presets/mdaDrumLibrary/Hats/squeeze  me open hat.ds
+presets/mdaDrumLibrary/Hats/squeeze me hat.ds
+presets/mdaDrumLibrary/Hats/stack hhh.ds
+presets/mdaDrumLibrary/Hats/starry hh.ds
+presets/mdaDrumLibrary/Hats/starry short oh.ds
+presets/mdaDrumLibrary/Hats/static tone hat.ds
+presets/mdaDrumLibrary/Hats/tarp hh.ds
+presets/mdaDrumLibrary/Hats/the sting hat 2.ds
+presets/mdaDrumLibrary/Hats/the sting hat.ds
+presets/mdaDrumLibrary/Hats/the sting open hat.ds
+presets/mdaDrumLibrary/Hats/threshold noise open.ds
+presets/mdaDrumLibrary/Hats/threshold noise.ds
+presets/mdaDrumLibrary/Hats/touch me hat.ds
+presets/mdaDrumLibrary/Latin/Bongo_h.ds
+presets/mdaDrumLibrary/Latin/Bongo_m2.ds
+presets/mdaDrumLibrary/Latin/Bongo_mu.ds
+presets/mdaDrumLibrary/Latin/Clave_we.ds
+presets/mdaDrumLibrary/Latin/Gamelan.ds
+presets/mdaDrumLibrary/Latin/Maracas.ds
+presets/mdaDrumLibrary/Latin/Shaker_1.ds
+presets/mdaDrumLibrary/Latin/Shaker_2.ds
+presets/mdaDrumLibrary/Latin/Tamb_hit.ds
+presets/mdaDrumLibrary/Latin/Tamb_shk.ds
+presets/mdaDrumLibrary/Latin/ThumbPno.ds
+presets/mdaDrumLibrary/Latin/Triangle.ds
+presets/mdaDrumLibrary/Latin/bongo_l.ds
+presets/mdaDrumLibrary/Latin/guiro.ds
+presets/mdaDrumLibrary/Latin/one_clap.ds
+presets/mdaDrumLibrary/Latin/taiko.ds
+presets/mdaDrumLibrary/Linn/linn_cab.ds
+presets/mdaDrumLibrary/Linn/linn_cga1.ds
+presets/mdaDrumLibrary/Linn/linn_cga2.ds
+presets/mdaDrumLibrary/Linn/linn_cga3.ds
+presets/mdaDrumLibrary/Linn/linn_cgam.ds
+presets/mdaDrumLibrary/Linn/linn_clp.ds
+presets/mdaDrumLibrary/Linn/linn_cow.ds
+presets/mdaDrumLibrary/Linn/linn_kik.ds
+presets/mdaDrumLibrary/Linn/linn_snr.ds
+presets/mdaDrumLibrary/Linn/linn_stk.ds
+presets/mdaDrumLibrary/Linn/linn_tamb.ds
+presets/mdaDrumLibrary/Linn/linn_tom1.ds
+presets/mdaDrumLibrary/Linn/linn_tom2.ds
+presets/mdaDrumLibrary/Linn/linn_tom3.ds
+presets/mdaDrumLibrary/Linn/linn_tom4.ds
+presets/mdaDrumLibrary/Linn/linn_tom5.ds
+presets/mdaDrumLibrary/RnB/Hat_O.ds
+presets/mdaDrumLibrary/RnB/S_hollow.ds
+presets/mdaDrumLibrary/RnB/clapfilt.ds
+presets/mdaDrumLibrary/RnB/hat rattle.ds
+presets/mdaDrumLibrary/RnB/hat.ds
+presets/mdaDrumLibrary/RnB/k_hard.ds
+presets/mdaDrumLibrary/RnB/k_muffle.ds
+presets/mdaDrumLibrary/RnB/k_soft.ds
+presets/mdaDrumLibrary/RnB/old kik.ds
+presets/mdaDrumLibrary/RnB/popclap.ds
+presets/mdaDrumLibrary/RnB/popsnare.ds
+presets/mdaDrumLibrary/RnB/s_pitch.ds
+presets/mdaDrumLibrary/RnB/s_spit.ds
+presets/mdaDrumLibrary/RnB/snare&hat.ds
+presets/mdaDrumLibrary/RnB/x_backwd.ds
+presets/mdaDrumLibrary/TR606/TR606 Cymbal.ds
+presets/mdaDrumLibrary/TR606/TR606 Hat_C.ds
+presets/mdaDrumLibrary/TR606/TR606 Hat_O.ds
+presets/mdaDrumLibrary/TR606/TR606 Kick.ds
+presets/mdaDrumLibrary/TR606/TR606 Snare.ds
+presets/mdaDrumLibrary/TR606/TR606 Tom_H.ds
+presets/mdaDrumLibrary/TR606/TR606 Tom_L.ds
+presets/mdaDrumLibrary/TR77/Tr77 cui1.ds
+presets/mdaDrumLibrary/TR77/Tr77 cui2.ds
+presets/mdaDrumLibrary/TR77/Tr77 cym.ds
+presets/mdaDrumLibrary/TR77/Tr77 hat.ds
+presets/mdaDrumLibrary/TR77/Tr77 kick.ds
+presets/mdaDrumLibrary/TR77/Tr77 snare.ds
+presets/mdaDrumLibrary/TR77/Tr77 tom1.ds
+presets/mdaDrumLibrary/TR77/Tr77 tom2.ds
+presets/mdaDrumLibrary/TR808/Clave.ds
+presets/mdaDrumLibrary/TR808/Cowbell.ds
+presets/mdaDrumLibrary/TR808/Handclap.ds
+presets/mdaDrumLibrary/TR808/Hat_c.ds
+presets/mdaDrumLibrary/TR808/Hat_o.ds
+presets/mdaDrumLibrary/TR808/Kick.ds
+presets/mdaDrumLibrary/TR808/Kickhard.ds
+presets/mdaDrumLibrary/TR808/Kicklong.ds
+presets/mdaDrumLibrary/TR808/Ride.ds
+presets/mdaDrumLibrary/TR808/Rimshot.ds
+presets/mdaDrumLibrary/TR808/Snare.ds
+presets/mdaDrumLibrary/TR808/Snr_snap.ds
+presets/mdaDrumLibrary/TR808/Tom_hi.ds
+presets/mdaDrumLibrary/TR808/Tom_lo.ds
+presets/mdaDrumLibrary/TR808/Tom_mid.ds
+presets/mdaDrumLibrary/TR909/Clap.ds
+presets/mdaDrumLibrary/TR909/Hat-c.ds
+presets/mdaDrumLibrary/TR909/Hat-c2.ds
+presets/mdaDrumLibrary/TR909/Hat-o.ds
+presets/mdaDrumLibrary/TR909/Hat-o2.ds
+presets/mdaDrumLibrary/TR909/Kick.ds
+presets/mdaDrumLibrary/TR909/Kick_1.ds
+presets/mdaDrumLibrary/TR909/Kick_2.ds
+presets/mdaDrumLibrary/TR909/Kick_3.ds
+presets/mdaDrumLibrary/TR909/Snare.ds
+presets/mdaDrumLibrary/TR909/Snare2.ds
+presets/mdaDrumLibrary/TR909/TR909 Clap.ds
+presets/mdaDrumLibrary/TR909/TR909 Kick.ds
