@@ -132,7 +132,7 @@ def _build(body, screen):
 
     dk.button(wcard, "Connect", w=150, h=44, bg=dk.ACCENT, cb=connect_cb).align(lv.ALIGN.TOP_RIGHT, 0, 66)
     dk.button(wcard, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
-        cb=lambda e: tulip.keyboard()).align(lv.ALIGN.TOP_RIGHT, 0, 118)
+        cb=lambda e: dk.toggle_keyboard_for(ssid.ta)).align(lv.ALIGN.TOP_RIGHT, 0, 118)
 
     # --- Volume ---
     _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
@@ -204,6 +204,12 @@ def _build(body, screen):
         dd.set_options(opts)
         dd.set_selected(sm.screensaver_index(cfg.get(key, 0)))
         dd.set_width(200)
+        try:
+            # these rows sit near the bottom of a long scroll: opening DOWN
+            # clipped the last options below the screen (unreachable)
+            dd.set_dir(lv.DIR.TOP)
+        except Exception:
+            pass
         dk.style_dropdown(dd)
         dd.add_event_cb(_screensaver_cb(key), lv.EVENT.VALUE_CHANGED, None)
 

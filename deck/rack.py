@@ -431,7 +431,8 @@ def _build_edit(parent, shell):
                        placeholder="instrument name", w=250, h=44)
     nt.group.align(lv.ALIGN.RIGHT_MID, -76, 0)
     dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
-              cb=lambda e: tulip.keyboard()).align(lv.ALIGN.RIGHT_MID, -14, 0)
+              cb=lambda e: dk.toggle_keyboard_for(nt.ta)).align(
+                  lv.ALIGN.RIGHT_MID, -14, 0)
 
     # Per keystroke: RAM cache only (a full config flash write per keypress was
     # UX-REVIEW-6 M1 -- the exact pattern the perf round outlawed for sliders).

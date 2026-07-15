@@ -217,8 +217,12 @@ class HomeShell:
         self.content.set_pos(0, BAR_H)
         dk._flat(self.content, bg=dk.BG)
 
-    def push(self, builder, title, key=None):
-        """Create a full-size panel, hide the current one, let builder fill it."""
+    def push(self, builder, title, key=None, slow=False):
+        """Create a full-size panel, hide the current one, let builder fill it.
+
+        slow=True paints a 'Loading...' placeholder first and runs the builder
+        on the next tick -- long builds (Apps discovery scans /user) otherwise
+        read as a frozen UI."""
         self._refill_gen += 1   # cancel any pending back()-refill
         panel = lv.obj(self.content)
         panel.set_size(self.W, self.H - BAR_H)
@@ -227,7 +231,32 @@ class HomeShell:
         prev = self.stack.push(panel, title, key, builder)
         if prev is not None:
             prev.add_flag(lv.obj.FLAG.HIDDEN)
-        self._fill(panel, builder)
+        if slow:
+            lbl = dk.label(panel, "Loading...", color=dk.MUTED, font=dk.FONT_M)
+            try:
+                lbl.center()
+            except Exception:
+                pass
+            gen = self._refill_gen
+
+            def _fill_later(_x):
+                if not self._alive or gen != self._refill_gen:
+                    return
+                try:
+                    panel.clean()
+                except Exception:
+                    return          # panel already gone
+                self._fill(panel, builder)
+            try:
+                tulip.defer(_fill_later, 0, 30)
+            except Exception:
+                try:
+                    panel.clean()
+                except Exception:
+                    pass
+                self._fill(panel, builder)
+        else:
+            self._fill(panel, builder)
         self._sync_chrome()
         return panel
 
@@ -245,7 +274,6 @@ class HomeShell:
             pass
         self.stack.set_top(title, key, builder)
         self._fill(h, builder)
-        self._invalidate_top_later(self._refill_gen)  # stale pixels (NEW-2)
         self._sync_chrome()
         return h
 
@@ -269,77 +297,44 @@ class HomeShell:
         removed, revealed = self.stack.pop()
         if removed is None:
             return
-        try:
-            removed.delete()
-        except Exception:
-            pass
-        if revealed is not None:
+        if revealed is None:
             try:
-                revealed.remove_flag(lv.obj.FLAG.HIDDEN)
+                removed.delete()
             except Exception:
                 pass
-            # Refresh the revealed panel from its builder so any state changed in
-            # the panel we just left (patch, params, instrument list) shows now.
-            # CRITICAL: do this on a DEFERRED tick, not inline. Rebuilding a heavy
-            # panel (the tabbed Sound/FX editor) synchronously here -- back-to-back
-            # with the sub-panel teardown above, all inside the Back event callback
-            # -- starves CPU1 long enough to trip the interrupt WDT and reboot the
-            # device. Splitting teardown and rebuild across ticks avoids it.
-            self._schedule_refill()
-        self._sync_chrome()
-
-    def _invalidate_top_later(self, gen):
-        """Repaint the top panel one tick after a rebuild (see NEW-2 note in
-        _schedule_refill: a same-tick invalidate provably doesn't take)."""
-        def _inv(_x):
-            if not self._alive or gen != self._refill_gen:
-                return
-            h = self.stack.top_handle()
-            if h is None:
-                return
-            try:
-                h.invalidate()
-            except Exception:
-                pass
-        try:
-            tulip.defer(_inv, 0, 60)
-        except Exception:
-            _inv(None)
-
-    def _schedule_refill(self):
-        """Rebuild the current top panel from its builder, on a later tick.
-
-        Re-derives the top handle/builder at fire time (never captures a specific
-        panel) and is generation-guarded, so a refill queued for a panel that has
-        since been popped or replaced is skipped -- no use-after-free, no redundant
-        heavy rebuild."""
+            self._sync_chrome()
+            return
+        # ONE visual swap (was 3-4 full repaints: delete popped -> reveal the
+        # stale panel -> clean -> rebuild -> invalidate, each flashing the
+        # screen in DIRECT mode). The popped panel STAYS on screen while the
+        # revealed panel rebuilds underneath -- still HIDDEN, so the rebuild
+        # paints nothing -- then reveal + delete land on the same tick.
+        # Still deferred off the Back callback: rebuilding a heavy panel
+        # inline inside the event tick is the interrupt-WDT pattern.
         self._refill_gen += 1
         gen = self._refill_gen
 
         def _do(_x):
-            if not self._alive or gen != self._refill_gen:
-                return
-            h = self.stack.top_handle()
-            b = self.stack.top_builder()
-            if h is None or b is None:
-                return
+            stale = (not self._alive) or (gen != self._refill_gen)
+            if not stale:
+                h = self.stack.top_handle()
+                b = self.stack.top_builder()
+                try:
+                    if h is not None and b is not None:
+                        h.clean()
+                        self._fill(h, b)
+                        h.remove_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
             try:
-                h.clean()
-                self._fill(h, b)
+                removed.delete()
             except Exception:
                 pass
-            # Panels rebuilt on this deferred tick DRAW STALE PIXELS until
-            # something invalidates them -- UX-REVIEW-7 NEW-2 root-caused the
-            # M3 green/blue switch flip-flop to this (styles resolved green,
-            # glass stayed blue). Empirically the invalidate must land on a
-            # LATER tick: issued in the same tick as the rebuild it doesn't
-            # take (verified on-device); one tick later it does.
-            self._invalidate_top_later(gen)
         try:
             tulip.defer(_do, 0, 10)
         except Exception:
-            # No defer available (host tests): fall back to inline.
             _do(None)
+        self._sync_chrome()
 
     def reset_to_root(self):
         self._refill_gen += 1   # cancel any pending back()-refill

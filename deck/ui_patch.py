@@ -366,18 +366,11 @@ def _install_keyboard_partial():
             try:
                 if now_up and not was_up:
                     tulip.display_partial(1)
-
-                    # restyle on a LATER tick: the open tick already carries
-                    # the keyboard build + render-mode switch, and stacking
-                    # more LVGL work onto it is the WDT pattern (UX-REVIEW-7
-                    # NEW-1). Guarded: the keyboard may already be gone.
-                    def _restyle(x):
-                        try:
-                            import deckui
-                            deckui.style_keyboard()
-                        except Exception:
-                            pass
-                    tulip.defer(_restyle, 0, 120)
+                    # same-tick restyle: it's ~7 style calls on one button
+                    # matrix (cheap); deferring it flashed the theme-black
+                    # keyboard for a beat before the deck palette landed
+                    import deckui
+                    deckui.style_keyboard()
                 elif was_up and not now_up:
                     tulip.display_partial(0)
             except Exception:

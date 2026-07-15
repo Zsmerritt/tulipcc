@@ -314,7 +314,8 @@ def _rebuild_content():
         pass
     _s['kbbtn'] = dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60,
                             bg=dk.SURFACE2,
-                            cb=lambda e: (tulip.keyboard(), _kb_layout_cb(e)))
+                            cb=lambda e: (dk.toggle_keyboard_for(_s['searchta']),
+                                          _kb_layout_cb(e)))
     _s['kbbtn'].set_pos(w - 24 - 72, 100)
 
     # patch list

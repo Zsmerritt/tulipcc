@@ -152,6 +152,17 @@ def style_dropdown(dd):
         pass
 
 
+def _scrollbar_gutter(body):
+    # Reserve a right-side gutter so the scrollbar never overlaps content --
+    # slider knobs at max sat exactly under it and couldn't be grabbed. The
+    # scrollbar draws in the padding area, i.e. in the gutter, at the right.
+    body.set_style_pad_right(18, 0)
+    try:
+        body.set_style_width(6, lv.PART.SCROLLBAR)
+    except Exception:
+        pass
+
+
 def scroll_body(screen, top=118, gap=12):
     # A vertical, scrollable flex column that fills the area below the header.
     w, h = tulip.screen_size()
@@ -162,6 +173,7 @@ def scroll_body(screen, top=118, gap=12):
     body.set_flex_flow(lv.FLEX_FLOW.COLUMN)
     body.set_style_pad_row(gap, 0)
     body.set_scroll_dir(lv.DIR.VER)
+    _scrollbar_gutter(body)
     return body
 
 
@@ -175,6 +187,7 @@ def scroll_col(parent, w, h, gap=12):
     body.set_flex_flow(lv.FLEX_FLOW.COLUMN)
     body.set_style_pad_row(gap, 0)
     body.set_scroll_dir(lv.DIR.VER)
+    _scrollbar_gutter(body)
     return body
 
 
@@ -254,8 +267,12 @@ def text_field(parent, text='', placeholder='', w=300, h=44, font=None):
     Returns the UIText; position via .group like before."""
     if font is None:
         font = FONT_S
+    # Dark WELL for the field (BG, the darkest tone, + a thin edge): on the
+    # old SURFACE2 fill the placeholder blended into the card behind it --
+    # "impossible to read" on the patch picker. Text and placeholder both pop
+    # against the well.
     t = tulip.UIText(text=text, placeholder=placeholder, w=w, h=h,
-                     bg_color=SURFACE2, fg_color=TEXT, font=font)
+                     bg_color=BG, fg_color=WHITE, font=font)
     t.group.set_parent(parent)
     t.group.set_size(w, h)
     t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
@@ -275,7 +292,8 @@ def text_field(parent, text='', placeholder='', w=300, h=44, font=None):
         t.ta.set_style_pad_hor(12, 0)
         t.ta.align(lv.ALIGN.CENTER, 0, 0)
         t.ta.set_style_radius(10, 0)
-        t.ta.set_style_border_width(0, 0)
+        t.ta.set_style_border_width(1, 0)
+        t.ta.set_style_border_color(c(SURFACE2), 0)
     except Exception:
         pass
     try:
@@ -308,23 +326,48 @@ def style_keyboard():
         pass
 
 
+def open_keyboard_for(ta):
+    """Open the soft keyboard (if not already up) TARGETING `ta`.
+
+    The frozen ui.py keyboard only emits tulip.key_send() key events, which
+    reach LVGL textareas solely on screens with handle_keyboard=True -- so in
+    shell panels the keyboard LOOKED fine but typed nothing. set_textarea()
+    engages LVGL's own built-in keyboard handler, which inserts characters
+    into the textarea directly, no key-event plumbing needed."""
+    try:
+        import ui
+        if getattr(ui, 'lv_soft_kb', None) is None:
+            tulip.keyboard()
+            # style in the SAME tick: restyling a button-matrix is ~7 style
+            # calls on one object -- cheap -- and a deferred restyle painted
+            # the theme-black keyboard for a beat before the deck one
+            style_keyboard()
+        kb = getattr(ui, 'lv_soft_kb', None)
+        if kb is not None:
+            kb.set_textarea(ta)
+    except Exception:
+        pass
+
+
+def toggle_keyboard_for(ta):
+    """Keyboard-button behavior: close the keyboard if it's up, else open it
+    targeting `ta`."""
+    try:
+        import ui
+        if getattr(ui, 'lv_soft_kb', None) is not None:
+            tulip.keyboard()          # toggle off
+        else:
+            open_keyboard_for(ta)
+    except Exception:
+        pass
+
+
 def autoshow_keyboard(ta):
     """Pop the on-screen keyboard when a text field is focused (tapped). Guards
-    against ui.keyboard()'s toggle by only opening it when it isn't already up."""
+    against ui.keyboard()'s toggle by only opening it when it isn't already up,
+    and always (re)targets the keyboard at this field."""
     def _cb(e):
-        try:
-            import ui
-            if getattr(ui, 'lv_soft_kb', None) is None:
-                tulip.keyboard()
-                # restyle on a later tick -- the open tick is already the
-                # heaviest one (keyboard build + render-mode switch), and
-                # stacking onto it is the WDT pattern (UX-REVIEW-7 NEW-1)
-                try:
-                    tulip.defer(lambda x: style_keyboard(), 0, 120)
-                except Exception:
-                    style_keyboard()
-        except Exception:
-            pass
+        open_keyboard_for(ta)
     try:
         ta.add_event_cb(_cb, lv.EVENT.FOCUSED, None)
     except Exception:

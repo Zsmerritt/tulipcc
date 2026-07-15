@@ -156,13 +156,27 @@ def _open_system(shell):
 
 
 def _open_apps(shell):
-    items = list(_APPS)
-    for name, mod in _discover_user():
-        items.append((lv.SYMBOL.FILE, name, "run", mod, dk.TEAL))
-    _open_submenu(shell, "Apps", 'apps', items)
+    # Discovery happens INSIDE the builder so it runs behind the shell's
+    # 'Loading...' placeholder (slow=True) instead of freezing the tap.
+    def build(parent, sh):
+        items = list(_APPS)
+        for name, mod in _discover_user():
+            items.append((lv.SYMBOL.FILE, name, "run", mod, dk.TEAL))
+        _submenu_builder(items)(parent, sh)
+    if sm.open_panel_action(shell.top_key(), 'apps') == 'rebuild':
+        shell.rebuild_top(build, "Apps", key='apps')
+    else:
+        shell.push(build, "Apps", key='apps', slow=True)
+
+
+# Discovery cache keyed on the /user directory listing: opening Apps used to
+# re-read EVERY non-deck .py in full (including 40KB+ files missing from the
+# old exclusion list) on every open -- the "Apps freezes" report.
+_app_scan = None
 
 
 def _discover_user():
+    global _app_scan
     import os
     apps = []
     known = {'Instruments', 'Devices', 'System'}
@@ -170,11 +184,17 @@ def _discover_user():
         entries = sorted(os.listdir('/user'))
     except OSError:
         return apps
+    key = tuple(entries)
+    if _app_scan is not None and _app_scan[0] == key:
+        return _app_scan[1]
     deck_modules = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                     'welcome', 'deckui', 'deckcfg', 'ui_patch', 'fleet',
                     'forwarder', 'amyfleet', 'homeshell', 'shellmodel',
                     'navshell', 'calib', 'rack', 'devices', 'screensaver',
-                    'voices', 'wordpad', 'worldui', 'drums')
+                    'voices', 'wordpad', 'worldui', 'drums',
+                    # these were MISSING, so Apps read them in full every open
+                    'test_deck', 'midimon', 'amyparams', 'curated',
+                    'parameditor', 'decklog', 'drums_kit', 'channels')
     for entry in entries:
         if entry.startswith('.'):
             continue
@@ -192,6 +212,7 @@ def _discover_user():
                         apps.append((name, name))
             except OSError:
                 pass
+    _app_scan = (key, apps)
     return apps
 
 
