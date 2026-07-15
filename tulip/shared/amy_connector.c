@@ -423,34 +423,40 @@ static void mount_gamma9001_drums(void) {
 #endif
 
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
-#include "esp_mmu_map.h"
 // GM SoundFont banks: the `fonts` partition holds the GeneralUser bank at 0
-// and the big multi-font bank at 0x300000 (fs_create.py assembles them). They
-// are mmapped SEPARATELY: one 12.5MB map needs 12.5MB of contiguous data
-// vaddr, which the S3 no longer has once PSRAM + app rodata + the drums
-// partition are mapped ("mmap: no such vaddr range"). Two smaller maps fit
-// the fragments. Each map that fails just leaves its bank unavailable.
+// and the big multi-font bank at 0x300000 (fs_create.py assembles them),
+// mapped separately (a single 12.5MB map needs contiguous vaddr the S3
+// doesn't have). Whatever doesn't fit the 16MB dynamic mmap pool falls back
+// to a PSRAM copy inside map_or_load_partition.
 #define GM_BIG_BYTE_OFFSET 0x300000
-static const void *mount_fonts_range(const esp_partition_t *part,
+static const void *map_or_load_partition(const esp_partition_t *part,
                                      uint32_t off, uint32_t size,
                                      const char *what) {
-    size_t free_blk = 0;
-    esp_mmu_map_get_max_consecutive_free_block_size(
-        MMU_MEM_CAP_READ | MMU_MEM_CAP_8BIT, MMU_TARGET_FLASH0, &free_blk);
     const void *map = NULL;
     esp_partition_mmap_handle_t handle;  // never unmapped; lives as long as AMY
     esp_err_t err = esp_partition_mmap(part, off, size,
                                        ESP_PARTITION_MMAP_DATA, &map, &handle);
-    if (err != ESP_OK || map == NULL) {
-        fprintf(stderr, "gm: %s mmap failed (%d): need %u, largest free vaddr block %u\n",
-                what, (int)err, (unsigned)size, (unsigned)free_blk);
-        // Name every occupant of the vaddr space: the free pool measures ~6MB
-        // smaller than the PSRAM+rodata ledger predicts, and whatever holds
-        // the difference decides how the three PCM maps ever fit together.
-        esp_mmu_map_dump_mapped_blocks(stdout);
+    if (err == ESP_OK && map != NULL)
+        return map;
+    // The S3's dynamic flash-mmap pool is a hard 16MB (the lower half of the
+    // 32MB data space is statically claimed by the PSRAM aperture + the
+    // SPIRAM_FETCH_INSTRUCTIONS/RODATA relocations, measured live), and the
+    // three PCM banks total 16.02MB -- whichever bank loses the packing race
+    // gets COPIED into PSRAM instead (~9.8MB free; AMY just reads a pointer).
+    void *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        fprintf(stderr, "gm: %s mmap failed (%d) and PSRAM alloc of %u failed; bank unavailable\n",
+                what, (int)err, (unsigned)size);
         return NULL;
     }
-    return map;
+    if (esp_partition_read(part, off, buf, size) != ESP_OK) {
+        free(buf);
+        fprintf(stderr, "gm: %s partition read failed; bank unavailable\n", what);
+        return NULL;
+    }
+    fprintf(stderr, "gm: %s vaddr pool full -> loaded %u bytes into PSRAM\n",
+            what, (unsigned)size);
+    return buf;
 }
 
 static void mount_gm_fonts(void) {
@@ -464,7 +470,7 @@ static void mount_gm_fonts(void) {
     // big bank's 9.5MB, so it must grab its contiguous block before the
     // smaller maps fragment the space (observed live: big-bank mmap short by
     // exactly two MMU pages when mounted after the others).
-    const void *big = mount_fonts_range(part, GM_BIG_BYTE_OFFSET,
+    const void *big = map_or_load_partition(part, GM_BIG_BYTE_OFFSET,
                                         part->size - GM_BIG_BYTE_OFFSET, "big bank");
     if (big != NULL)
         amy_set_gm_big_pcm((const int16_t *)big);
@@ -475,7 +481,7 @@ static void mount_gm_fonts_small(void) {
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
     if (part == NULL)
         return;
-    const void *small = mount_fonts_range(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
+    const void *small = map_or_load_partition(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
     if (small != NULL)
         amy_set_gm_pcm((const int16_t *)small);
 }
