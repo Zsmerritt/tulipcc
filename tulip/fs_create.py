@@ -101,22 +101,34 @@ if drums_partition is not None:
     print("drums.bin: %d bytes into %s partition at %s" % (
         len(drums_bin), 'drums', hex(drums_partition.offset)))
 
-# GM SoundFont bank: flash the checked-in fonts.bin from the amy submodule
-# into the `fonts` partition (AMY mmaps it at boot; see amy_connector.c).
+# GM SoundFont banks: assemble the checked-in blobs from the amy submodule
+# into the `fonts` partition image (AMY mmaps it at boot; see amy_connector.c).
+# Layout must match the amy maps: GeneralUser bank (pcm_gm.h) at 0, the big
+# multi-font bank (pcm_gm_big.h) at 0x300000.
 fonts_partition = None
 try:
     fonts_partition = partition_table.find_by_name('fonts')
 except Exception:
     pass
 if fonts_partition is not None:
-    fonts_bin = open('../../amy/sounds/gm/fonts.bin', 'rb').read()
+    GM_BIG_OFFSET = 0x300000
+    small = open('../../amy/sounds/gm/fonts.bin', 'rb').read()
+    if len(small) > GM_BIG_OFFSET:
+        raise SystemExit("fonts.bin (%d bytes) overruns the big bank at 0x%x"
+                         % (len(small), GM_BIG_OFFSET))
+    fonts_bin = small + b'\xff' * (GM_BIG_OFFSET - len(small))
+    try:
+        fonts_bin += open('../../amy/sounds/gm/fonts_big.bin', 'rb').read()
+    except OSError:
+        print("fonts_big.bin missing; only the GeneralUser bank goes in")
     if len(fonts_bin) > fonts_partition.size:
-        raise SystemExit("fonts.bin (%d bytes) does not fit the fonts partition (%d bytes)"
+        raise SystemExit("fonts image (%d bytes) does not fit the fonts partition (%d bytes)"
                          % (len(fonts_bin), fonts_partition.size))
     with open('build/%s-fonts.bin' % (distro), 'wb') as fh:
         fh.write(fonts_bin)
-    print("fonts.bin: %d bytes into %s partition at %s" % (
-        len(fonts_bin), 'fonts', hex(fonts_partition.offset)))
+    print("fonts image: %d bytes (%d + big@0x%x) into %s partition at %s" % (
+        len(fonts_bin), len(small), GM_BIG_OFFSET, 'fonts',
+        hex(fonts_partition.offset)))
 
 # Update the flash_args file to have the sys and user partitions
 flash_args = open('build/flash_args','r').read().split('\n')[:-1]

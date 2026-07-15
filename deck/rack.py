@@ -19,10 +19,11 @@ _s = {}
 # Type = what the instrument IS (an engine); "Kit" stays the label of a drum
 # instrument's patch slot (UX-REVIEW-6 L9 / 7).
 _TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
-              ('gm', 'GM Bank'), ('drums', 'Drums')]
+              ('gm', 'GM Bank'), ('gm2', 'E-mu GM'), ('drums', 'Drums')]
 _TYPE_NAMES = dict(_TYPE_LIST)
-# For 'gm' the patch slot holds a GM program number (0 = Grand Piano).
-_TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'gm': 0, 'drums': 0}
+# For 'gm'/'gm2' the patch slot holds a GM program number (0 = Grand Piano).
+_TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'gm': 0, 'gm2': 0,
+                     'drums': 0}
 
 
 def _panel_h():

@@ -194,7 +194,8 @@ def _discover_user():
                     'voices', 'wordpad', 'worldui', 'drums',
                     # these were MISSING, so Apps read them in full every open
                     'test_deck', 'midimon', 'amyparams', 'curated',
-                    'parameditor', 'decklog', 'drums_kit', 'channels', 'gm')
+                    'parameditor', 'decklog', 'drums_kit', 'channels', 'gm',
+                    'gmbig')
     for entry in entries:
         if entry.startswith('.'):
             continue

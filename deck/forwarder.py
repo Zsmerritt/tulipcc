@@ -281,12 +281,17 @@ def start():
                     syn = drums_kit.make_synth(instr.get('kit', 384),
                                                num_voices=instr.get('num_voices', 6),
                                                channel=(ch if c_own else None))
-                elif instr.get('type') == 'gm':
-                    # A GM instrument plays one program from the SoundFont
+                elif instr.get('type') in ('gm', 'gm2'):
+                    # A GM instrument plays one program from a SoundFont
                     # bank; its 'patch' slot holds the GM program number.
-                    import gm
+                    # 'gm' = GeneralUser bank, 'gm2' = E-mu 4MB font from
+                    # the big bank.
+                    if instr.get('type') == 'gm2':
+                        import gmbig as _gmmod
+                    else:
+                        import gm as _gmmod
                     syn = _synth.PatchSynth(
-                        patch_string=gm.patch_string(instr.get('patch', 0)),
+                        patch_string=_gmmod.patch_string(instr.get('patch', 0)),
                         num_voices=instr.get('num_voices', 10),
                         channel=(ch if c_own else None))
                 else:

@@ -14,18 +14,19 @@ import lvgl as lv
 # The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
 # patches -- so we build a small list, not all 257. Drums use the pad editor.
 _TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257),
-               'gm': (0, 128)}
+               'gm': (0, 128), 'gm2': (0, 128)}
 _TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano',
-              'drums': 'Drums', 'gm': 'GM Bank'}
+              'drums': 'Drums', 'gm': 'GM Bank', 'gm2': 'E-mu GM'}
 
-# GM "patches" are GM program numbers (0..127) resolved through gm.py, not
-# entries in the AMY patches[] name table. Favorites live at 1000+ so a
-# starred GM program never collides with a Juno patch of the same number.
-_GM_FAV_BASE = 1000
+# GM "patches" are GM program numbers (0..127) resolved through gm.py/
+# gmbig.py, not entries in the AMY patches[] name table. Favorites are
+# namespaced (1000+/2000+) so a starred GM program never collides with a
+# Juno patch of the same number.
+_GM_FAV_BASE = {'gm': 1000, 'gm2': 2000}
 
 
 def _is_gm():
-    return _type() == 'gm'
+    return _type() in _GM_FAV_BASE
 
 
 def _pname(n):
@@ -36,7 +37,8 @@ def _pname(n):
 
 
 def _fav_key(n):
-    return (_GM_FAV_BASE + n) if _is_gm() else n
+    base = _GM_FAV_BASE.get(_type())
+    return (base + n) if base is not None else n
 
 _s = {}
 
@@ -55,7 +57,10 @@ def _nums(favs):
     caller -- calling deckcfg.is_favorite() per patch was a config load per
     row."""
     lo, hi = _TYPE_RANGE.get(_type(), (0, 128))
-    if _is_gm():
+    if _type() == 'gm2':
+        import gmbig
+        nums = gmbig.programs()     # this font covers a subset of GM
+    elif _is_gm():
         nums = list(range(lo, hi))
     else:
         nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]

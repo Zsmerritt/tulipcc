@@ -8,8 +8,9 @@ phy_init, data, phy,     0xf000,   0x1000,
 ota_0,    app,  ota_0,   0x10000,  0x390000,
 ota_1,    app,  ota_1,   0x3a0000, 0x390000,
 system,   data, fat,     0x730000, 0x300000,
-vfs,      data, fat,     0xa30000, 0xf00000,
-# GM SoundFont bank (raw int16 PCM, mmapped by AMY; see amy pcm_gm.h)
-fonts,    data, undefined, 0x1930000, 0x330000,
+vfs,      data, fat,     0xa30000, 0x5b0000,
+# GM SoundFont banks (raw int16 PCM, mmapped by AMY): GeneralUser bank at 0,
+# big multi-font bank at 0x300000 (see amy pcm_gm.h / pcm_gm_big.h)
+fonts,    data, undefined, 0xfe0000, 0xc80000,
 # Gamma9001 drum banks (raw int16 PCM, mmapped by AMY; see amy pcm_gamma9001.h)
 drums,    data, undefined, 0x1c60000, 0x3a0000,
