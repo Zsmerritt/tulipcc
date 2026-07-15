@@ -32,6 +32,9 @@ import sys
 import tempfile
 import threading
 import time
+
+import functools
+print = functools.partial(print, flush=True)
 from functools import partial
 
 # Device-side updater. Placeholders (__BASE__/__SHA__/__SIZE__) are replaced
@@ -183,6 +186,9 @@ def main():
         out = sh(port, ['exec', code], timeout=900)
         if 'OTA:OK' not in out or 'OTA:BOOTSET' not in out:
             print('OTA FAILED:\n' + out)
+            # a failed update must be VISIBLE on the device, not a quiet
+            # return to Home (tap the notice to dismiss)
+            sh(port, ['exec', 'import fwprogress; fwprogress.fail()'], 60)
             return 5
         print('flashed + verified (download sha and partition read-back'
               ' both match)')

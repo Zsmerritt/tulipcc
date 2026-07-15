@@ -75,9 +75,12 @@ def show(total, title="Firmware update"):
 
 
 def update(done, total=None, note=None):
-    """Move the bar to `done` chunks (of show()'s total, or `total`)."""
+    """Move the bar to `done` chunks (of show()'s total, or `total`).
+    SELF-HEALING: if the overlay is missing (the initial show() exec was lost
+    to a transient port error -- observed live as 'no modal during a running
+    update'), recreate it here."""
     if _s['ov'] is None:
-        return
+        show(total or _s.get('total') or 1)
     if total:
         _s['total'] = max(1, int(total))
     t = _s['total']
@@ -105,6 +108,34 @@ def done(text="Update staged. Rebooting..."):
     """Fill the bar + final message (the reboot clears the screen anyway)."""
     update(_s['total'])
     stage(text)
+
+
+def fail(text="Update failed. Please try again."):
+    """Persistent failure notice: red bar + message, TAP TO DISMISS. Stays on
+    screen until acknowledged -- a failed update must never look like a quiet
+    return to Home."""
+    if _s['ov'] is None:
+        show(1)               # make sure there is something to paint red
+    try:
+        _s['bar'].set_width(_s['barw'])
+        _s['bar'].set_style_bg_color(dk.c(dk.RED), 0)
+    except Exception:
+        pass
+    stage(text)
+    try:
+        _s['sub'].set_style_text_color(dk.c(dk.RED), 0)
+        _s['pct'].set_text("tap to dismiss")
+    except Exception:
+        pass
+    ov = _s['ov']
+    if ov is not None:
+        try:
+            ov.add_flag(lv.obj.FLAG.CLICKABLE)
+            ov.add_event_cb(
+                lambda e: hide() if e.get_code() == lv.EVENT.CLICKED else None,
+                lv.EVENT.CLICKED, None)
+        except Exception:
+            pass
 
 
 def _close_refs():

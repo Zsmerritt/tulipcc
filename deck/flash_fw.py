@@ -24,6 +24,9 @@ import subprocess
 import sys
 import time
 
+import functools
+print = functools.partial(print, flush=True)
+
 CHUNK = 102400
 TRIES = 5
 
@@ -104,9 +107,9 @@ print('cleaned')""")
                 time.sleep(2)
             if not ok:
                 print('FAILED: %s did not verify' % name)
-                dev("import fwprogress; fwprogress.hide()", 60)
+                dev("import fwprogress; fwprogress.fail()", 60)
                 return 3
-        dev("import fwprogress; fwprogress.update(%d)" % (i + 1), 60)
+        dev("import fwprogress; fwprogress.update(%d, %d)" % (i + 1, n), 60)
     try:
         os.remove(tmp)
     except OSError:
@@ -130,7 +133,7 @@ print('assembled', os.stat('/user/fw_upgrade.bin')[6])""")
     got = dev_hash('fw_upgrade.bin')
     if got != total_hash:
         print('FAILED: assembled hash %s != %s' % (got, total_hash))
-        dev("import fwprogress; fwprogress.hide()", 60)
+        dev("import fwprogress; fwprogress.fail()", 60)
         return 4
     print('assembled image verified')
     dev("""
@@ -179,7 +182,7 @@ if a == b:
     print('OTA:BOOTSET')""", timeout=600)
     if 'OTA:OK' not in out or 'OTA:BOOTSET' not in out:
         print('FAILED: OTA write/verify\n' + out)
-        dev("import fwprogress; fwprogress.hide()", 60)
+        dev("import fwprogress; fwprogress.fail()", 60)
         return 5
 
     print('flashed + verified; rebooting device')
