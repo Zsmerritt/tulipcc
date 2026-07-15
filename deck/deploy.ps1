@@ -9,7 +9,10 @@
 param([string]$Port = "")
 
 $connect = if ($Port) { "connect $Port resume" } else { "resume" }
-$files = Get-ChildItem -Path $PSScriptRoot -Filter *.py | Sort-Object Name
+# test_*.py are host-side pytest files (CPython) -- never needed on-device,
+# and junk in /user slows the Apps discovery scan.
+$files = Get-ChildItem -Path $PSScriptRoot -Filter *.py |
+    Where-Object { $_.Name -notlike 'test_*' } | Sort-Object Name
 
 foreach ($f in $files) {
     Write-Host "-> /user/$($f.Name)"
