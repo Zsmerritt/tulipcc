@@ -381,12 +381,75 @@ def _install_keyboard_partial():
         pass
 
 
+def _install_safe_midi_drain():
+    """Re-register tulip's MIDI drain with a FAULT-ISOLATED version.
+
+    The frozen midi.c_fired_midi_event aborts its whole drain loop if ANY
+    registered callback raises -- every message still in the C queue then
+    strands until the NEXT MIDI event schedules a new drain. On a chord that
+    reads as 'I pressed a key and had to press it again to register'. Each
+    callback is now isolated per message (first failure per callback is
+    logged), so the queue always drains."""
+    try:
+        import midi as _midi
+        _logged = []
+
+        def _drain(is_sysex):
+            if is_sysex:
+                if _midi.sysex_callback is not None:
+                    try:
+                        _midi.sysex_callback(tulip.sysex_in())
+                    except Exception:
+                        pass
+            # Read the WHOLE backlog first, COALESCING the high-rate streams:
+            # controllers emit pressure/bend/CC continuously while keys are
+            # held (visible in the MIDI monitor), and at Python per-message
+            # cost a chord's note-ons queued behind dozens of stale pressure
+            # values -- the reported 300ms 'router catching up' lag. Only the
+            # LATEST pressure/bend per channel (and CC per controller) in a
+            # backlog survives; notes always dispatch, in order.
+            batch = []
+            latest = {}
+            m = tulip.midi_in()
+            while m is not None and len(m) > 0:
+                st = m[0] & 0xF0
+                if st == 0xD0 or st == 0xE0:
+                    key = m[0]                      # status+channel
+                elif st == 0xA0 and len(m) > 1:
+                    key = (m[0], m[1])              # polytouch: per note
+                elif st == 0xB0 and len(m) > 1:
+                    key = (m[0], m[1])              # CC: per controller
+                else:
+                    key = None                      # notes etc: never coalesce
+                if key is not None:
+                    i = latest.get(key)
+                    if i is not None:
+                        batch[i] = m                # supersede in place
+                        m = tulip.midi_in()
+                        continue
+                    latest[key] = len(batch)
+                batch.append(m)
+                m = tulip.midi_in()
+            for msg in batch:
+                for c in tuple(_midi.MIDI_CALLBACKS):
+                    try:
+                        c(msg)
+                    except Exception as e:
+                        if id(c) not in _logged:
+                            _logged.append(id(c))
+                            _log("midi callback raised: %r" % e)
+        tulip.midi_callback(_drain)
+    except Exception:
+        pass
+
+
 def apply():
     global _installed
     if _installed:
         return
     _installed = True
     _install_keyboard_partial()
+    _install_safe_midi_drain()
     _orig_draw = ui.UIScreen.draw_task_bar
     _orig_quit = ui.UIScreen.screen_quit_callback
 

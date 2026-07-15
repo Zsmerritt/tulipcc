@@ -20,8 +20,16 @@ import lvgl as lv
 _MAX = 120      # ring capacity (messages)
 _SHOW = 16      # default lines rendered (panel() sizes this to the card:
                 # a fixed 16 filled only half the screen)
-_LINE_H = 16    # unscii_16 line height, px
 _TICK_MS = 150
+
+
+def _line_h():
+    # ask the FONT (unscii_16 is 17px/line, not 16 -- assuming 16 overflowed
+    # the card); generous fallback so a miss shows fewer lines, never too many
+    try:
+        return max(12, dk.FONT_MONO.line_height)
+    except Exception:
+        return 20
 
 _s = {'buf': [], 'count': 0, 'paused': False, 'open': False, 'dirty': False,
       'lbl': None, 'cntlbl': None, 'show_clock': False}
@@ -185,7 +193,7 @@ def panel(parent, shell=None):
     lbl = dk.label(card, "waiting for MIDI...", 16, 12, color=dk.GREEN,
                    font=dk.FONT_MONO)
     _s['lbl'] = lbl
-    _s['show'] = max(10, (card_h - 24) // _LINE_H)
+    _s['show'] = max(10, (card_h - 28) // _line_h())
 
     _s['buf'] = []
     _s['count'] = 0

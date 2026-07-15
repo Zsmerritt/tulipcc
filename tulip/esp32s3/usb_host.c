@@ -260,6 +260,18 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
             }
         } else {
             fprintf(stderr, "midi transfer->status %d, in_xfer %d\n", transfer->status, in_xfer);
+            // RESUBMIT after a transient error: without this, each errored IN
+            // transfer permanently retired one of the 8 receive buffers (its
+            // packets -- e.g. a note-on -- silently lost, and the pool
+            // shrinking toward dead MIDI over a session). If the device is
+            // gone the submit fails and is logged; DEV_GONE cleans up anyway.
+            if (in_xfer && transfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
+                    transfer->status != USB_TRANSFER_STATUS_CANCELED) {
+                esp_err_t rerr = usb_host_transfer_submit(transfer);
+                if (rerr != ESP_OK) {
+                    fprintf(stderr, "midi IN resubmit err: 0x%x\n", rerr);
+                }
+            }
         }
     } else {
         fprintf(stderr, "Device_Handle_midi is %p but transfer is %p\n", Device_Handle_midi, transfer->device_handle);

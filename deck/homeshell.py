@@ -39,7 +39,17 @@ def _clock_str():
             # RTC never set (fresh boot, no NTP): a confidently wrong time is
             # worse than none (UX-REVIEW-6 N1)
             return "--:--"
-        return "%02d:%02d" % (t[3], t[4])
+        try:
+            import deckcfg
+            h24 = bool(deckcfg.get('clock_24h', True))
+        except Exception:
+            h24 = True
+        if h24:
+            return "%02d:%02d" % (t[3], t[4])
+        h = t[3] % 12
+        if h == 0:
+            h = 12
+        return "%d:%02d%s" % (h, t[4], "a" if t[3] < 12 else "p")
     except Exception:
         return "--:--"
 

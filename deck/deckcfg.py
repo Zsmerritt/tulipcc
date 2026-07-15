@@ -62,6 +62,7 @@ DEFAULTS = {
     'render_vsync': True,     # gate the partial-mode copy to vsync (tear-free)
     'wifi_ssid': '',
     'wifi_pass': '',
+    'clock_24h': True,        # top-bar clock format (Settings toggle)
     'setup_done': False,
     # screensaver thresholds in seconds (0 = never); see screensaver.py
     'dim_after': 0,

@@ -210,8 +210,20 @@ def _build(body, right, cw, screen):
                                   _reload_saver()),
                 color=dk.ORANGE, slider_w=cw - 230)
 
+    # --- Clock format ---
+    def _clock_switch(v):
+        deckcfg.set_value('clock_24h', v)
+        try:
+            import home
+            home._shell.refresh_status()   # repaint the bar clock now
+        except Exception:
+            pass
+    r = dk.row(body, h=56)
+    dk.label(r, "24-hour clock", color=dk.TEXT)
+    dk.switch(r, bool(cfg.get('clock_24h', True)), _clock_switch)
+
     # --- REPL font size (active size highlighted) ---
-    r = dk.row(body, h=64)
+    r = dk.row(body, h=56)
     dk.label(r, "Terminal font", color=dk.TEXT)
     g = dk.hgroup(r, w=300, h=48)
     cur_font = cfg.get('tfb_font', 0)
