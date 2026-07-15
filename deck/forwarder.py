@@ -34,6 +34,7 @@ _state = {
     'has_device_arg': None,  # firmware supports tulip.midi_out(msg, device)?
     'err_iids': set(),   # instrument ids whose synth already logged a failure
     'seen': 0,           # messages seen (activity flicker in the top-bar chips)
+    'c_channels': set(),  # channels whose notes AMY's C layer plays directly
 }
 
 _EMPTY = ((), ())        # shared empty route (no per-message allocation)
@@ -89,35 +90,43 @@ def _route(m):
     iids, boards = _state['routes'].get(ch, _EMPTY)
     if not iids and not boards:
         return
+    # Channels with a SINGLE internal instrument are C-OWNED: their synth
+    # number equals the channel, so AMY's C MIDI layer plays the notes
+    # directly (same as stock Tulip) -- zero Python in the note path, immune
+    # to any MP-task stall (the residual missed-note/latency reports). Python
+    # only handles layered channels, board forwarding, and UI state.
+    c_owned = ch in _state['c_channels']
 
     if status == 0x90 and len(m) > 2 and m[2] > 0:
-        note = m[1]
-        vel = m[2] / 127.0
-        played = None
-        synths = _state['synths']
-        for iid in iids:
-            syn = synths.get(iid)
-            if syn is not None:
-                try:
-                    syn.note_on(note, vel)
-                except Exception as e:
-                    _synth_err(iid, e)
-                if played is None:
-                    played = []
-                played.append(iid)
+        if not c_owned:
+            note = m[1]
+            vel = m[2] / 127.0
+            played = None
+            synths = _state['synths']
+            for iid in iids:
+                syn = synths.get(iid)
+                if syn is not None:
+                    try:
+                        syn.note_on(note, vel)
+                    except Exception as e:
+                        _synth_err(iid, e)
+                    if played is None:
+                        played = []
+                    played.append(iid)
+            if played:
+                _state['notes'][(ch, note)] = played
         for dev in boards:
             _emit(m, dev)                      # raw forward to the board
-        if played:
-            _state['notes'][(ch, note)] = played
     elif status == 0x80 or (status == 0x90 and len(m) > 2 and m[2] == 0):
-        note = m[1]
-        for iid in _state['notes'].pop((ch, note), ()):
-            syn = _state['synths'].get(iid)
-            if syn is not None:
-                try:
-                    syn.note_off(note)
-                except Exception as e:
-                    _synth_err(iid, e)
+        if not c_owned:
+            note = m[1]
+            for iid in _state['notes'].pop((ch, note), ()):
+                syn = _state['synths'].get(iid)
+                if syn is not None:
+                    try:
+                        syn.note_off(note)
+                    except Exception as e:
+                        _synth_err(iid, e)
         for dev in boards:
             _emit(m, dev)                      # forward the note-off raw
     else:
@@ -217,9 +226,20 @@ def start():
     _state['notes'] = {}
     _state['mpe_members'] = set()
     _state['err_iids'] = set()
+    _state['c_channels'] = set()
     _state['has_device_arg'] = None    # re-probe (firmware can't change, but
                                        # tests swap the tulip module)
     internal_synths = []
+
+    # Pre-pass: channels with exactly ONE enabled internal instrument get a
+    # synth whose number == the channel, so AMY's C layer grabs and plays the
+    # notes directly (stock Tulip's zero-latency path). Layered channels
+    # (2+ internals) keep auto synth numbers and Python routing.
+    internal_count = {}
+    for instr in instruments:
+        if instr.get('enabled', True) and instr.get('device') == 'internal':
+            ch_ = instr.get('channel', 1)
+            internal_count[ch_] = internal_count.get(ch_, 0) + 1
 
     import synth as _synth
     for instr in instruments:
@@ -238,26 +258,28 @@ def start():
             except Exception:
                 pass
             syn = None
+            # C-OWN the channel when this is its only internal instrument (or
+            # MPE, whose synth number MUST equal the zone master anyway): a
+            # synth numbered == channel makes AMY's C MIDI layer play the
+            # notes directly. Layered channels keep auto ids (16+) + Python
+            # routing (auto ids never collide with channels 1-15).
+            solo = internal_count.get(ch, 0) == 1
+            c_own = solo or is_mpe
             try:
-                # An MPE instrument's synth number MUST equal its zone master
-                # channel: AMY's C-layer MPE routing (configure_mpe) dispatches
-                # member-channel notes to the synth whose number == master (the
-                # spike finding). Non-MPE synths keep their auto-assigned ids
-                # (16+), which never collide with lower-zone masters (1-15).
                 if instr.get('type') == 'drums':
                     # A drum instrument is a DrumSynth loaded with a kit patch;
                     # GM notes on its channel trigger the kit's samples.
                     import drums_kit
                     syn = drums_kit.make_synth(instr.get('kit', 384),
-                                               num_voices=instr.get('num_voices', 6))
-                elif is_mpe:
-                    syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                            num_voices=instr.get('num_voices', 10),
-                                            channel=ch)
+                                               num_voices=instr.get('num_voices', 6),
+                                               channel=(ch if c_own else None))
                 else:
                     syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                            num_voices=instr.get('num_voices', 10))
+                                            num_voices=instr.get('num_voices', 10),
+                                            channel=(ch if c_own else None))
                 _state['synths'][instr['id']] = syn
+                if c_own:
+                    _state['c_channels'].add(ch)
             except Exception as e:
                 print("forwarder: internal synth failed:", e)
             if syn is not None:

@@ -31,6 +31,8 @@ def kit_name(kit):
     return KIT_NAMES.get(kit, 'TR-808')
 
 
-def make_synth(kit=DEFAULT_KIT, num_voices=6):
-    """A DrumSynth for the given kit patch. GM notes then trigger its samples."""
-    return synth.DrumSynth(patch=kit, num_voices=num_voices)
+def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None):
+    """A DrumSynth for the given kit patch. GM notes then trigger its samples.
+    channel= binds the AMY synth number to the MIDI channel so AMY's C layer
+    plays the notes directly (see forwarder's C-owned channels)."""
+    return synth.DrumSynth(patch=kit, num_voices=num_voices, channel=channel)

@@ -377,9 +377,13 @@ def test_internal_and_board_dispatch(deck):
     sent = _install_and_reset_sent()
     forwarder.start()
     sent.clear()                                     # ignore the board's patch PC
-    forwarder._route((0x90, 60, 100))                # ch1 -> internal only
+    # ch1 has a SINGLE internal instrument -> C-OWNED: AMY's C layer plays the
+    # notes (synth number == channel); Python must NOT double-play it.
+    assert 1 in forwarder._state['c_channels']
+    forwarder._route((0x90, 60, 100))
     assert sent == []
-    assert 60 in list(forwarder._state['synths'].values())[0].on
+    assert list(forwarder._state['synths'].values())[0].on == []
+    assert forwarder._state['notes'] == {}
     forwarder._route((0x91, 64, 100))                # ch2 -> board device 0
     assert len(sent) == 1
     data, device = sent[0]
@@ -388,13 +392,16 @@ def test_internal_and_board_dispatch(deck):
 
 def test_note_off_releases_internal_voices(deck):
     deckcfg, forwarder = deck
-    forwarder.start()                                # one internal on ch1
+    # LAYERED channel (2 internals on ch1) -> Python-routed note tracking
+    deckcfg.add_instrument(device='internal', channel=1)
+    forwarder.start()
+    assert 1 not in forwarder._state['c_channels']
     forwarder._route((0x90, 62, 100))
-    syn = list(forwarder._state['synths'].values())[0]
-    assert forwarder._state['notes'] and 62 in syn.on
+    syns = list(forwarder._state['synths'].values())
+    assert forwarder._state['notes'] and all(62 in s.on for s in syns)
     forwarder._route((0x80, 62, 0))
     assert forwarder._state['notes'] == {}
-    assert 62 not in syn.on
+    assert all(62 not in s.on for s in syns)
 
 
 def test_note_on_velocity_zero_is_note_off(deck):
