@@ -13,9 +13,30 @@ import lvgl as lv
 
 # The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
 # patches -- so we build a small list, not all 257. Drums use the pad editor.
-_TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257)}
+_TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257),
+               'gm': (0, 128)}
 _TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano',
-              'drums': 'Drums'}
+              'drums': 'Drums', 'gm': 'GM Bank'}
+
+# GM "patches" are GM program numbers (0..127) resolved through gm.py, not
+# entries in the AMY patches[] name table. Favorites live at 1000+ so a
+# starred GM program never collides with a Juno patch of the same number.
+_GM_FAV_BASE = 1000
+
+
+def _is_gm():
+    return _type() == 'gm'
+
+
+def _pname(n):
+    if _is_gm():
+        import gm
+        return gm.name(n)
+    return patches[n]
+
+
+def _fav_key(n):
+    return (_GM_FAV_BASE + n) if _is_gm() else n
 
 _s = {}
 
@@ -34,11 +55,14 @@ def _nums(favs):
     caller -- calling deckcfg.is_favorite() per patch was a config load per
     row."""
     lo, hi = _TYPE_RANGE.get(_type(), (0, 128))
-    nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]
+    if _is_gm():
+        nums = list(range(lo, hi))
+    else:
+        nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]
     if _s.get('fav_only'):
-        return [n for n in nums if n in favs]
-    starred = [n for n in nums if n in favs]
-    return starred + [n for n in nums if n not in favs]
+        return [n for n in nums if _fav_key(n) in favs]
+    starred = [n for n in nums if _fav_key(n) in favs]
+    return starred + [n for n in nums if _fav_key(n) not in favs]
 
 
 def _select_patch(patch):
@@ -46,7 +70,7 @@ def _select_patch(patch):
     deckcfg.set_instrument(iid, 'patch', patch)
     deckcfg.apply_all()
     if _s.get('name') is not None:
-        _s['name'].set_text("current: " + patches[patch])
+        _s['name'].set_text("current: " + _pname(patch))
     try:
         import forwarder
         forwarder.preview(iid)
@@ -62,7 +86,7 @@ def _select_patch(patch):
 
 
 def _toggle_fav(n, star):
-    fav = deckcfg.toggle_favorite(n)
+    fav = deckcfg.toggle_favorite(_fav_key(n))
     try:
         star.set_style_bg_color(dk.c(dk.ORANGE if fav else dk.SURFACE2), 0)
     except Exception:
@@ -77,7 +101,7 @@ def _row(body, n, cur, favs):
     b.set_height(56)
     dk._flat(b, radius=12, bg=(dk.ACCENT if n == cur else dk.SURFACE))
     lb = lv.label(b)
-    lb.set_text(patches[n])
+    lb.set_text(_pname(n))
     lb.set_style_text_color(dk.c(dk.TEXT), 0)
     lb.set_style_text_font(dk.FONT_M, 0)
     lb.align(lv.ALIGN.LEFT_MID, 12, 0)
@@ -87,7 +111,7 @@ def _row(body, n, cur, favs):
     # star toggles favorite (orange when starred). As a child button it captures
     # its own taps, so starring doesn't also select the patch.
     star = dk.button(b, "*", w=48, h=44, font=dk.FONT_L,
-                     bg=(dk.ORANGE if n in favs else dk.SURFACE2))
+                     bg=(dk.ORANGE if _fav_key(n) in favs else dk.SURFACE2))
     star.align(lv.ALIGN.RIGHT_MID, -8, 0)
     star.add_event_cb((lambda pn, st: (lambda e: _toggle_fav(pn, st)
                        if e.get_code() == lv.EVENT.CLICKED else None))(n, star),
@@ -136,7 +160,7 @@ def _build_list():
     favs = set(deckcfg.favorites())      # loaded once for the whole list
     q = _s.get('query', '').strip().lower()
     _s['matches'] = [n for n in _nums(favs)
-                     if not q or q in patches[n].lower()]
+                     if not q or q in _pname(n).lower()]
     _s['shown'] = 0
     if not _s['matches']:
         if _s.get('fav_only') and not q:
@@ -285,7 +309,7 @@ def _rebuild_content():
     # duplicated the row and went stale under a search filter (UX-REVIEW-6 L2).
     _s['title'] = dk.label(content, _TYPE_NAME.get(_type(), 'Patches')
                            + " patches", 24, 6, color=dk.WHITE, font=dk.FONT_L)
-    _s['name'] = dk.label(content, "current: " + patches[cur], 24, 52,
+    _s['name'] = dk.label(content, "current: " + _pname(cur), 24, 52,
                           color=dk.MUTED, font=dk.FONT_S)
     # favorites filter (right)
     favbtn = dk.button(content, "* Favorites", w=180, h=44, font=dk.FONT_S,

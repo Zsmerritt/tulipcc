@@ -101,12 +101,31 @@ if drums_partition is not None:
     print("drums.bin: %d bytes into %s partition at %s" % (
         len(drums_bin), 'drums', hex(drums_partition.offset)))
 
+# GM SoundFont bank: flash the checked-in fonts.bin from the amy submodule
+# into the `fonts` partition (AMY mmaps it at boot; see amy_connector.c).
+fonts_partition = None
+try:
+    fonts_partition = partition_table.find_by_name('fonts')
+except Exception:
+    pass
+if fonts_partition is not None:
+    fonts_bin = open('../../amy/sounds/gm/fonts.bin', 'rb').read()
+    if len(fonts_bin) > fonts_partition.size:
+        raise SystemExit("fonts.bin (%d bytes) does not fit the fonts partition (%d bytes)"
+                         % (len(fonts_bin), fonts_partition.size))
+    with open('build/%s-fonts.bin' % (distro), 'wb') as fh:
+        fh.write(fonts_bin)
+    print("fonts.bin: %d bytes into %s partition at %s" % (
+        len(fonts_bin), 'fonts', hex(fonts_partition.offset)))
+
 # Update the flash_args file to have the sys and user partitions
 flash_args = open('build/flash_args','r').read().split('\n')[:-1]
 flash_args.append('%s %s-sys.bin' % (hex(sys_partition.offset), distro))
 flash_args.append('%s %s-vfs.bin' % (hex(vfs_partition.offset), distro))
 if drums_partition is not None:
     flash_args.append('%s %s-drums.bin' % (hex(drums_partition.offset), distro))
+if fonts_partition is not None:
+    flash_args.append('%s %s-fonts.bin' % (hex(fonts_partition.offset), distro))
 new_flash_args = open('build/flash_args_%s' % (distro),'w')
 for f in flash_args:
     new_flash_args.write('%s\n' % (f))

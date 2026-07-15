@@ -422,6 +422,28 @@ static void mount_gamma9001_drums(void) {
 }
 #endif
 
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+// Same deal for the GM SoundFont bank: map the `fonts` partition (raw
+// fonts.bin from the amy repo, flashed by fs_create.py) and hand it to AMY,
+// which serves the GM presets (512+) straight out of it.
+static void mount_gm_fonts(void) {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
+    if (part == NULL) {
+        fprintf(stderr, "gm: no fonts partition, GM presets unavailable\n");
+        return;
+    }
+    const void *map = NULL;
+    esp_partition_mmap_handle_t handle;  // never unmapped; the samples live as long as AMY
+    esp_err_t err = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &handle);
+    if (err != ESP_OK || map == NULL) {
+        fprintf(stderr, "gm: fonts partition mmap failed (%d)\n", (int)err);
+        return;
+    }
+    amy_set_gm_pcm((const int16_t *)map);
+}
+#endif
+
 void run_amy(uint8_t midi_out_pin) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
@@ -462,6 +484,9 @@ void run_amy(uint8_t midi_out_pin) {
 #endif
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
     mount_gamma9001_drums();
+#endif
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+    mount_gm_fonts();
 #endif
     amy_start(amy_config);
     external_map = malloc_caps(amy_config.max_oscs, MALLOC_CAP_INTERNAL);
