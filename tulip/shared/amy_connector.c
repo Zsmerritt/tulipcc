@@ -436,7 +436,7 @@ static const void *mount_fonts_range(const esp_partition_t *part,
                                      const char *what) {
     size_t free_blk = 0;
     esp_mmu_map_get_max_consecutive_free_block_size(
-        MMU_MEM_CAP_READ | MMU_MEM_CAP_8BIT, &free_blk);
+        MMU_MEM_CAP_READ | MMU_MEM_CAP_8BIT, MMU_TARGET_FLASH0, &free_blk);
     const void *map = NULL;
     esp_partition_mmap_handle_t handle;  // never unmapped; lives as long as AMY
     esp_err_t err = esp_partition_mmap(part, off, size,
