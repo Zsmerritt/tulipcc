@@ -125,8 +125,11 @@ def hit_patch_string(hit_key, overrides=None):
 
 
 def audition(hit_key, overrides=None, note=60, vel=1.0, synth=15):
-    """Play one hit immediately (editor preview). Uses a scratch synth."""
+    """Play one hit immediately (editor preview). Uses a scratch synth.
+    (patch_string implies the osc count -- passing oscs_per_voice alongside
+    it makes AMY ignore the stored patch.)"""
     import amy
-    amy.send(synth=synth, num_voices=1, oscs_per_voice=2,
+    amy.send(synth=synth, num_voices=0)   # release: a re-patch on a live
+    amy.send(synth=synth, num_voices=1,   # synth keeps its old config
              patch_string=hit_patch_string(hit_key, overrides))
     amy.send(synth=synth, note=note, vel=vel)
