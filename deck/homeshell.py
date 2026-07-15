@@ -35,6 +35,10 @@ def _clock_str():
     try:
         import time
         t = time.localtime()
+        if t[0] < 2024:
+            # RTC never set (fresh boot, no NTP): a confidently wrong time is
+            # worse than none (UX-REVIEW-6 N1)
+            return "--:--"
         return "%02d:%02d" % (t[3], t[4])
     except Exception:
         return "--:--"

@@ -86,6 +86,13 @@ def _submenu_builder(items):
         parent.set_style_pad_row(16, 0)
         parent.set_style_pad_column(16, 0)
         parent.set_scroll_dir(lv.DIR.VER)
+        # center like the root grid -- tiles clustered top-left left ~70% of
+        # the panel dead (UX-REVIEW-6 L4)
+        try:
+            parent.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER,
+                                  lv.FLEX_ALIGN.CENTER)
+        except Exception:
+            pass
         for label, kind, target, color in items:
             _sub_tile(parent, shell, label, kind, target, color)
     return build
@@ -104,7 +111,7 @@ _APPS = [
     ("Wordpad",     "run",  "wordpad",      dk.GREEN),
     ("Tulip World", "run",  "worldui",      dk.PURPLE),
     ("Keyboard",    "call", tulip.keyboard, dk.GRAY),
-    ("Drum machine (legacy)", "run", "drums", dk.GRAY),  # drums are now instruments
+    ("Drums (legacy)", "run", "drums", dk.GRAY),  # drums are now instruments
     ("Voices (legacy)", "run", "voices",     dk.GRAY),
 ]
 

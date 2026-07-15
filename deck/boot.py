@@ -17,7 +17,19 @@ def _boot():
 
     try:
         import decklog
-        decklog.log("=== deck boot ===")   # marks reboots in the log
+        # Include WHY we booted: a watchdog reset never runs Python again, so
+        # the log can't capture the crash itself (UX-REVIEW-6 H1) -- but the
+        # NEXT boot can at least say "WDT" instead of looking like a power-on.
+        cause = "?"
+        try:
+            import machine
+            rc = machine.reset_cause()
+            cause = {machine.PWRON_RESET: 'PWRON', machine.HARD_RESET: 'HARD',
+                     machine.WDT_RESET: 'WDT', machine.SOFT_RESET: 'SOFT',
+                     machine.DEEPSLEEP_RESET: 'DEEPSLEEP'}.get(rc, str(rc))
+        except Exception:
+            pass
+        decklog.log("=== deck boot === reset_cause=%s" % cause)
     except Exception:
         pass
 

@@ -27,12 +27,18 @@ def _is_dir(path):
 
 
 def _set_actions(on):
-    # Dim Run/Edit/Delete when nothing is selected so they don't look armed.
+    # Dim AND disable Run/Edit/Delete when nothing is selected -- they looked
+    # armed with no selection (UX-REVIEW-6 L5; the old lv.OPA._40 attribute
+    # doesn't exist on this build, so the dim silently never applied).
     for k in ('run', 'edit', 'delbtn'):
         b = _s.get(k)
         if b is not None:
             try:
-                b.set_style_opa(lv.OPA.COVER if on else lv.OPA._40, 0)
+                b.set_style_opa(255 if on else 102, 0)
+                if on:
+                    b.remove_state(lv.STATE.DISABLED)
+                else:
+                    b.add_state(lv.STATE.DISABLED)
             except Exception:
                 pass
 

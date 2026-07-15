@@ -11,6 +11,21 @@ import shellmodel as sm
 import lvgl as lv
 
 
+def _amy_volume(v):
+    """Set AMY's global volume across firmware generations: older builds expose
+    amy.volume(), the current pinned amy only amy.send(volume=). NEVER reference
+    amy.volume as an attribute at panel-BUILD time -- that AttributeError killed
+    the whole Settings screen (UX-REVIEW-6 C1)."""
+    vol = getattr(amy, 'volume', None)
+    try:
+        if vol is not None:
+            vol(v)
+        else:
+            amy.send(volume=v)
+    except Exception:
+        pass
+
+
 def _reload_saver():
     # The screensaver caches brightness/thresholds (it no longer polls the
     # config file); tell it whenever a value it depends on changes.
@@ -35,6 +50,23 @@ def _mpe_switch(v):
 
 
 def run(screen):
+    # A build failure must be VISIBLE: standalone apps that throw in run() get
+    # torn down and silently bounce back to the previous screen -- Settings was
+    # unreachable for a whole round with no error shown (UX-REVIEW-6 C1).
+    try:
+        _run(screen)
+    except Exception as e:
+        try:
+            import decklog
+            decklog.log_exc("settings build failed", e)
+        except Exception:
+            pass
+        dk.label(screen.group, "Settings failed to build: %r" % e, 24, 140,
+                 color=dk.RED, font=dk.FONT_S, w=tulip.screen_size()[0] - 48)
+        screen.present()
+
+
+def _run(screen):
     dk.frame(screen, "Settings", "device configuration")
     body = dk.scroll_body(screen)
     cfg = deckcfg.load()
@@ -51,11 +83,7 @@ def run(screen):
     status_lbl = dk.label(wcard, status, 0, 34, color=(dk.GREEN if ip else dk.MUTED), font=dk.FONT_S)
 
     def _field(text, placeholder, y):
-        t = tulip.UIText(text=text, placeholder=placeholder,
-            w=300, h=44, bg_color=dk.SURFACE2, fg_color=dk.TEXT, font=dk.FONT_S)
-        t.group.set_parent(wcard)
-        t.group.set_size(300, 44)
-        t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+        t = dk.text_field(wcard, text=text, placeholder=placeholder, w=300, h=44)
         t.group.set_pos(0, y)
         return t
     ssid = _field(cfg.get('wifi_ssid', ''), "network name", 66)
@@ -89,7 +117,7 @@ def run(screen):
 
     # --- Volume ---
     _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
-                live=amy.volume,
+                live=_amy_volume,
                 commit=lambda v: deckcfg.set_value('volume', v),
                 color=dk.GREEN)
 

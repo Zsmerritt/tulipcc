@@ -339,7 +339,9 @@ def remove_instrument(iid):
     return cfg
 
 
-def set_instrument(iid, key, val):
+def set_instrument(iid, key, val, flush=True):
+    """Set one instrument field. flush=False updates only the in-RAM cache
+    (typing-time updates, e.g. rename per keystroke); call flush() to commit."""
     cfg = load()
     for i in cfg['instruments']:
         if i['id'] == iid:
@@ -348,7 +350,10 @@ def set_instrument(iid, key, val):
             else:
                 i[key] = val
             break
-    save(cfg)
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
     return cfg
 
 
@@ -490,7 +495,17 @@ def apply(cfg=None):
     import amy
     if cfg is None:
         cfg = load()
-    for fn in (lambda: amy.volume(cfg.get('volume', 4)),
+
+    def _volume():
+        # Current amy has no .volume() -- only amy.send(volume=). The old
+        # amy.volume call here failed silently inside the try, so the saved
+        # volume was never actually restored at boot (UX-REVIEW-6 C1 fallout).
+        vol = getattr(amy, 'volume', None)
+        if vol is not None:
+            vol(cfg.get('volume', 4))
+        else:
+            amy.send(volume=cfg.get('volume', 4))
+    for fn in (_volume,
                lambda: tulip.brightness(cfg.get('brightness', 5)),
                lambda: tulip.tfb_font(cfg.get('tfb_font', 0)),
                lambda: tulip.display_vsync(1 if cfg.get('render_vsync', True) else 0),

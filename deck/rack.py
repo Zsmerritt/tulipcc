@@ -246,8 +246,8 @@ def type_panel(parent, shell=None):
     cur = (_active() or {}).get('type', 'juno6')
     body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
     body.set_pos(24, 8)
-    dk.label(body, "What engine this instrument plays.", color=dk.MUTED,
-             font=dk.FONT_S)
+    dk.label(body, "What engine this instrument plays. Changing type resets "
+             "the patch and sound edits.", color=dk.MUTED, font=dk.FONT_S)
     for t, name in _TYPE_LIST:
         b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
                       bg=(dk.ACCENT if t == cur else dk.SURFACE))
@@ -326,28 +326,34 @@ def _build_edit(parent, shell):
     ncard.set_style_pad_all(0, 0)
     dk.label(ncard, "Name", color=dk.TEXT, font=dk.FONT_M).align(
         lv.ALIGN.LEFT_MID, 20, 0)
-    nt = tulip.UIText(text=instr.get('name', ''), placeholder="instrument name",
-                      w=460, h=44, bg_color=dk.SURFACE2, fg_color=dk.TEXT,
-                      font=dk.FONT_S)
-    nt.group.set_parent(ncard)
-    nt.group.set_size(460, 44)
-    nt.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    nt = dk.text_field(ncard, text=instr.get('name', ''),
+                       placeholder="instrument name", w=460, h=44)
     nt.group.align(lv.ALIGN.RIGHT_MID, -84, 0)
     dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=56, h=44, bg=dk.SURFACE2,
               cb=lambda e: tulip.keyboard()).align(lv.ALIGN.RIGHT_MID, -16, 0)
 
+    # Per keystroke: RAM cache only (a full config flash write per keypress was
+    # UX-REVIEW-6 M1 -- the exact pattern the perf round outlawed for sliders).
+    # Commit + refresh the top-bar chips once, when the field loses focus.
     def _name_cb(e):
         try:
-            deckcfg.set_instrument(iid, 'name', nt.ta.get_text())
+            deckcfg.set_instrument(iid, 'name', nt.ta.get_text(), flush=False)
+        except Exception:
+            pass
+
+    def _name_done(e):
+        try:
+            deckcfg.flush()
             if _s.get('shell') is not None:
                 _s['shell'].refresh_chips()
         except Exception:
             pass
     try:
         nt.ta.add_event_cb(_name_cb, lv.EVENT.VALUE_CHANGED, None)
+        nt.ta.add_event_cb(_name_done, lv.EVENT.DEFOCUSED, None)
+        nt.ta.add_event_cb(_name_done, lv.EVENT.READY, None)
     except Exception:
         pass
-    dk.autoshow_keyboard(nt.ta)
 
     # Device chooser (internal + each board)
     r = dk.row(body, h=76)

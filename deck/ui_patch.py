@@ -311,7 +311,7 @@ def _ensure_back_button(screen):
         return
     b = lv.button(screen.group)
     b.set_style_bg_color(ui.pal_to_lv(_BACK_BG), lv.PART.MAIN)
-    b.set_style_radius(0, lv.PART.MAIN)
+    b.set_style_radius(12, lv.PART.MAIN)   # match the shell's rounded Back
     lb = lv.label(b)
     lb.set_style_text_font(lv.font_montserrat_12, 0)
     lb.set_text("%s Back" % _sym('LEFT', "<"))
@@ -343,6 +343,10 @@ def _apply_standalone_taskbar(screen):
         qb = getattr(screen, 'quit_button', None)
         _set_btn_label(qb, "%s Back" % _sym('LEFT', "<"))
         _set_btn_bg(qb, _BACK_BG)
+        try:
+            qb.set_style_radius(12, lv.PART.MAIN)   # match the shell's Back
+        except Exception:
+            pass
         screen._quit_is_back = True
 
 
@@ -362,6 +366,8 @@ def _install_keyboard_partial():
             try:
                 if now_up and not was_up:
                     tulip.display_partial(1)
+                    import deckui
+                    deckui.style_keyboard()   # deck palette, not theme olive
                 elif was_up and not now_up:
                     tulip.display_partial(0)
             except Exception:

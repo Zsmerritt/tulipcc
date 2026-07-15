@@ -82,11 +82,15 @@ class ParamEditor:
     def _fmt_value(self, d, value):
         """Human-readable current value: decimals scaled to the param's
         resolution (whole ms/Hz at scale 1, tenths at 10, hundredths at 100),
-        with an optional unit suffix (Hz / ms / dB)."""
+        with an optional unit suffix (Hz / ms / dB). Unit '%' formats a 0..1
+        fraction as a percentage ("0.50" read as a broken slider; "50 %"
+        doesn't -- UX-REVIEW-6 L7)."""
         scale = d.get('scale', 1)
-        dec = 2 if scale >= 100 else (1 if scale >= 10 else 0)
         unit = d.get('unit', '')
         try:
+            if unit == '%':
+                return "%d %%" % int(round(float(value) * 100))
+            dec = 2 if scale >= 100 else (1 if scale >= 10 else 0)
             s = "%.*f" % (dec, float(value))
         except Exception:
             s = str(value)
@@ -101,20 +105,29 @@ class ParamEditor:
         cur = self._get(d)
         cell = lv.obj(body)
         cell.set_width(lv.pct(100))
-        cell.set_height(88)
+        cell.set_height(96)
         dk._flat(cell, radius=16, bg=dk.SURFACE)
         cell.remove_flag(lv.obj.FLAG.SCROLLABLE)
         cell.set_style_pad_all(0, 0)
         name = dk.label(cell, self.label_for(d), color=dk.TEXT)
-        name.align(lv.ALIGN.TOP_LEFT, 20, 14)
+        name.align(lv.ALIGN.TOP_LEFT, 20, 12)
         val = dk.label(cell, self._fmt_value(d, cur), color=dk.TEAL,
                        font=dk.FONT_M, w=140, align=lv.TEXT_ALIGN.RIGHT)
-        val.align(lv.ALIGN.TOP_RIGHT, -20, 14)
+        val.align(lv.ALIGN.TOP_RIGHT, -20, 12)
         s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
                       int(round(d['max'] * scale)), w=lv.pct(84),
                       cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26,
                       on_release=self._slider_release_cb(d, scale))
-        s.align(lv.ALIGN.BOTTOM_MID, 0, -16)
+        s.align(lv.ALIGN.BOTTOM_MID, 0, -24)
+        # min/max microlabels at the track ends: a knob hard-left on a nonzero
+        # minimum (duty 50 %) is indistinguishable from a broken slider without
+        # them (UX-REVIEW-6 L7)
+        lo = dk.label(cell, self._fmt_value(d, d['min']), color=dk.MUTED,
+                      font=dk.FONT_S)
+        lo.align(lv.ALIGN.BOTTOM_LEFT, 20, -4)
+        hi = dk.label(cell, self._fmt_value(d, d['max']), color=dk.MUTED,
+                      font=dk.FONT_S)
+        hi.align(lv.ALIGN.BOTTOM_RIGHT, -20, -4)
 
     def _slider_cb(self, d, scale, val_label=None):
         # Per-tick during a drag: cache-only value update + live audition.
@@ -270,6 +283,12 @@ def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,
         tv.set_style_bg_color(dk.c(dk.BG), 0)
     except Exception:
         pass
+    # Build the FIRST tab synchronously (it's what the user sees), then fill
+    # the remaining tabs one per deferred tick. Building every tab's full
+    # control set in one LVGL callback is heavy enough to contribute to the
+    # interrupt-WDT reboot on brisk navigation (UX-REVIEW-6 H1) -- chunking
+    # keeps each tick short so CPU1 never starves.
+    pages = []
     for label, defs in tabs:
         page = tv.add_tab(label)
         # dk.row() relies on the parent being a flex column; the raw tab page
@@ -280,8 +299,29 @@ def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,
             page.set_scroll_dir(lv.DIR.VER)
         except Exception:
             pass
+        pages.append((page, defs))
+
+    def _fill(page, defs):
         ed = make_editor(defs)
         ed.group_headers = False
         ed.build(page)
+
+    if pages:
+        _fill(*pages[0])
+
+    def _fill_next(i):
+        def _do(x):
+            if i >= len(pages):
+                return
+            try:
+                _fill(*pages[i])       # throws if the tabview was deleted
+            except Exception:
+                return                 # panel gone (user navigated away): stop
+            _fill_next(i + 1)
+        try:
+            tulip.defer(_do, 0, 25)
+        except Exception:
+            _do(None)                  # no defer (host tests): build inline
+    _fill_next(1)
     _style_tabview(tv)
     return tv

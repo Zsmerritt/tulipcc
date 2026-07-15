@@ -46,6 +46,37 @@ def _apply():
         st.set_style_text_color(dk.c(dk.GREEN if on else dk.MUTED), 0)
 
 
+def _disable_tree(obj, disabled):
+    """Add/remove DISABLED down a widget tree (rows hold their controls)."""
+    try:
+        if disabled:
+            obj.add_state(lv.STATE.DISABLED)
+        else:
+            obj.remove_state(lv.STATE.DISABLED)
+        for i in range(obj.get_child_count()):
+            _disable_tree(obj.get_child(i), disabled)
+    except Exception:
+        pass
+
+
+def _apply_dep_state(on):
+    """Dim + disable the rows that only mean something while MPE is enabled --
+    they rendered fully live with the gate off (UX-REVIEW-6 M2)."""
+    for r in _w.get('dep_rows', ()):
+        try:
+            r.set_style_opa(255 if on else 102, 0)
+        except Exception:
+            pass
+        _disable_tree(r, not on)
+
+
+def _switch_enabled(v):
+    _set_mpe('enabled', v)
+    _apply()
+    _apply_dep_state(bool(v))
+    _render_strip()
+
+
 def _set_mpe(sub, value):
     deckcfg.set_instrument_mpe(deckcfg.active_instrument(), sub, value)
 
@@ -223,11 +254,17 @@ def _rebuild():
     body = dk.scroll_col(content, w - 48, chh - top - 44)
     body.set_pos(24, top)
 
+    on = bool(m.get('enabled'))
     r = dk.row(body)
     dk.label(r, "Enable MPE", color=dk.WHITE)
-    dk.switch(r, bool(m.get('enabled')), _switch_mpe('enabled'))
+    # status lives NEXT TO the switch it reflects (was a tiny corner label)
+    _w['status'] = dk.label(r, _members_str(instr) if on else "MPE off",
+                            color=(dk.GREEN if on else dk.MUTED), font=dk.FONT_S)
+    dk.switch(r, on, _switch_enabled)
 
+    dep = []
     r = dk.row(body, h=92)
+    dep.append(r)
     col = _vcol(r, "Member channels")
     _w['mlabel'] = dk.label(col, "%d channels" % m.get('members', 15),
                             color=dk.MUTED, font=dk.FONT_S)
@@ -235,6 +272,7 @@ def _rebuild():
               color=dk.ACCENT, on_release=_members_done)
 
     r = dk.row(body, h=92)
+    dep.append(r)
     col = _vcol(r, "Pitch bend range")
     _w['blabel'] = dk.label(col, "+/- %d semitones" % m.get('bend', 48),
                             color=dk.MUTED, font=dk.FONT_S)
@@ -242,6 +280,7 @@ def _rebuild():
               on_release=_bend_done)
 
     r = dk.row(body, h=92)
+    dep.append(r)
     col = _vcol(r, "Listen channel")
     _w['chlabel'] = dk.label(col, "Zone: %s" %
                              ("upper" if instr.get('channel', 1) == 16
@@ -251,21 +290,19 @@ def _rebuild():
 
     # Per-note expression -> a deeper sub-panel (push) in the shell.
     r = dk.row(body)
+    dep.append(r)
     dk.label(r, "Per-note expression", color=dk.TEXT)
     nav = dk.button(r, "Edit  " + _sym('RIGHT', ">"), w=150, h=52,
                     bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_expression, lv.EVENT.CLICKED, None)
 
+    _w['dep_rows'] = dep
+    _apply_dep_state(on)
+
     # Per-device channel-map strip (kept last so live redraws stay in place).
     _w['strip_parent'] = body
     _w['strip'] = None
     _render_strip()
-
-    _w['status'] = dk.label(content,
-                            _members_str(instr) if m.get('enabled') else "MPE off",
-                            24, chh - 36,
-                            color=(dk.GREEN if m.get('enabled') else dk.MUTED),
-                            font=dk.FONT_S)
 
 
 def expression_panel(parent, shell=None):

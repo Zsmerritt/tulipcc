@@ -82,20 +82,20 @@ PARAMS = [
     # Oscillator A
     _wave('oscA_wave', 'Osc A', 'wave', 0, 'basic', _osc(OSC_A, 'wave')),
     _slider('oscA_level', 'Osc A', 'level', 0.001, 1.0, 1.0, 'basic',
-            _osc(OSC_A, 'amp', COEF_CONST), scale=100),
+            _osc(OSC_A, 'amp', COEF_CONST), scale=100, unit='%'),
     _slider('oscA_freq', 'Osc A', 'freq', 50, 2000, 440, 'advanced',
             _osc(OSC_A, 'freq', COEF_CONST), unit='Hz'),
     _slider('oscA_duty', 'Osc A', 'duty', 0.5, 0.99, 0.5, 'basic',
-            _osc(OSC_A, 'duty', COEF_CONST), scale=100),
+            _osc(OSC_A, 'duty', COEF_CONST), scale=100, unit='%'),
 
     # Oscillator B
     _wave('oscB_wave', 'Osc B', 'wave', 0, 'advanced', _osc(OSC_B, 'wave')),
     _slider('oscB_level', 'Osc B', 'level', 0.001, 1.0, 1.0, 'advanced',
-            _osc(OSC_B, 'amp', COEF_CONST), scale=100),
+            _osc(OSC_B, 'amp', COEF_CONST), scale=100, unit='%'),
     _slider('oscB_freq', 'Osc B', 'freq', 50, 2000, 440, 'advanced',
             _osc(OSC_B, 'freq', COEF_CONST), unit='Hz'),
     _slider('oscB_duty', 'Osc B', 'duty', 0.5, 0.99, 0.5, 'advanced',
-            _osc(OSC_B, 'duty', COEF_CONST), scale=100),
+            _osc(OSC_B, 'duty', COEF_CONST), scale=100, unit='%'),
 
     # Filter (VCF, on the control osc)
     _slider('filter_freq', 'Filter', 'cutoff', 20, 8000, 1000, 'basic',
@@ -113,7 +113,7 @@ PARAMS = [
     _slider('amp_decay', 'Amp Env', 'decay', 0, 2000, 100, 'basic',
             _env('amp', 'decay'), unit='ms'),
     _slider('amp_sustain', 'Amp Env', 'sustain', 0, 1, 1.0, 'basic',
-            _env('amp', 'sustain'), scale=100),
+            _env('amp', 'sustain'), scale=100, unit='%'),
     _slider('amp_release', 'Amp Env', 'release', 0, 8000, 100, 'basic',
             _env('amp', 'release'), unit='ms'),
 
@@ -123,7 +123,7 @@ PARAMS = [
     _slider('filt_decay', 'Filter Env', 'decay', 0, 2000, 100, 'advanced',
             _env('filter', 'decay'), unit='ms'),
     _slider('filt_sustain', 'Filter Env', 'sustain', 0, 1, 0, 'advanced',
-            _env('filter', 'sustain'), scale=100),
+            _env('filter', 'sustain'), scale=100, unit='%'),
     _slider('filt_release', 'Filter Env', 'release', 0, 8000, 100, 'advanced',
             _env('filter', 'release'), unit='ms'),
 
@@ -136,7 +136,7 @@ PARAMS = [
             scale=100),
     _slider('lfo_pwm', 'LFO', 'to pwm', 0, 0.49, 0, 'advanced',
             _multi([(OSC_A, 'duty', COEF_MOD), (OSC_B, 'duty', COEF_MOD)]),
-            scale=100),
+            scale=100, unit='%'),
     _slider('lfo_filter', 'LFO', 'to filter', 0, 4, 0, 'basic',
             _osc(OSC_CTL, 'filter_freq', COEF_MOD), scale=100),
     # NOTE: EQ is per-BUS (per-device), not per-synth (verified on AMY) -- it
@@ -163,19 +163,19 @@ def engine_of(patch):
 FX = {
     'reverb': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 1, 'default': 0,
-         'arg': 'level'},
+         'arg': 'level', 'unit': '%'},
         {'name': 'liveness', 'label': 'liveness', 'min': 0, 'max': 1,
-         'default': 0.85, 'arg': 'liveness'},
+         'default': 0.85, 'arg': 'liveness', 'unit': '%'},
         {'name': 'damping', 'label': 'damping', 'min': 0, 'max': 1,
-         'default': 0.5, 'arg': 'damping'},
+         'default': 0.5, 'arg': 'damping', 'unit': '%'},
     ],
     'chorus': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 1, 'default': 0,
-         'arg': 'level'},
+         'arg': 'level', 'unit': '%'},
         {'name': 'freq', 'label': 'rate', 'min': 0.1, 'max': 20, 'default': 0.5,
          'arg': 'freq', 'unit': 'Hz'},
         {'name': 'depth', 'label': 'depth', 'min': 0.01, 'max': 1,
-         'default': 0.5, 'arg': 'amp'},
+         'default': 0.5, 'arg': 'amp', 'unit': '%'},
     ],
     'echo': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 2, 'default': 0,
@@ -183,7 +183,7 @@ FX = {
         {'name': 'delay_ms', 'label': 'delay', 'min': 0, 'max': 5000,
          'default': 500, 'arg': 'delay_ms', 'unit': 'ms'},
         {'name': 'feedback', 'label': 'feedback', 'min': 0, 'max': 1,
-         'default': 0, 'arg': 'feedback'},
+         'default': 0, 'arg': 'feedback', 'unit': '%'},
     ],
     # EQ is per-BUS (per-device). It has no amy.eq() fn -- it's applied via
     # amy.send(synth=<a synth on the bus>, eq="low,mid,high"), so it's kept out

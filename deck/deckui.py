@@ -206,6 +206,70 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22,
     return s
 
 
+# approximate line heights of the compiled montserrat fonts, for centering
+_FONT_LH = {12: 14, 18: 22, 24: 28}
+
+
+def text_field(parent, text='', placeholder='', w=300, h=44, font=None):
+    """A tulip.UIText wrapped so the text doesn't clip (UX-REVIEW-6 H2): the
+    textarea is vertically centered in its box via explicit padding (the raw
+    UIText's theme padding overflows small heights, cutting the line in half),
+    and the placeholder gets a legible MUTED color instead of the theme's.
+    Returns the UIText; position via .group like before."""
+    if font is None:
+        font = FONT_S
+    t = tulip.UIText(text=text, placeholder=placeholder, w=w, h=h,
+                     bg_color=SURFACE2, fg_color=TEXT, font=font)
+    t.group.set_parent(parent)
+    t.group.set_size(w, h)
+    t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    try:
+        t.group.set_style_pad_all(0, 0)
+        t.group.set_style_border_width(0, 0)
+    except Exception:
+        pass
+    # center the single text line: split the leftover height above/below it
+    lh = 14
+    for f, v in _FONT_LH.items():
+        if font is getattr(lv, 'font_montserrat_%d' % f, None):
+            lh = v
+    pad = max(2, (h - lh) // 2)
+    try:
+        t.ta.set_style_pad_ver(pad, 0)
+        t.ta.set_style_pad_hor(12, 0)
+        t.ta.align(lv.ALIGN.CENTER, 0, 0)
+        t.ta.set_style_radius(10, 0)
+        t.ta.set_style_border_width(0, 0)
+    except Exception:
+        pass
+    try:
+        t.ta.set_style_text_color(c(MUTED), lv.PART.TEXTAREA_PLACEHOLDER)
+    except Exception:
+        pass
+    autoshow_keyboard(t.ta)
+    return t
+
+
+def style_keyboard():
+    """Paint the firmware soft keyboard (ui.lv_soft_kb) into the deck palette.
+    It ships in the LVGL default olive/khaki (UX-REVIEW-6 L1), and autoshow put
+    it on the main path (search, rename), so it must match the system."""
+    try:
+        import ui
+        kb = getattr(ui, 'lv_soft_kb', None)
+        if kb is None:
+            return
+        kb.set_style_bg_color(c(SURFACE), lv.PART.MAIN)
+        kb.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)
+        kb.set_style_border_width(0, lv.PART.MAIN)
+        kb.set_style_bg_color(c(SURFACE2), lv.PART.ITEMS)
+        kb.set_style_text_color(c(WHITE), lv.PART.ITEMS)
+        kb.set_style_radius(8, lv.PART.ITEMS)
+        kb.set_style_bg_color(c(ACCENT), lv.PART.ITEMS | lv.STATE.CHECKED)
+    except Exception:
+        pass
+
+
 def autoshow_keyboard(ta):
     """Pop the on-screen keyboard when a text field is focused (tapped). Guards
     against ui.keyboard()'s toggle by only opening it when it isn't already up."""
@@ -214,6 +278,7 @@ def autoshow_keyboard(ta):
             import ui
             if getattr(ui, 'lv_soft_kb', None) is None:
                 tulip.keyboard()
+                style_keyboard()
         except Exception:
             pass
     try:
@@ -232,7 +297,13 @@ def switch(parent, value, on_change=None, color=GREEN):
         sw.add_state(lv.STATE.CHECKED)
     sw.set_style_bg_color(c(SURFACE2), lv.PART.MAIN)
     sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)
+    # Set the indicator color for BOTH the plain and CHECKED-state selectors:
+    # with only the CHECKED variant, switches rebuilt on the shell's deferred
+    # back()-refill path rendered the theme-default blue instead of `color`
+    # (UX-REVIEW-6 M3 -- green/blue flip-flop on the rack's enable switch).
+    sw.set_style_bg_color(c(color), lv.PART.INDICATOR)
     sw.set_style_bg_color(c(color), lv.PART.INDICATOR | lv.STATE.CHECKED)
+    sw.set_style_bg_opa(lv.OPA.COVER, lv.PART.INDICATOR | lv.STATE.CHECKED)
     sw.set_style_bg_color(c(WHITE), lv.PART.KNOB)
     if on_change is not None:
         def _cb(e):

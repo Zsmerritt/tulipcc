@@ -45,7 +45,7 @@ def _select_patch(patch):
     deckcfg.set_instrument(iid, 'patch', patch)
     deckcfg.apply_all()
     if _s.get('name') is not None:
-        _s['name'].set_text(patches[patch])
+        _s['name'].set_text("current: " + patches[patch])
     try:
         import forwarder
         forwarder.preview(iid)
@@ -128,6 +128,54 @@ def _toggle_favonly(btn):
     _build_list()
 
 
+def _kb_height():
+    """Height of the soft keyboard if it's on screen, else 0."""
+    try:
+        import ui
+        kb = getattr(ui, 'lv_soft_kb', None)
+        if kb is None:
+            return 0
+        try:
+            kb.update_layout()
+            h = kb.get_height()
+            if h > 0:
+                return h
+        except Exception:
+            pass
+        return tulip.screen_size()[1] // 2   # LVGL keyboard default: 50%
+    except Exception:
+        return 0
+
+
+def _layout_list():
+    """Size the results list to the space above the soft keyboard, so live
+    search shows several rows instead of ONE while typing (UX-REVIEW-6 M4);
+    full height again once the keyboard closes."""
+    body = _s.get('listbody')
+    if body is None:
+        return
+    full = _s['ch'] - 176
+    h = full
+    kb = _kb_height()
+    if kb:
+        h = max(120, tulip.screen_size()[1] - kb - _s.get('list_top_abs', 236) - 8)
+        if h > full:
+            h = full
+    try:
+        body.set_height(h)
+    except Exception:
+        pass
+
+
+def _kb_layout_cb(e):
+    # after focus/defocus the keyboard may be opening/closing this tick; relayout
+    # on the next one so its size is real
+    try:
+        tulip.defer(lambda x: _layout_list(), 0, 60)
+    except Exception:
+        _layout_list()
+
+
 def _search_changed(e):
     # Debounced: rebuilding ~130 rows (several hundred LVGL objects) per
     # keystroke makes typing crawl. Rebuild once, shortly after typing pauses;
@@ -171,11 +219,13 @@ def _rebuild_content():
     dk._flat(content, bg=dk.BG)
     _s['content'] = content
 
-    _s['name'] = dk.label(content, patches[cur], 24, 6, color=dk.WHITE,
-                          font=dk.FONT_L)
-    # the picker is scoped to the instrument's type (set in the editor)
-    dk.label(content, _TYPE_NAME.get(_type(), 'Patches') + " patches", 24, 52,
-             color=dk.MUTED, font=dk.FONT_S)
+    # STABLE title = the collection ("Juno-6 patches"); the current selection
+    # lives in the subtitle + highlighted row. The old selection-as-title
+    # duplicated the row and went stale under a search filter (UX-REVIEW-6 L2).
+    dk.label(content, _TYPE_NAME.get(_type(), 'Patches') + " patches", 24, 6,
+             color=dk.WHITE, font=dk.FONT_L)
+    _s['name'] = dk.label(content, "current: " + patches[cur], 24, 52,
+                          color=dk.MUTED, font=dk.FONT_S)
     # favorites filter (right)
     favbtn = dk.button(content, "* Favorites", w=180, h=44, font=dk.FONT_S,
                        bg=(dk.ORANGE if _s['fav_only'] else dk.SURFACE2))
@@ -186,20 +236,20 @@ def _rebuild_content():
 
     # search field + on-screen keyboard button (filters the list live by name)
     sw = w - 48 - 84
-    t = tulip.UIText(text=_s.get('query', ''), placeholder="search patches",
-        w=sw, h=60, bg_color=dk.SURFACE2, fg_color=dk.TEXT, font=dk.FONT_M)
-    t.group.set_parent(content)
-    t.group.set_size(sw, 60)
-    t.group.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    t = dk.text_field(content, text=_s.get('query', ''),
+                      placeholder="search patches", w=sw, h=60, font=dk.FONT_M)
     t.group.set_pos(24, 100)
     _s['searchta'] = t.ta
     try:
         t.ta.add_event_cb(_search_changed, lv.EVENT.VALUE_CHANGED, None)
+        # keyboard covers the bottom half: shrink the results list while it's
+        # up so live search shows more than ONE row (UX-REVIEW-6 M4)
+        t.ta.add_event_cb(_kb_layout_cb, lv.EVENT.FOCUSED, None)
+        t.ta.add_event_cb(_kb_layout_cb, lv.EVENT.DEFOCUSED, None)
     except Exception:
         pass
-    dk.autoshow_keyboard(t.ta)     # keyboard pops when you tap the field
     dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60, bg=dk.SURFACE2,
-        cb=lambda e: tulip.keyboard()).set_pos(w - 24 - 72, 100)
+        cb=lambda e: (tulip.keyboard(), _layout_list())).set_pos(w - 24 - 72, 100)
 
     # patch list
     body = dk.scroll_col(content, w - 48, chh - 176)
@@ -217,6 +267,8 @@ def panel(parent, shell=None):
     _s['content'] = None
     _s['ctop'] = 8
     _s['ch'] = (tulip.screen_size()[1] - homeshell.BAR_H) - 8
+    # absolute screen y of the results list (for keyboard-aware sizing)
+    _s['list_top_abs'] = homeshell.BAR_H + _s['ctop'] + 172
     _rebuild_content()
 
 
@@ -229,6 +281,7 @@ def run(screen):
     _s['content'] = None
     _s['ctop'] = 118
     _s['ch'] = tulip.screen_size()[1] - 118
+    _s['list_top_abs'] = _s['ctop'] + 172
     dk.frame(screen, "Patch", "pick a sound for the active instrument")
     _rebuild_content()
     screen.present()
