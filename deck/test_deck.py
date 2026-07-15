@@ -863,13 +863,16 @@ def test_amyparams_defaults_and_tier_filter():
     assert all(x['tier'] == 'basic' for x in basic)
 
 
-def test_synth_send_calls_scalar_and_coef_defaults():
+def test_synth_send_calls_only_explicit_params():
     import amyparams as ap
     calls = ap.synth_send_calls({'oscA_wave': 3, 'resonance': 2.0})
     assert {'osc': ap.OSC_A, 'wave': 3} in calls          # scalar on osc A
     assert {'osc': ap.OSC_CTL, 'resonance': 2.0} in calls  # scalar on ctl osc
-    # filter_freq coef vector, all slots at defaults: base/kbd/env/lfo
-    assert {'osc': ap.OSC_CTL, 'filter_freq': '1000,0,,,0,0'} in calls
+    # UNSET params must NOT be sent: the schema defaults are editor display
+    # fallbacks, not patch overrides (stamping them rewrote every patch)
+    assert not any('filter_freq' in c for c in calls)
+    assert len(calls) == 2
+    assert ap.synth_send_calls({}) == []                   # untouched: nothing
 
 
 def test_synth_send_calls_coef_vector_and_lfo_multi():
@@ -879,10 +882,10 @@ def test_synth_send_calls_coef_vector_and_lfo_multi():
                                  'filter_env': 4})
     # osc A freq: base(coef0)=660 + LFO depth(coef5)=0.5
     assert {'osc': ap.OSC_A, 'freq': '660,,,,,0.5'} in calls
-    # LFO depth also lands on osc B freq (default base 440)
-    assert {'osc': ap.OSC_B, 'freq': '440,,,,,0.5'} in calls
-    # filter_freq: base=800, kbd(1)=1, env(4)=4, lfo(5)=0
-    assert {'osc': ap.OSC_CTL, 'filter_freq': '800,1,,,4,0'} in calls
+    # LFO depth lands on osc B freq too -- base slot EMPTY (patch value kept)
+    assert {'osc': ap.OSC_B, 'freq': ',,,,,0.5'} in calls
+    # filter_freq: base=800, kbd(1)=1, env(4)=4; lfo slot unset -> not emitted
+    assert {'osc': ap.OSC_CTL, 'filter_freq': '800,1,,,4'} in calls
 
 
 def test_synth_send_calls_envelopes():

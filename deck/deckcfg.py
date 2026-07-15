@@ -54,7 +54,11 @@ _MPE_KEYS = ('enabled', 'members', 'bend', 'expression')
 
 
 DEFAULTS = {
-    'volume': 4,
+    # AMY volume is a 0..10 GAIN scaled by 0.1 at mixdown; the stock default
+    # is 1.0. The old deck default of 4 ran 4x hot -- once the (previously
+    # broken) volume apply was fixed, chords drove the clipper: audible
+    # crackling. 1 = the loudness the device always had pre-deck.
+    'volume': 1,
     'brightness': 5,
     'tfb_font': 0,
     'ui_btn': 60,

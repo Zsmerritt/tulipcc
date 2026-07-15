@@ -314,10 +314,17 @@ def _adsr_string(env):
 
 
 def synth_send_calls(params):
-    """Given an instrument's stored params (merged over defaults), return a list
-    of kwargs dicts for amy.send(synth=<n>, **kwargs). Deterministic + pure."""
-    merged = default_params()
-    merged.update(params or {})
+    """Given an instrument's stored params, return a list of kwargs dicts for
+    amy.send(synth=<n>, **kwargs). Deterministic + pure.
+
+    ONLY explicitly-stored params are sent. The schema defaults are display
+    fallbacks for the editor -- stamping the whole table over every patch
+    rewrote its character (forcing e.g. cutoff 1000 Hz onto A11 made the deck
+    sound different from the same patch pre-boot). Unset coef slots emit ''
+    which AMY treats as 'leave the patch's value'. Caveat: envelopes and EQ
+    are composite strings, so touching one slot sends the group with schema
+    defaults for its unset siblings."""
+    merged = dict(params or {})
 
     coefmap = {}                    # (osc, arg) -> {coef: value}
     scalars = []                    # (osc, arg, value)  -- coef is None
