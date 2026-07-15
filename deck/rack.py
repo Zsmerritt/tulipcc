@@ -81,29 +81,79 @@ def _mk_enable(iid):
     return on_change
 
 
+# width of the enable-toggle zone at a row's right edge (own tap target)
+_TOGGLE_ZONE_W = 148
+
+
+def _hitzone(parent):
+    """A transparent, clickable tap area (no visual footprint)."""
+    z = lv.obj(parent)
+    z.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    z.set_style_border_width(0, 0)
+    z.set_style_pad_all(0, 0)
+    z.set_style_radius(0, 0)
+    z.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    return z
+
+
 def _inst_row(body, shell, instr):
+    # The row's two actions have PHYSICALLY DISJOINT tap targets: tapping the
+    # whole row used to open the editor, so a finger aimed at the 64x34 enable
+    # switch that landed a few px off navigated away instead of toggling. Now
+    # the card itself isn't clickable; an "open" zone covers everything LEFT
+    # of the toggle, and the toggle owns a full-height padded zone where a
+    # near-miss toggles (never navigates).
     iid = instr.get('id')
-    b = lv.button(body)
-    b.set_width(lv.pct(100))
-    b.set_height(76)
-    dk._flat(b, radius=16, bg=dk.SURFACE)
-    dk.edge(b)
-    dk.pressable(b)
+    row_w = tulip.screen_size()[0] - 48    # body is a full-width scroll_col
+    card = lv.obj(body)
+    card.set_width(lv.pct(100))
+    card.set_height(76)
+    dk._flat(card, radius=16, bg=dk.SURFACE)
+    dk.edge(card)
+    card.remove_flag(lv.obj.FLAG.CLICKABLE)
     # a glyph makes the row scannable at arm's length: note = melodic, bars = kit
-    icon = dk.label(b, lv.SYMBOL.BARS if instr.get('type') == 'drums'
+    icon = dk.label(card, lv.SYMBOL.BARS if instr.get('type') == 'drums'
                     else lv.SYMBOL.AUDIO, color=dk.TEAL, font=dk.FONT_M)
     icon.align(lv.ALIGN.LEFT_MID, 16, 0)
-    dk.label(b, instr.get('name', '?'), 52, 10, color=dk.WHITE, font=dk.FONT_M)
-    dk.label(b, sm.instrument_summary(instr), 52, 42, color=dk.MUTED,
+    dk.label(card, instr.get('name', '?'), 52, 10, color=dk.WHITE, font=dk.FONT_M)
+    dk.label(card, sm.instrument_summary(instr), 52, 42, color=dk.MUTED,
              font=dk.FONT_S)
-    # Per-instrument ON/OFF. Enabled instruments all play at once (multitimbral) --
-    # there is no single "active" instrument; tapping the row just opens its editor.
-    sw = dk.switch(b, bool(instr.get('enabled', True)), _mk_enable(iid),
+
+    # open-editor tap area: the row minus the toggle zone
+    hit = _hitzone(card)
+    hit.set_size(row_w - _TOGGLE_ZONE_W, 76)
+    hit.align(lv.ALIGN.LEFT_MID, 0, 0)
+    hit.add_event_cb((lambda i: (lambda e: (_open_edit(shell, i)
+                      if e.get_code() == lv.EVENT.CLICKED else None)))(iid),
+                     lv.EVENT.CLICKED, None)
+
+    # Per-instrument ON/OFF. Enabled instruments all play at once (multitimbral)
+    # -- there is no single "active" instrument. The zone gives the switch a
+    # full-height tap target; a tap inside it but off the switch still toggles.
+    on_change = _mk_enable(iid)
+    zone = _hitzone(card)
+    zone.set_size(_TOGGLE_ZONE_W, 76)
+    zone.align(lv.ALIGN.RIGHT_MID, 0, 0)
+    sw = dk.switch(zone, bool(instr.get('enabled', True)), on_change,
                    color=dk.GREEN)
-    sw.align(lv.ALIGN.RIGHT_MID, -16, 0)
-    b.add_event_cb((lambda i: (lambda e: (_open_edit(shell, i)
-                    if e.get_code() == lv.EVENT.CLICKED else None)))(iid),
-                   lv.EVENT.CLICKED, None)
+    sw.center()
+
+    def _zone_cb(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        # near-miss on the switch: toggle it programmatically (a state change
+        # from code doesn't fire VALUE_CHANGED, so invoke on_change ourselves)
+        if sw.has_state(lv.STATE.CHECKED):
+            sw.remove_state(lv.STATE.CHECKED)
+            v = False
+        else:
+            sw.add_state(lv.STATE.CHECKED)
+            v = True
+        try:
+            on_change(v)
+        except Exception:
+            pass
+    zone.add_event_cb(_zone_cb, lv.EVENT.CLICKED, None)
 
 
 def _add(shell):
