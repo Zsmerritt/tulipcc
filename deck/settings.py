@@ -313,12 +313,38 @@ def _build(body, right, cw, screen):
     r = dk.row(right, h=64)
     dk.label(r, "System", color=dk.TEXT)
     g = dk.hgroup(r, w=cw - 110, h=48)
-    dk.button(g, "Set time", w=112, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+    dk.button(g, "Set time", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: (deckcfg.sync_time(), dk.toast(screen, "Time set")) if tulip.ip() else dk.toast(screen, "Need Wi-Fi", dk.RED))
-    dk.button(g, "Calibrate", w=118, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+    dk.button(g, "Calibrate", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: tulip.run('calib'))
-    dk.button(g, "Upgrade", w=112, h=48, bg=dk.PURPLE, font=dk.FONT_S,
+    dk.button(g, "Upgrade", w=96, h=48, bg=dk.PURPLE, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
+    # Factory reset = wipe the deck config and reboot: setup_done clears, so
+    # the welcome/setup flow runs again -- the software equivalent of "just
+    # flashed". Two taps to arm, like the Files delete.
+    _frstate = {'armed': False}
+
+    def _freset(e, btn):
+        if not _frstate['armed']:
+            _frstate['armed'] = True
+            btn.set_style_bg_color(dk.c(dk.RED), 0)
+            dk.toast(screen, "Tap again to wipe config + reboot", dk.RED)
+            return
+        try:
+            import os
+            os.remove(deckcfg.PATH)
+        except OSError:
+            pass
+        try:
+            import machine
+            machine.reset()
+        except Exception:
+            pass
+    frbtn = dk.button(g, "Reset", w=88, h=48, bg=dk.SURFACE2, font=dk.FONT_S)
+    frbtn.add_event_cb(
+        (lambda b: (lambda e: _freset(e, b)
+                    if e.get_code() == lv.EVENT.CLICKED else None))(frbtn),
+        lv.EVENT.CLICKED, None)
 
 
 def _apply_partial(v):

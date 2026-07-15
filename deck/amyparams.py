@@ -454,11 +454,22 @@ def fx_bus_baseline(pfx):
 
 
 def fx_send_strings(fx, pfx=None):
-    """User-touched FX buses as {bus_kw: wire-string} for amy.send(bus=B,...),
-    layered over the patch baseline (same semantics as fx_calls)."""
+    """User-touched PER-INSTRUMENT FX as {bus_kw: wire-string} for
+    amy.send(bus=B, ...), layered over the patch baseline. Reverb is NOT here:
+    it is the shared per-device room (AMY_MASTER_REVERB runs one reverb on
+    the master mix), sent once by the router without a bus."""
     merged, touched = _merge_fx(fx, pfx)
     s = _bus_strings(merged)
-    return {b: s[b] for b in ('chorus', 'reverb', 'echo') if b in touched}
+    return {b: s[b] for b in ('chorus', 'echo') if b in touched}
+
+
+def fx_reverb_string(fx):
+    """The device's shared-room reverb as a wire string, or None when the
+    user never touched it (leave AMY's default room = off)."""
+    if not (fx and isinstance(fx.get('reverb'), dict) and fx['reverb']):
+        return None
+    merged, _ = _merge_fx(fx, None)
+    return _bus_strings(merged)['reverb']
 
 
 def fx_calls(fx, pfx=None):

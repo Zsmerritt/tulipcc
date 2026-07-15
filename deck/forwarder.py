@@ -187,8 +187,7 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
         try:
             amy.send(synth=t['synth'], bus=t['bus'])
             base = amyparams.fx_bus_baseline(t['pfx'])
-            amy.send(bus=t['bus'], chorus=base['chorus'],
-                     reverb=base['reverb'], echo=base['echo'])
+            amy.send(bus=t['bus'], chorus=base['chorus'], echo=base['echo'])
             amy.send(synth=t['synth'], eq=base['eq'])
             over = amyparams.fx_send_strings(fx, t['pfx'])
             if over:
@@ -198,12 +197,19 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
                 amy.send(synth=t['synth'], eq=eq)
         except Exception:
             pass
-    # Silence FX on buses that fell out of use -- a stale reverb keeps costing
-    # CPU even when nothing renders into its bus.
+    # Reverb is the shared per-device ROOM: one master reverb on the mixed
+    # output (AMY_MASTER_REVERB), configured once without a bus.
+    try:
+        rv = amyparams.fx_reverb_string(fx)
+        if rv is not None:
+            amy.send(reverb=rv)
+    except Exception:
+        pass
+    # Silence per-instrument FX on buses that fell out of use.
     used = {t['bus'] for t in targets}
     for b in set(prev_buses) - used:
         try:
-            amy.send(bus=b, chorus='0', reverb='0', echo='0')
+            amy.send(bus=b, chorus='0', echo='0')
         except Exception:
             pass
 

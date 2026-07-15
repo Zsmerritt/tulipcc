@@ -423,9 +423,32 @@ static void mount_gamma9001_drums(void) {
 #endif
 
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
-// Same deal for the GM SoundFont bank: map the `fonts` partition (raw
-// fonts.bin from the amy repo, flashed by fs_create.py) and hand it to AMY,
-// which serves the GM presets (512+) straight out of it.
+#include "esp_mmu_map.h"
+// GM SoundFont banks: the `fonts` partition holds the GeneralUser bank at 0
+// and the big multi-font bank at 0x300000 (fs_create.py assembles them). They
+// are mmapped SEPARATELY: one 12.5MB map needs 12.5MB of contiguous data
+// vaddr, which the S3 no longer has once PSRAM + app rodata + the drums
+// partition are mapped ("mmap: no such vaddr range"). Two smaller maps fit
+// the fragments. Each map that fails just leaves its bank unavailable.
+#define GM_BIG_BYTE_OFFSET 0x300000
+static const void *mount_fonts_range(const esp_partition_t *part,
+                                     uint32_t off, uint32_t size,
+                                     const char *what) {
+    size_t free_blk = 0;
+    esp_mmu_map_get_max_consecutive_free_block_size(
+        MMU_MEM_CAP_READ | MMU_MEM_CAP_8BIT, &free_blk);
+    const void *map = NULL;
+    esp_partition_mmap_handle_t handle;  // never unmapped; lives as long as AMY
+    esp_err_t err = esp_partition_mmap(part, off, size,
+                                       ESP_PARTITION_MMAP_DATA, &map, &handle);
+    if (err != ESP_OK || map == NULL) {
+        fprintf(stderr, "gm: %s mmap failed (%d): need %u, largest free vaddr block %u\n",
+                what, (int)err, (unsigned)size, (unsigned)free_blk);
+        return NULL;
+    }
+    return map;
+}
+
 static void mount_gm_fonts(void) {
     const esp_partition_t *part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
@@ -433,14 +456,13 @@ static void mount_gm_fonts(void) {
         fprintf(stderr, "gm: no fonts partition, GM presets unavailable\n");
         return;
     }
-    const void *map = NULL;
-    esp_partition_mmap_handle_t handle;  // never unmapped; the samples live as long as AMY
-    esp_err_t err = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &handle);
-    if (err != ESP_OK || map == NULL) {
-        fprintf(stderr, "gm: fonts partition mmap failed (%d)\n", (int)err);
-        return;
-    }
-    amy_set_gm_pcm((const int16_t *)map);
+    const void *small = mount_fonts_range(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
+    if (small != NULL)
+        amy_set_gm_pcm((const int16_t *)small);
+    const void *big = mount_fonts_range(part, GM_BIG_BYTE_OFFSET,
+                                        part->size - GM_BIG_BYTE_OFFSET, "big bank");
+    if (big != NULL)
+        amy_set_gm_big_pcm((const int16_t *)big);
 }
 #endif
 
