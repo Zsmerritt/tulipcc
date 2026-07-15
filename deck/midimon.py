@@ -18,7 +18,9 @@ import deckui as dk
 import lvgl as lv
 
 _MAX = 120      # ring capacity (messages)
-_SHOW = 16      # lines rendered
+_SHOW = 16      # default lines rendered (panel() sizes this to the card:
+                # a fixed 16 filled only half the screen)
+_LINE_H = 16    # unscii_16 line height, px
 _TICK_MS = 150
 
 _s = {'buf': [], 'count': 0, 'paused': False, 'open': False, 'dirty': False,
@@ -88,13 +90,14 @@ def _render():
     if lbl is None:
         return
     buf = _s['buf']
-    window = buf[-(_SHOW + 1):]          # one extra for the first delta
+    show = _s.get('show', _SHOW)
+    window = buf[-(show + 1):]           # one extra for the first delta
     lines = []
     prev = window[0][0] if window else 0
     for i, (t, m) in enumerate(window):
         dt = max(0, t - prev)
         prev = t
-        if len(window) > _SHOW and i == 0:
+        if len(window) > show and i == 0:
             continue                     # the extra row only seeds the delta
         lines.append(_fmt(dt, m))
     if not lines:
@@ -170,9 +173,11 @@ def panel(parent, shell=None):
     cb_.set_pos(w - 24 - 130, 8)
     cb_.add_event_cb(_clear, lv.EVENT.CLICKED, None)
 
-    # the log: one card, one mono label
+    # the log: one card, one mono label, sized so the line count FILLS the
+    # card (a fixed 16 lines used only ~half the screen)
+    card_h = h - 68
     card = lv.obj(parent)
-    card.set_size(w - 48, h - 68)
+    card.set_size(w - 48, card_h)
     card.set_pos(24, 60)
     dk._flat(card, radius=16, bg=dk.SURFACE)
     dk.edge(card)
@@ -180,6 +185,7 @@ def panel(parent, shell=None):
     lbl = dk.label(card, "waiting for MIDI...", 16, 12, color=dk.GREEN,
                    font=dk.FONT_MONO)
     _s['lbl'] = lbl
+    _s['show'] = max(10, (card_h - 24) // _LINE_H)
 
     _s['buf'] = []
     _s['count'] = 0

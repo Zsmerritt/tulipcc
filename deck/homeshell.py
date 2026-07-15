@@ -198,6 +198,15 @@ class HomeShell:
             except Exception as e:
                 print("homeshell: on_chip failed:", e)
 
+    def refresh_status(self):
+        """Public poke for the wifi + clock cluster -- Settings calls this
+        right after a successful Wi-Fi connect so the bar doesn't say
+        'offline' until the next rebuild."""
+        try:
+            self._render_wifi_clock()
+        except Exception:
+            pass
+
     def _render_wifi_clock(self):
         online = False
         try:
@@ -489,7 +498,9 @@ class HomeShell:
                 self._clock_running = False
                 return
             try:
-                self._clock_lbl.set_text(_clock_str())
+                # full cluster, not just the time: wifi state changes (a
+                # Settings connect) were stuck on 'offline' until a rebuild
+                self._render_wifi_clock()
             except Exception:
                 self._alive = False
                 self._clock_running = False

@@ -488,6 +488,46 @@ def apply_instrument(iid=None, cfg=None):
     apply_all(cfg)
 
 
+def sync_time():
+    """NTP + LOCALIZE: set the RTC from NTP (UTC), then shift it to local time
+    using the UTC offset of the network's public IP (geo-IP), so the top-bar
+    clock reads wall-clock time. The offset is cached in config, so later
+    NTP-only syncs still localize even if the geo lookup fails."""
+    import tulip
+    if tulip.ip() is None:
+        return False
+    try:
+        import ntptime
+        ntptime.settime()               # RTC := UTC
+    except Exception:
+        return False
+    off = None
+    try:
+        # ip-api.com: plain HTTP, tiny JSON, offset in seconds.
+        # (worldtimeapi.org trips tuliprequests with a BadStatusLine.)
+        import tuliprequests as urequests
+        r = urequests.get('http://ip-api.com/json/?fields=status,offset')
+        j = r.json()
+        r.close()
+        if j.get('status') == 'success':
+            off = int(j.get('offset', 0))
+            set_value('tz_offset_s', off)
+    except Exception:
+        pass
+    if off is None:
+        off = get('tz_offset_s')        # cached from a previous success
+    if off:
+        try:
+            import machine
+            import time
+            tm = time.localtime(time.time() + off)
+            machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1,
+                                    tm[3], tm[4], tm[5], 0))
+        except Exception:
+            pass
+    return True
+
+
 def apply(cfg=None):
     """Apply device settings on boot: audio + display. The MIDI router is started
     separately by boot.py (forwarder.start())."""

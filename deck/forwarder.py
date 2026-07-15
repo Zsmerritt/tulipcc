@@ -308,6 +308,20 @@ def start():
 
     _apply_device_fx(cfg, internal_synths)   # internal (Tulip) FX bus
 
+    # Re-assert the configured GLOBAL VOLUME: the synth rebuild resets AMY
+    # state, so without this every patch switch reverted volume to the default
+    # -- the preset-audition note (and everything after) ignored Settings.
+    try:
+        import amy
+        vol = cfg.get('volume', 4)
+        vfn = getattr(amy, 'volume', None)
+        if vfn is not None:
+            vfn(vol)
+        else:
+            amy.send(volume=vol)
+    except Exception:
+        pass
+
     if not _state.get('registered'):
         try:
             midi.add_callback(_route)

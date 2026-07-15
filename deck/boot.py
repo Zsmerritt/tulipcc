@@ -45,6 +45,12 @@ def _boot():
     if ssid:
         try:
             tulip.wifi(ssid, cfg.get('wifi_pass', ''))
+            if tulip.ip():
+                try:
+                    import deckcfg as _dc
+                    _dc.sync_time()    # NTP + geo-IP localize (real clock)
+                except Exception:
+                    pass
         except Exception as e:
             print("wifi failed:", e)
 
