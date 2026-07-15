@@ -97,7 +97,9 @@ jobs:
       contents: read
     steps:
       # Fail fast on a missing/mis-scoped token, before the ~15-min build.
+      # Upstream only: forks have no token, but still want the release assets.
       - name: Verify Vercel token can access the team
+        if: github.repository == 'shorepine/tulipcc'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
@@ -132,6 +134,7 @@ jobs:
       # No firmware is bundled: the release flasher reads from the 'amyboard'
       # GitHub release, not from the same origin (only PR previews bundle).
       - name: Deploy to Vercel production (amyboard.com)
+        if: github.repository == 'shorepine/tulipcc'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |

@@ -30,6 +30,9 @@ concurrency:
 
 jobs:
   preview:
+    # Vercel-only job: forks have no VERCEL_TOKEN, so every run failed (and
+    # emailed). Skip entirely off the upstream repo.
+    if: github.repository == 'shorepine/tulipcc'
     runs-on: ubuntu-latest
     steps:
       - name: Verify Vercel token can access the team

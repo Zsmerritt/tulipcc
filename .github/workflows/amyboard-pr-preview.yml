@@ -83,11 +83,10 @@ jobs:
             core.info(`event=${ev} pr=${num} amy=${isAmy} sha=${amySha || '-'}`);
 
       # Fail fast on a missing/mis-scoped token, before the ~15-min build.
-      # fork-local: non-fatal so the firmware build + artifact upload still run
-      # on forks without the upstream VERCEL_TOKEN (only the Vercel web preview
-      # needs it, and that step comes after the firmware artifacts are uploaded).
+      # Upstream only: forks have no VERCEL_TOKEN, and the firmware build +
+      # artifact upload (the part forks need) don't depend on Vercel at all.
       - name: Verify Vercel token can access the team
-        continue-on-error: true
+        if: github.repository == 'shorepine/tulipcc'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
@@ -207,8 +206,9 @@ jobs:
              tulip/amyboard/dist/amyboard-sys.bin \
              tulip/amyboardweb/stage/firmware/
 
-      # --- Deploy preview + stable per-PR alias ---
+      # --- Deploy preview + stable per-PR alias (upstream only: needs Vercel) ---
       - name: Deploy preview to Vercel
+        if: github.repository == 'shorepine/tulipcc'
         id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -264,7 +264,7 @@ jobs:
       # Tulip PRs only. AMY-PR runs get a single result comment posted on the AMY
       # PR by the HW CI workflow instead (this run has no Tulip PR to comment on).
       - name: Comment preview URL
-        if: success() && github.event_name == 'pull_request'
+        if: success() && github.event_name == 'pull_request' && github.repository == 'shorepine/tulipcc'
         uses: actions/github-script@v7
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}
