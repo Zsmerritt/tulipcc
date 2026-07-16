@@ -28,11 +28,18 @@ NON_DRUM = ('effects', 'instrument', 'misc_bass')
 def _hit_features(oscs):
     tone_f, noise_level, noise_filt, noise_ff, dur = None, 0.0, None, 0.0, 0.0
     for o in oscs:
-        try:
-            bp = str(o.get('bp0', '0,1,200,0')).split(',')
-            dur = max(dur, float(bp[-4]))
-        except (ValueError, IndexError):
-            dur = max(dur, 200.0)
+        # bp0 is 't,l,t,l,...' -- even slots are TIMES (like _scale_times).
+        # The old float(bp[-4]) assumed a 6-element release-pair layout and
+        # misindexed 4-element strings (incl. the default) to element 0,
+        # scoring duration ~0. Take the max over the time slots instead.
+        bp = str(o.get('bp0', '0,1,200,0')).split(',')
+        times = []
+        for i in range(0, len(bp), 2):
+            try:
+                times.append(float(bp[i]))
+            except ValueError:
+                pass
+        dur = max(dur, max(times) if times else 200.0)
         if o.get('wave') == N:
             try:
                 noise_level = float(str(o.get('amp', '1')).split(',')[0])

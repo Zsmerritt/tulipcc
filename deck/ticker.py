@@ -10,13 +10,17 @@
 #   key = ticker.every(300, fn)   # fn() about every 300ms (100ms grain)
 #   ticker.cancel(key)
 #
-# A subscriber that raises is dropped (a deleted panel's label must never
-# wedge the shared tick); panels that want teardown-on-delete should still
-# prefer an lv DELETE hook and cancel() explicitly.
+# A subscriber that raises is TOLERATED for a few consecutive ticks (a
+# transient -- e.g. a label touched during a concurrent panel rebuild --
+# must not permanently unhook a build-once persistent widget like the
+# top-bar clock); only after _MAX_FAILS in a row is it dropped as genuinely
+# dead, so it never wedges the shared tick. Panels that want
+# teardown-on-delete should still prefer an lv DELETE hook and cancel().
 
 import lvgl as lv
 
 _TICK_MS = 100
+_MAX_FAILS = 5          # consecutive raises before a subscriber is dropped
 _state = {'timer': None, 'subs': {}, 'n': 0}
 
 
@@ -24,7 +28,7 @@ def every(period_ms, fn, key=None):
     """Call fn() about every period_ms (quantized to 100ms, min 100).
     Re-registering the same key replaces the old subscriber. Returns key."""
     key = key if key is not None else fn
-    _state['subs'][key] = (max(1, round(period_ms / _TICK_MS)), fn)
+    _state['subs'][key] = [max(1, round(period_ms / _TICK_MS)), fn, 0]
     _ensure()
     return key
 
@@ -42,8 +46,17 @@ def _fire(_t=None):
             continue
         try:
             rec[1]()
-        except Exception:
-            cancel(key)         # dead subscriber: drop, never wedge the tick
+            rec[2] = 0          # a good tick clears the transient-fail run
+        except Exception as e:
+            rec[2] += 1
+            if rec[2] >= _MAX_FAILS:
+                cancel(key)     # dead subscriber: drop, never wedge the tick
+                try:
+                    import decklog
+                    decklog.dbg("ticker dropped subscriber %r after %d "
+                                "consecutive fails: %r" % (key, rec[2], e))
+                except Exception:
+                    pass
 
 
 def _ensure():

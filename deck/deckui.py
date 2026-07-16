@@ -259,6 +259,20 @@ def star(parent, filled, size=28, on_color=STAR_ON, off_color=STAR_OFF):
     return img
 
 
+# Pre-rasterize the two sizes actually used (row stars default 28; the
+# Favorites button 22) at MODULE LOAD, off the interaction path. star_src is
+# ~size^2*4*10 interpreted point-in-polygon iterations (~50k for both sizes);
+# done lazily it landed on the FIRST patch-picker build tick, on top of the
+# window build. _STAR caches the result, so callers are unchanged -- they now
+# always hit the cache instead of paying the raster on first open.
+for _sz in (28, 22):
+    try:
+        star_src(_sz)
+    except Exception:
+        pass    # LVGL not ready (e.g. bare host import): fall back to lazy
+del _sz
+
+
 def star_set(img, filled, on_color=STAR_ON, off_color=STAR_OFF):
     img.set_style_image_recolor(c(on_color if filled else off_color), 0)
 

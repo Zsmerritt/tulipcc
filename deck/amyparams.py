@@ -502,23 +502,6 @@ def fx_reverb_string(fx):
     return _bus_strings(merged)['reverb']
 
 
-def fx_calls(fx, pfx=None):
-    """Given a device's stored FX overrides (and the active patch's own FX
-    as the baseline), return [(bus, kwargs)] for amy.reverb()/chorus()/
-    echo(). Only user-touched buses are emitted -- the patch already applied
-    its own values when it loaded -- but within a touched bus the unset
-    fields keep the PATCH's values, not defaults (nudging chorus level must
-    not reset the patch's rate/depth)."""
-    merged, touched = _merge_fx(fx, pfx)
-    out = []
-    for bus in FX_BUSES:
-        if bus not in touched:
-            continue
-        kw = {p['arg']: merged[bus][p['name']] for p in FX[bus]}
-        out.append((bus, kw))
-    return out
-
-
 def fx_eq_string(fx, pfx=None):
     """The device's EQ as an amy.send(eq=...) string 'low,mid,high', or None
     when the user never set EQ (leave the patch's own EQ alone). User values

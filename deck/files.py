@@ -153,6 +153,73 @@ def _open(path):
     _refresh()
 
 
+_WINDOW = 40   # rows built per tick -- a full /user is dozens of files x
+               # ~4 LVGL objects; building them ALL in one callback risked
+               # the ~40-80ms interrupt-WDT stall the patch/kit pickers were
+               # already chunked to avoid (F-17). Same shape as
+               # instrument._WINDOW: fill a window, park the rest behind a
+               # "Show N more" button.
+
+
+def _make_row(body, name, is_dir, size, full):
+    b = lv.button(body)
+    b.set_width(lv.pct(100))
+    b.set_height(56)
+    dk._flat(b, radius=12, bg=dk.SURFACE)
+    icon = lv.label(b)
+    icon.set_text((lv.SYMBOL.DIRECTORY + "  ") if is_dir else (lv.SYMBOL.FILE + "  "))
+    icon.set_style_text_color(dk.c(dk.ORANGE if is_dir else dk.MUTED), 0)
+    icon.set_style_text_font(dk.FONT_M, 0)
+    icon.align(lv.ALIGN.LEFT_MID, 6, 0)
+    nm = lv.label(b)
+    nm.set_text(name)
+    nm.set_style_text_color(dk.c(dk.TEXT), 0)
+    nm.set_style_text_font(dk.FONT_M, 0)
+    nm.align(lv.ALIGN.LEFT_MID, 44, 0)
+    # Size comes straight from ilistdir's single pass -- no per-file os.stat
+    # fallback (that re-introduced N littlefs metadata walks inside the build
+    # loop, the exact F-17 cost the single pass removed).
+    if not is_dir and size is not None:
+        sz = lv.label(b)
+        sz.set_text(_fmt_size(size))
+        sz.set_style_text_color(dk.c(dk.MUTED), 0)
+        sz.set_style_text_font(dk.FONT_S, 0)
+        sz.align(lv.ALIGN.RIGHT_MID, -12, 0)
+    if is_dir:
+        b.add_event_cb((lambda p: (lambda e: _open(p)))(full), lv.EVENT.CLICKED, None)
+    else:
+        b.add_event_cb((lambda p, n, bb: (lambda e: _select(p, n, bb)))(full, name, b),
+                       lv.EVENT.CLICKED, None)
+
+
+def _append_entries(body):
+    """Build the next window of entry rows + a 'Show N more' tail if needed."""
+    mb = _s.pop('morebtn', None)
+    if mb is not None:
+        try:
+            mb.delete()
+        except Exception:
+            pass
+    entries = _s.get('entries', [])
+    path = _s['path']
+    start = _s.get('shown', 0)
+    end = min(len(entries), start + _WINDOW)
+    for name, is_dir, size in entries[start:end]:
+        full = path.rstrip('/') + '/' + name
+        _make_row(body, name, is_dir, size, full)
+    _s['shown'] = end
+    left = len(entries) - end
+    if left > 0:
+        b = dk.button(body, "Show %d more..." % min(_WINDOW, left),
+                      w=lv.pct(100), h=56, bg=dk.SURFACE2, font=dk.FONT_S)
+
+        def _more(e):
+            if e.get_code() == lv.EVENT.CLICKED:
+                _append_entries(body)
+        b.add_event_cb(_more, lv.EVENT.CLICKED, None)
+        _s['morebtn'] = b
+
+
 def _refresh():
     body = _s['body']
     body.clean()
@@ -175,40 +242,14 @@ def _refresh():
         pass
     dirs.sort()
     files.sort()
-    for name in dirs + files:
-        full = path.rstrip('/') + '/' + name
-        is_dir = name in dirs
-        b = lv.button(body)
-        b.set_width(lv.pct(100))
-        b.set_height(56)
-        dk._flat(b, radius=12, bg=dk.SURFACE)
-        icon = lv.label(b)
-        icon.set_text((lv.SYMBOL.DIRECTORY + "  ") if is_dir else (lv.SYMBOL.FILE + "  "))
-        icon.set_style_text_color(dk.c(dk.ORANGE if is_dir else dk.MUTED), 0)
-        icon.set_style_text_font(dk.FONT_M, 0)
-        icon.align(lv.ALIGN.LEFT_MID, 6, 0)
-        nm = lv.label(b)
-        nm.set_text(name)
-        nm.set_style_text_color(dk.c(dk.TEXT), 0)
-        nm.set_style_text_font(dk.FONT_M, 0)
-        nm.align(lv.ALIGN.LEFT_MID, 44, 0)
-        if not is_dir:
-            try:
-                sz = lv.label(b)
-                size = sizes.get(name)
-                if size is None:
-                    size = os.stat(full)[6]   # ilistdir gave no size here
-                sz.set_text(_fmt_size(size))
-                sz.set_style_text_color(dk.c(dk.MUTED), 0)
-                sz.set_style_text_font(dk.FONT_S, 0)
-                sz.align(lv.ALIGN.RIGHT_MID, -12, 0)
-            except OSError:
-                pass
-        if is_dir:
-            b.add_event_cb((lambda p: (lambda e: _open(p)))(full), lv.EVENT.CLICKED, None)
-        else:
-            b.add_event_cb((lambda p, n, bb: (lambda e: _select(p, n, bb)))(full, name, b),
-                           lv.EVENT.CLICKED, None)
+    # dirs first (each sorted), sizes from the single ilistdir pass; then
+    # window the build so a large directory can't stall past the WDT budget.
+    entries = [(n, True, None) for n in dirs] + \
+              [(n, False, sizes.get(n)) for n in files]
+    _s['entries'] = entries
+    _s['shown'] = 0
+    _s['morebtn'] = None
+    _append_entries(body)
 
 
 def _run_cb(e):

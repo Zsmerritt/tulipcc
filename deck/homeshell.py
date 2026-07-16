@@ -373,6 +373,9 @@ class HomeShell:
         """Re-run `builder` on the current top panel in place (same handle, so
         Back still lands where it did) -- used when tapping a different chip
         while a panel of the same kind is already open."""
+        dk.close_keyboard()     # never tear a textarea out from under the
+        dk.close_confirm()      # global keyboard/modal (F-12) -- match
+                                # push/back/reset_to_root before h.clean()
         self._refill_gen += 1   # cancel any pending back()-refill
         h = self.stack.top_handle()
         if h is None:

@@ -33,7 +33,28 @@ def _logfile():
     return '/user/var/deck.log'
 
 
-_LOGFILE = _logfile()
+# Resolved LAZILY, not at import: boot.py imports decklog for the boot banner
+# BEFORE it mounts /sd, so resolving here would freeze the path to flash even
+# when a card is present (the /sd branch would never win). _lf() resolves on
+# first use; boot calls use_sd() right after a successful mount to switch.
+_LOGFILE = None
+
+
+def _lf():
+    global _LOGFILE
+    if _LOGFILE is None:
+        _LOGFILE = _logfile()
+    return _LOGFILE
+
+
+def use_sd():
+    """Boot calls this right after a successful uos.mount(..., '/sd') so the
+    log channel actually engages the card that _logfile() couldn't see at
+    import time. Re-resolves the path and re-stats size on next write."""
+    global _LOGFILE
+    _LOGFILE = _logfile()
+    _state['size'] = None
+    return _LOGFILE
 
 
 def _ts():
@@ -59,12 +80,13 @@ def _write_pending():
     import os
     if not _PENDING:
         return
+    logfile = _lf()
     data = "\n".join(_PENDING) + "\n"
     del _PENDING[:]
     _state['pend'] = 0
     if _state['size'] is None:
         try:
-            _state['size'] = os.stat(_LOGFILE)[6]
+            _state['size'] = os.stat(logfile)[6]
         except OSError:
             _state['size'] = 0
     if _state['size'] + len(data) > _MAX:
@@ -72,15 +94,15 @@ def _write_pending():
         # outright could throw away the lead-up to the very event being
         # diagnosed.
         try:
-            os.remove(_LOGFILE + '.old')
+            os.remove(logfile + '.old')
         except OSError:
             pass
         try:
-            os.rename(_LOGFILE, _LOGFILE + '.old')
+            os.rename(logfile, logfile + '.old')
         except OSError:
             pass
         _state['size'] = 0
-    with open(_LOGFILE, 'a') as f:
+    with open(logfile, 'a') as f:
         f.write(data)
     _state['size'] += len(data)
 
@@ -90,16 +112,29 @@ def flush(_=None):
     call before an intentional reboot so the tail isn't lost."""
     _state['armed'] = False
     try:
-        if _LOGFILE.startswith('/sd'):
+        if _lf().startswith('/sd'):
             _write_pending()  # SD is its own peripheral: no fence needed
         else:
             # A flash write while AMY renders PCM from the mmap'd banks
             # crashed the S3 (see deckcfg.fenced_write). Fence firmware
             # writes immediately; older firmware waits for quiet.
             import deckcfg
-            if not deckcfg.fenced_write(_write_pending) \
-                    and len(_PENDING) > 200:
-                del _PENDING[:-200]
+            if not deckcfg.fenced_write(_write_pending):
+                # Couldn't write yet (old no-fence firmware, audio playing).
+                if len(_PENDING) > 200:
+                    del _PENDING[:-200]
+                    # Re-sync the byte counter to the trimmed buffer, else
+                    # _state['pend'] stays inflated and log() flushes on
+                    # essentially every line thereafter (per-line flush storm).
+                    _state['pend'] = sum(len(l) + 1 for l in _PENDING)
+                # Re-arm: nothing else reschedules a deferred write, so the
+                # buffered tail would linger until the next log() call.
+                if _PENDING and not _state['armed']:
+                    _state['armed'] = True
+                    try:
+                        tulip.defer(flush, 0, _FLUSH_MS)
+                    except Exception:
+                        _state['armed'] = False
     except Exception:
         pass
 
