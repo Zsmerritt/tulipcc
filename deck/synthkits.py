@@ -131,8 +131,21 @@ def _scale_first(csv, factor):
 # Synth hits are built at design amplitudes <=1.0 while the sampled kits'
 # baked map entries run 3..13 -- measured on device the same kick line
 # peaked 0.906 (sampled '80s Power) vs 0.159 (tr909_d). This closes the gap;
-# the per-hit 'level' override still scales on top of it.
-KIT_GAIN = 4.0
+# the per-hit 'level' override still scales on top of it. Capped: 4x drove
+# resonant-filter hits into fixed-point saturation that LATCHED (a pad rang
+# forever at full level until the router rebuilt).
+KIT_GAIN = 2.5
+_AMP_CAP = 2.5
+
+
+def _capped_gain(csv, g):
+    """Scale a coef string's const slot by g, hard-capped at _AMP_CAP."""
+    vals = csv.split(',')
+    try:
+        vals[0] = _fmt(min(_AMP_CAP, float(vals[0]) * g))
+    except ValueError:
+        pass
+    return ','.join(vals)
 
 
 def _xform_partials(ps, tune, decay, level):
@@ -160,7 +173,7 @@ def _xform_partials(ps, tune, decay, level):
             if k == 'f' and tune != 1.0 and wave == '9':
                 v = _scale_first(v, tune)
             elif k == 'a' and level != 1.0 and wave == '10':
-                v = _scale_first(v, level)
+                v = _capped_gain(v, level)
             elif k in 'AB' and decay != 1.0:
                 v = _scale_times(v, decay)
             nf.append(k + v)
@@ -196,7 +209,7 @@ def hit_patch_string(hit_key, overrides=None):
                     o[bp] = _scale_times(o[bp], decay)
         g = level * (snap if o.get('wave') == 5 else 1.0)   # 5 = NOISE
         if g != 1.0 and 'amp' in o:
-            o['amp'] = _scale_first(o['amp'], g)
+            o['amp'] = _capped_gain(o['amp'], g)
         frag = ['v%d' % i]
         for key, letter in _WIRE:
             if key in o:
