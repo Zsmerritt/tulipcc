@@ -2,12 +2,11 @@
 #include "tsequencer.h"
 #include <inttypes.h>
 
-mp_obj_t sequencer_callbacks[SEQUENCER_SLOTS];
+// The callback/arg stores are GC-rooted mp_state slots; the registrations
+// live in modtulip.c (root-pointer collection only scans QSTR-bearing
+// sources) and tsequencer.h aliases the old names onto them.
 uint32_t sequencer_period[SEQUENCER_SLOTS];
 uint32_t sequencer_tick[SEQUENCER_SLOTS];
-
-mp_obj_t defer_callbacks[DEFER_SLOTS];
-mp_obj_t defer_args[DEFER_SLOTS];
 uint32_t defer_sysclock[DEFER_SLOTS];
 
 #ifdef AMY_IS_EXTERNAL

@@ -26,14 +26,21 @@ def _mpe():
 
 
 def _members_str(instr):
+    # clamp the DISPLAYED span like the zone math already does -- this used
+    # to happily print "member channels 3-17" (ch 17 doesn't exist) and
+    # claim more members than the zone can hold (fresh-eyes F-10)
     m = instr.get('mpe', {})
     n = m.get('members', 15)
     master = instr.get('channel', 1)
     if master == 16:
-        lo, hi = 16 - n, 15
+        lo, hi = max(1, 16 - n), 15
     else:
-        lo, hi = master + 1, master + n
-    return "master ch %d, member channels %d-%d" % (master, lo, hi)
+        lo, hi = master + 1, min(16, master + n)
+    eff = hi - lo + 1
+    s = "master ch %d, member channels %d-%d" % (master, lo, hi)
+    if eff < n:
+        s += " (%d of %d fit)" % (eff, n)
+    return s
 
 
 def _apply():

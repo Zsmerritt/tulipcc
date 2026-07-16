@@ -87,7 +87,16 @@ def kit_notes(kit_key):
 
 
 def hit_name(hit_key):
-    return _load()['names'].get(hit_key, hit_key)
+    name = _load()['names'].get(hit_key, hit_key)
+    # strip trailing dedup-hash suffixes ('brush1_139732', 'kick_7dbbaa')
+    # from DISPLAY -- engineering artifacts, not names (fresh-eyes F-8);
+    # the raw key stays the lookup identity
+    i = name.rfind('_')
+    if i > 0:
+        tail = name[i + 1:]
+        if len(tail) >= 4 and all(c in '0123456789abcdef' for c in tail):
+            name = name[:i]
+    return name
 
 
 def pack_hits(pack):

@@ -123,7 +123,12 @@ def _select(path, name, btn):
     _s['selname'].set_text(name)
     _s['selname'].set_style_text_color(dk.c(dk.TEXT), 0)   # brighten on select
     _s['delbtn'].get_child(0).set_text("Delete")
-    # destructive actions own red in this system (UX-REVIEW-7 NEW-6)
+    # destructive actions own red in this system (UX-REVIEW-7 NEW-6).
+    # The cache must agree: _set_btn snapshots each button's "enabled"
+    # color on first use, and the build-time disable snapshotted Delete's
+    # neutral creation color -- so enabling it here RESTORED lavender over
+    # the red we just set (fresh-eyes F-6). Pin the cached enabled color.
+    _BTN_ON_BG['delbtn'] = dk.c(dk.RED)
     _s['delbtn'].set_style_bg_color(dk.c(dk.RED), 0)
     # per-file capability: Run only for .py, Edit only for small text files
     _set_btn('run', path.endswith('.py'))
@@ -218,8 +223,25 @@ def _edit_cb(e):
         _toast("Edit failed: %r" % ex, dk.RED)
 
 
+def _is_system_module(path):
+    """True for the deck's own runtime files -- deleting boot.py from the
+    Files browser would brick the device (fresh-eyes F-11)."""
+    name = path.rsplit('/', 1)[-1]
+    if not name.endswith('.py'):
+        return False
+    try:
+        import home
+        return name[:-3] in home.deck_modules_set()
+    except Exception:
+        return name in ('boot.py', 'home.py', 'homeshell.py', 'deckui.py',
+                        'deckcfg.py', 'forwarder.py')
+
+
 def _delete_cb(e):
     if not _s.get('sel'):
+        return
+    if _is_system_module(_s['sel']):
+        _toast("System module -- the deck needs this to run", dk.RED)
         return
     if not _s.get('confirm'):
         _s['confirm'] = True

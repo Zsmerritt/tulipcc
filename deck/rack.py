@@ -327,6 +327,16 @@ def kit_panel(parent, shell=None):
                         if e.get_code() == lv.EVENT.CLICKED else None))(kit),
                        lv.EVENT.CLICKED, None)
         _s['kitbtns'].append((b, kit, name.lower()))
+        if kit == cur:
+            _s['kitcur'] = b
+    # jump (no animation -- an animated scroll repaints every frame) so the
+    # CURRENT kit is visible on open instead of ~10 screens down (F-2)
+    curbtn = _s.pop('kitcur', None)
+    if curbtn is not None:
+        try:
+            curbtn.scroll_to_view(lv.ANIM.OFF)
+        except Exception:
+            pass
 
     def _filter(e):
         try:

@@ -314,7 +314,15 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22,
     # knob pad h//3 (was h//2): the fatter knob poked past card corners at the
     # range ends (UX-REVIEW-7 N3); target stays ~40px with the track height
     s.set_style_pad_all(max(6, h // 3), lv.PART.KNOB)
-    # flat, intentional disabled colors (not the theme's RGB332 alarm-hue mix)
+    # flat, intentional disabled colors (not the theme's RGB332 alarm-hue
+    # mix) -- AND zero the theme's DISABLED color FILTER, which otherwise
+    # applies on top of these flat colors and quantizes them back to the
+    # olive/black the flat colors were meant to avoid (fresh-eyes F-4)
+    for part in (lv.PART.MAIN, lv.PART.INDICATOR, lv.PART.KNOB):
+        try:
+            s.set_style_color_filter_opa(0, part | lv.STATE.DISABLED)
+        except Exception:
+            pass
     s.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)
     s.set_style_bg_color(c(SURFACE2), lv.PART.INDICATOR | lv.STATE.DISABLED)
     s.set_style_bg_color(c(MUTED), lv.PART.KNOB | lv.STATE.DISABLED)

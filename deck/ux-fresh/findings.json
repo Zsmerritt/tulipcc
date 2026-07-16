@@ -1,0 +1,146 @@
+[
+  {
+    "id": "F-1",
+    "severity": "high",
+    "title": "Synth-kit drum instruments mislabeled \"TR-808 kit\" on the Home rack row",
+    "summary": "instrument_sound() looks up the drum kit in an int-keyed dict (_KIT_NAMES). Synth kits are string keys like 'synth:tr909_d', so .get() always misses and falls through to the 'TR-808 kit' default. The Home rack row and edit-panel footer therefore disagree with the editor (which uses drums_kit.kit_name and correctly shows 'TR-909 mda D (synth)'). The primary glanceable sound label on the root screen is simply wrong for every synth kit.",
+    "evidence": ["shots/01_home_root.png", "shots/32_home_after_cleanup.png", "shots/02_inst_edit_drums.png"],
+    "location": {"file": "deck/shellmodel.py", "symbol": "instrument_sound / _KIT_NAMES (lines 88-96)"},
+    "suggested_fix": "In instrument_sound(), branch on the kit value: if it is a str starting with 'synth:' (or otherwise not in _KIT_NAMES), resolve the display name via drums_kit.kit_name(kit) instead of _KIT_NAMES.get(kit, 'TR-808'). Cost: one added branch in a function called once per row build; zero per-frame cost."
+  },
+  {
+    "id": "F-2",
+    "severity": "medium",
+    "title": "Kit picker does not scroll to the currently selected kit on open",
+    "summary": "The kit list is 84 rows. The current selection ('TR-909 mda D') is highlighted but sits far off-screen at the very bottom of the Synthesized section, so opening the picker shows no indication of what is currently loaded until you manually scroll ~10+ screens. Search helps but you must first know the name.",
+    "evidence": ["shots/04_kit_picker.png", "shots/05_kit_picker_synth.png"],
+    "location": {"file": "deck/rack.py", "symbol": "kit_panel (lines 297-351)"},
+    "suggested_fix": "After building the rows, call the selected button's scroll_to_view(lv.ANIM.OFF) once so the current kit is visible immediately. Cost: a single one-shot scroll at build (ANIM.OFF = instant jump, no animation frames); negligible. Do NOT animate the scroll (that would repaint every frame)."
+  },
+  {
+    "id": "F-3",
+    "severity": "medium",
+    "title": "Tabbed panels invert visual hierarchy: the active tab looks recessed, inactive tabs look raised",
+    "summary": "On every left-tab panel (Sound, FX, Settings) the SELECTED tab renders dark/recessed with only a thin blue underline, while the INACTIVE tabs render as lighter lavender (SURFACE2) raised buttons. The intended lv.STATE.CHECKED = ACCENT(blue) highlight in _style_tabview is not taking effect on this build, so the eye is drawn to the wrong tabs. On the Settings System tab the active tab is nearly invisible against the background.",
+    "evidence": ["shots/11_sound_editor_juno.png", "shots/13_fx_editor.png", "shots/14_settings_network.png", "shots/16_settings_system.png"],
+    "location": {"file": "deck/parameditor.py", "symbol": "_style_tabview (lines 224-263)"},
+    "suggested_fix": "The CHECKED-state bg is not rendering; set the active tab's background explicitly. Cheapest robust approach: on the tabview VALUE_CHANGED, recolor the ~4 tab buttons (active = ACCENT + white text, others = SURFACE2 + placeholder text) directly rather than relying on the STATE.CHECKED style. Cost: tab switches already repaint the whole content page; recoloring ~4 small button objects is negligible."
+  },
+  {
+    "id": "F-4",
+    "severity": "medium",
+    "title": "MPE config sliders render in default-theme olive/mustard when disabled",
+    "summary": "When per-instrument MPE is off (but the global gate is on), the dependent 'Member channels' and 'Pitch bend range' sliders are shown disabled and fall back to LVGL's default-theme olive track with black knobs -- clearly off-palette and reads as a broken/corrupt control. The deck slider style defines no DISABLED-state colors, so the default theme leaks through.",
+    "evidence": ["shots/18_mpe_panel.png", "shots/19_mpe_enabled.png"],
+    "location": {"file": "deck/mpe.py", "symbol": "_apply_dep_state / _disable_tree (lines 49-70); root cause in deck/deckui.py slider style"},
+    "suggested_fix": "Give the deck slider style explicit flat DISABLED colors at full opacity (muted track + muted knob) -- the files.py X-4 note already established that alpha-dimming quantizes to olive on RGB332, so use flat colors, not opacity. Alternatively dim only the card container's opacity and leave the slider themed. Cost: static style setup once; zero per-frame cost."
+  },
+  {
+    "id": "F-5",
+    "severity": "medium",
+    "title": "GM patch names are stored pre-truncated to 12 characters",
+    "summary": "GM Bank / E-mu GM patch names read as 'Electric Gra', 'Honky-Tonk P', 'Tine Electri', 'FM Electric ' -- cut mid-word with no ellipsis. This is not a layout clip: the row label auto-sizes and has hundreds of px of unused width. The names are literally stored truncated in the gm.NAMES table.",
+    "evidence": ["shots/28b_patch_picker_gm_clean.png"],
+    "location": {"file": "deck/gm.py", "symbol": "NAMES list (lines 67-69+)"},
+    "suggested_fix": "Store the full GM program names in gm.NAMES ('Electric Grand Piano', etc.). The patch-picker row label auto-sizes and the editor's Patch label already ellipsizes (LONG.DOT) where genuinely needed. Cost: a few hundred extra bytes of flash/RAM for longer strings; zero render cost."
+  },
+  {
+    "id": "F-6",
+    "severity": "medium",
+    "title": "Files: the Delete button never shows its intended red on selection",
+    "summary": "When a file is selected, Run turns green and Edit turns blue, but Delete stays neutral lavender (SURFACE2) -- it only turns red at the second 'Confirm?' tap. _set_btn caches each button's 'enabled' color from its bg the first time it runs, and the initial _set_actions(False) at build captures delbtn's creation color (SURFACE2). _select() sets bg RED, then immediately calls _set_btn('delbtn', True) which restores the cached SURFACE2, wiping the red. The destructive action has no distinct affordance until you have already tapped it once.",
+    "evidence": ["shots/24_files_selected.png", "shots/25_files_delete_confirm.png"],
+    "location": {"file": "deck/files.py", "symbol": "_set_btn / _select (lines 57-131)"},
+    "suggested_fix": "Create the Delete button with bg=dk.RED so _BTN_ON_BG caches RED (matching Run=GREEN / Edit=ACCENT), or special-case delbtn's enabled color to RED in _set_btn. Cost: none."
+  },
+  {
+    "id": "F-7",
+    "severity": "low",
+    "title": "Pad Swap picker: selected pack not highlighted; hits column has no empty-state prompt",
+    "summary": "In the Swap-hit picker the tapped pack in the left column gets no selected highlight, and before a pack is chosen the entire right (hits) column is a large empty dark void with no instruction. The 'Use selected' button is also full-green even with nothing selected.",
+    "evidence": ["shots/07_pad_swap.png", "shots/08_pad_swap_pack.png"],
+    "location": {"file": "deck/padeditor.py", "symbol": "swap_panel / _show_pack (lines 148-219)"},
+    "suggested_fix": "Highlight the tapped pack button (set ACCENT, clear previous -- reuse the same two-object recolor already used for hit selection), and add one muted placeholder label ('Pick a pack to see its hits') in the hits column until a pack is chosen. Optionally grey 'Use selected' until swap_sel is set. Cost: a 2-object recolor per pack tap and one static label; negligible."
+  },
+  {
+    "id": "F-8",
+    "severity": "low",
+    "title": "Pad Swap hit names leak raw filename hash suffixes",
+    "summary": "Hit names in the swap browser show engineering artifacts: 'brush1_139732', 'brush2_5d9f12', 'jazzkick_24e847'. The trailing _<hex> is a dedup/hash suffix that should not be user-facing.",
+    "evidence": ["shots/08_pad_swap_pack.png"],
+    "location": {"file": "deck/synthkits.py", "symbol": "hit_name()"},
+    "suggested_fix": "Strip a trailing '_' + hex/digit suffix in hit_name() for display (keep the raw key for lookup). Cost: one string op per visible row at build; negligible."
+  },
+  {
+    "id": "F-9",
+    "severity": "low",
+    "title": "Patch-picker favorite stars do not clearly show favorited vs not",
+    "summary": "Every patch row shows an identical filled dark-blue star on a lavender button; there is no strong visual difference between a favorited and non-favorited patch, so you cannot tell at a glance what is starred. (Note: no favorites were set during review, so on/off states could not be directly A/B compared -- flagged to verify.)",
+    "evidence": ["shots/10_patch_picker_juno.png", "shots/28b_patch_picker_gm_clean.png"],
+    "location": {"file": "deck/instrument.py", "symbol": "_row / dk.star (lines 118-120)"},
+    "suggested_fix": "Verify dk.star(on) vs dk.star(off) produce a strong contrast (e.g. solid ORANGE fill when favorited vs hollow/muted outline when not) and that the star button chrome does not swamp the icon. Cost: color/glyph only; none."
+  },
+  {
+    "id": "F-10",
+    "severity": "low",
+    "title": "MPE member-channel zone overflows past channel 16 without warning when master isn't ch1",
+    "summary": "With the instrument on master channel 2 and 15 members, the status text reads 'master ch 2, member channels 3-17' (channel 17 does not exist) and the channel-map footer claims 'Zone fits: master ch2 + 15 members' although only channels 3-16 (14 members) are available. The member math (_members_str: hi = master + n) is not clamped to 16 and zone_fits reports a false positive.",
+    "evidence": ["shots/19_mpe_enabled.png"],
+    "location": {"file": "deck/mpe.py", "symbol": "_members_str (lines 28-36); channels.zone_fits"},
+    "suggested_fix": "Clamp the member span to available channels (hi = min(16, master + n)) and surface the existing overflow/overlap warning when the requested members exceed 16 - master. Cost: pure logic; none."
+  },
+  {
+    "id": "F-11",
+    "severity": "low",
+    "title": "Files browser lets you delete core system modules with only an inline two-tap confirm",
+    "summary": "The /user file list shows and allows Delete on the deck's own runtime modules (boot.py, amyparams.py, home.py, etc.). Deleting boot.py would brick the device, yet the only guard is the same inline 'Delete -> Confirm?' two-tap used for any file. High-consequence, easy to hit by mistake.",
+    "evidence": ["shots/23_files.png"],
+    "location": {"file": "deck/files.py", "symbol": "_refresh / _delete_cb (lines 149-233)"},
+    "suggested_fix": "Either filter known deck modules out of the default listing (the home._discover_user deck_modules set already enumerates them), or route deletion of system .py files through the stronger dk.confirm modal with an explicit warning. Cost: one set-membership check per entry at build; negligible."
+  },
+  {
+    "id": "F-12",
+    "severity": "low",
+    "title": "Confirm modal lives on the top layer and is not tied to the panel lifecycle",
+    "summary": "dk.confirm() builds its dialog on lv.layer_top(). During the review the 'Remove instrument?' modal survived programmatic navigation and floated over an unrelated (GM patch) screen. In normal use the only exit is the modal's own buttons, but any asynchronous screen change (screensaver wake, app switch, external nav) could strand the modal over the wrong screen or leave it un-dismissable.",
+    "evidence": ["shots/27_confirm_dialog.png", "shots/28_patch_picker_gm.png"],
+    "location": {"file": "deck/deckui.py", "symbol": "confirm()"},
+    "suggested_fix": "Parent the confirm scrim to the active screen/panel, or dismiss any open confirm on navigation/screensaver activation. Cost: none (parenting change)."
+  },
+  {
+    "id": "F-13",
+    "severity": "nit",
+    "title": "Legacy tools exposed in the Apps list",
+    "summary": "'Drums (legacy)' and 'Voices (legacy)' appear as first-class tiles in Apps, duplicating functionality now owned by the Instruments UI and inviting confusion about which to use.",
+    "evidence": ["shots/31_apps.png"],
+    "location": {"file": "deck/home.py", "symbol": "_APPS (lines 131-138)"},
+    "suggested_fix": "Remove the legacy entries from the default Apps list (they remain runnable from Files/REPL for developers). Cost: none."
+  },
+  {
+    "id": "F-14",
+    "severity": "nit",
+    "title": "MPE 'turned off' panel is a near-empty dead-end with no call to action",
+    "summary": "When the global MPE gate is off, the MPE panel shows only a small top-left line ('MPE is turned off. Enable it in Settings...') over an otherwise blank screen, with no button to actually get to that setting.",
+    "evidence": ["shots/20_mpe_gated_off.png"],
+    "location": {"file": "deck/mpe.py", "symbol": "_rebuild gate branch (lines 238-242)"},
+    "suggested_fix": "Center the message and add an 'Open Settings > System' button that jumps straight to the toggle. Low priority since the state is only reachable transiently. Cost: one label + button, static; negligible."
+  },
+  {
+    "id": "F-15",
+    "severity": "nit",
+    "title": "Clock never auto-syncs despite Wi-Fi being connected",
+    "summary": "Throughout the session the top-bar clock read '--:--' even though Settings showed Wi-Fi 'connected 192.168.4.250'. Time only sets when the user manually taps 'Set time now' (or on a manual Connect). A confidently blank clock on a connected device is a small but persistent rough edge.",
+    "evidence": ["shots/14_settings_network.png", "shots/01_home_root.png"],
+    "location": {"file": "deck/settings.py", "symbol": "connect_cb calls sync_time; boot reconnect path does not"},
+    "suggested_fix": "Call deckcfg.sync_time() once after a successful auto-reconnect at boot, not only on manual Connect. Cost: a single NTP request at boot; not a per-frame cost."
+  },
+  {
+    "id": "F-16",
+    "severity": "nit",
+    "title": "Files disabled action buttons look like ordinary secondary buttons",
+    "summary": "With nothing selected, Run/Edit/Delete are drawn as SURFACE2 + muted text -- the same treatment as many enabled secondary buttons elsewhere in the app (Browse >, Edit >, steppers). The 'disabled' state does not read as disabled; only after selecting a file do the colors (green/blue) clarify.",
+    "evidence": ["shots/23_files.png", "shots/24_files_selected.png"],
+    "location": {"file": "deck/files.py", "symbol": "_set_btn disabled branch (lines 81-84)"},
+    "suggested_fix": "Make the disabled state more distinct (e.g. lower text contrast further or a hollow outline), or accept it -- lowest priority. Cost: color only; none."
+  }
+]

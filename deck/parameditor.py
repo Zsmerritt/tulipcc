@@ -252,15 +252,41 @@ def _style_tabview(tv):
             btn = bar.get_child(i)
             btn.set_style_bg_opa(lv.OPA.COVER, 0)
             btn.set_style_bg_color(dk.c(dk.SURFACE2), 0)
-            btn.set_style_bg_color(dk.c(dk.ACCENT), lv.STATE.CHECKED)
             # PLACEHOLDER (lighter than MUTED): inactive tab labels were below
             # arm's-length contrast on SURFACE2 (UX-REVIEW-7 N4)
             btn.set_style_text_color(dk.c(dk.PLACEHOLDER), 0)
-            btn.set_style_text_color(dk.c(dk.WHITE), lv.STATE.CHECKED)
             btn.set_style_radius(10, 0)
             btn.set_style_border_width(0, 0)
         except Exception:
             pass
+    # ACTIVE tab painted EXPLICITLY: the STATE.CHECKED style selector never
+    # rendered on this build, so the selected tab looked recessed while the
+    # inactive ones read as raised buttons -- inverted hierarchy on every
+    # tabbed panel (fresh-eyes F-3). Recolor on each switch: ~4 small
+    # buttons, and the tab switch already repaints the content page.
+    _paint_active_tab(tv)
+    try:
+        tv.add_event_cb(lambda e: _paint_active_tab(tv),
+                        lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
+
+
+def _paint_active_tab(tv):
+    try:
+        bar = tv.get_tab_bar()
+        try:
+            act = tv.get_tab_active()
+        except AttributeError:
+            act = tv.get_active()
+        for i in range(bar.get_child_count()):
+            btn = bar.get_child(i)
+            on = (i == act)
+            btn.set_style_bg_color(dk.c(dk.ACCENT if on else dk.SURFACE2), 0)
+            btn.set_style_text_color(
+                dk.c(dk.WHITE if on else dk.PLACEHOLDER), 0)
+    except Exception:
+        pass
 
 
 def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,

@@ -63,29 +63,34 @@ PRESET_LOOPED = [
       0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   0,   0,   0,   0,   0,   0,
 ]
 
-# GM program names for UIs.
+# GM program names for UIs (full names -- the table used to carry names
+# pre-truncated to 12 chars, so pickers read "Electric Gra" with hundreds
+# of px to spare; fresh-eyes F-5. Labels that need to clip do it with
+# LONG.DOT at render time.)
 NAMES = [
-    'Grand Piano', 'Bright Grand', 'Electric Gra', 'Honky-Tonk P',
-    'Tine Electri', 'FM Electric ', 'Harpsichord', 'Clavinet',
+    'Grand Piano', 'Bright Grand Piano', 'Electric Grand Piano',
+    'Honky-Tonk Piano',
+    'Tine Electric Piano', 'FM Electric Piano', 'Harpsichord', 'Clavinet',
     'Celeste', 'Glockenspiel', 'Music Box', 'Vibraphone',
-    'Marimba', 'Xylophone', 'Tubular Bell', 'Dulcimer',
-    'Tonewheel Or', 'Percussive O', 'Rock Organ', 'Pipe Organ',
+    'Marimba', 'Xylophone', 'Tubular Bells', 'Dulcimer',
+    'Tonewheel Organ', 'Percussive Organ', 'Rock Organ', 'Pipe Organ',
     'Reed Organ', 'Accordion', 'Harmonica', 'Bandoneon',
     'Nylon Guitar', 'Steel Guitar', 'Jazz Guitar', 'Clean Guitar',
-    'Muted Guitar', 'Overdrive Gu', 'Distortion G', 'Guitar Harmo',
-    'Acoustic Bas', 'Finger Bass', 'Pick Bass', 'Fretless Bas',
+    'Muted Guitar', 'Overdrive Guitar', 'Distortion Guitar',
+    'Guitar Harmonics',
+    'Acoustic Bass', 'Finger Bass', 'Pick Bass', 'Fretless Bass',
     'Slap Bass 1', 'Slap Bass 2', 'Synth Bass 1', 'Synth Bass 2',
     'Violin', 'Viola', 'Cello', 'Double Bass',
-    'Tremolo Stri', 'Pizzicato St', 'Orchestral H', 'Timpani',
-    'Fast Strings', 'Slow Strings', 'Synth String', 'Synth String',
-    'Concert Choi', 'Voice Oohs', 'Synth Voice', 'Orchestra Hi',
-    'Trumpet', 'Trombone', 'Tuba', 'Muted Trumpe',
-    'French Horns', 'Brass Sectio', 'Synth Brass ', 'Synth Brass ',
+    'Tremolo Strings', 'Pizzicato Strings', 'Orchestral Harp', 'Timpani',
+    'Fast Strings', 'Slow Strings', 'Synth Strings 1', 'Synth Strings 2',
+    'Concert Choir', 'Voice Oohs', 'Synth Voice', 'Orchestra Hit',
+    'Trumpet', 'Trombone', 'Tuba', 'Muted Trumpet',
+    'French Horns', 'Brass Section', 'Synth Brass 1', 'Synth Brass 2',
     'Soprano Sax', 'Alto Sax', 'Tenor Sax', 'Baritone Sax',
     'Oboe', 'English Horn', 'Bassoon', 'Clarinet',
     'Piccolo', 'Flute', 'Recorder', 'Pan Flute',
     'Bottle Blow', 'Shakuhachi', 'Whistle', 'Ocarina',
-    'Square Lead', 'Saw Lead', 'Synth Callio', 'Chiffer Lead',
+    'Square Lead', 'Saw Lead', 'Synth Calliope', 'Chiffer Lead',
     'Charang', 'Solo Vox', '5th Saw Wave', 'Bass & Lead',
     'Fantasia', 'Warm Pad', 'Polysynth', 'Space Voice',
     'Bowed Glass', 'Metal Pad', 'Halo Pad', 'Sweep Pad',

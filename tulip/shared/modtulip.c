@@ -99,7 +99,17 @@ STATIC mp_obj_t tulip_board(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_board_obj, 0, 0, tulip_board);
 
 
-mp_obj_t midi_callback = NULL;
+// GC-rooted callback stores (see tsequencer.h aliases): as plain C globals
+// the collector couldn't see them, so a lambda whose only reference was a
+// defer/sequencer/midi slot got COLLECTED and its reused heap block was
+// later CALLED (the "TypeError: 'float' object isn't callable" that fired
+// per save/rebuild -- those trigger GC), and a collected MIDI drain closure
+// silently killed all MIDI until reboot. All four registrations live here
+// because root-pointer collection only scans QSTR-bearing sources.
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_sequencer_callbacks[SEQUENCER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_defer_callbacks[DEFER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_defer_args[DEFER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_midi_callback_obj_ref);
 
 STATIC mp_obj_t tulip_midi_callback(size_t n_args, const mp_obj_t *args) {
     midi_callback = args[0];

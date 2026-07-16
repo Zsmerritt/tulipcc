@@ -49,7 +49,9 @@ void midi_out(uint8_t * bytes, uint16_t len) {
 // A queue to store the AMY midi messages coming IN
 uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];
 uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
-extern mp_obj_t midi_callback;
+// midi_callback is a GC-rooted mp_state slot now -- the alias comes from
+// tsequencer.h (a plain extern here would collide with the macro).
+#include "tsequencer.h"
 
 int16_t midi_queue_head = 0;
 int16_t midi_queue_tail = 0;

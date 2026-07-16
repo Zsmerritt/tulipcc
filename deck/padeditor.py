@@ -178,6 +178,9 @@ def swap_panel(parent, shell=None):
     # button stacked at (0,0) and only the last one showed
     packs = dk.scroll_col(body, 260, H - 110, gap=8)
     hits = dk.scroll_col(body, w - 320, H - 110, gap=8)
+    # empty-state prompt so the right column isn't a bare void (F-7)
+    dk.label(hits, "Pick a pack to browse its hits", color=dk.MUTED,
+             font=dk.FONT_S)
 
     def _pick(key, btn):
         _s['swap_sel'] = key
@@ -194,7 +197,17 @@ def swap_panel(parent, shell=None):
         except Exception:
             pass
 
-    def _show_pack(pack):
+    def _show_pack(pack, pbtn=None):
+        # highlight the tapped pack (F-7) -- same 2-object recolor as hits
+        old = _s.get('swap_packbtn')
+        if old is not None:
+            try:
+                old.set_style_bg_color(dk.c(dk.SURFACE), 0)
+            except Exception:
+                pass
+        if pbtn is not None:
+            _s['swap_packbtn'] = pbtn
+            pbtn.set_style_bg_color(dk.c(dk.ACCENT), 0)
         hits.clean()
         _s['swap_btn'] = None
         keys = synthkits.pack_hits(pack)
@@ -214,8 +227,9 @@ def swap_panel(parent, shell=None):
         b = dk.button(packs, pack.replace('_', ' '), w=lv.pct(96), h=52,
                       bg=dk.SURFACE, font=dk.FONT_S)
         b.add_event_cb(
-            (lambda p: (lambda e: _show_pack(p)
-                        if e.get_code() == lv.EVENT.CLICKED else None))(pack),
+            (lambda p, pb: (lambda e: _show_pack(p, pb)
+                            if e.get_code() == lv.EVENT.CLICKED else None)
+             )(pack, b),
             lv.EVENT.CLICKED, None)
 
     def _use(e):

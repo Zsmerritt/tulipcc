@@ -133,8 +133,8 @@ _APPS = [
     (lv.SYMBOL.FILE,     "Wordpad",     "run",  "wordpad",      dk.TEAL),
     (lv.SYMBOL.GPS,      "Tulip World", "run",  "worldui",      dk.PURPLE),
     (lv.SYMBOL.KEYBOARD, "Keyboard",    "call", tulip.keyboard, dk.GRAY),
-    (lv.SYMBOL.AUDIO, "Drums (legacy)", "run", "drums", dk.GRAY),
-    (lv.SYMBOL.AUDIO, "Voices (legacy)", "run", "voices", dk.GRAY),
+    # (the legacy Drums/Voices tiles are gone -- Instruments owns that
+    # functionality now; devs can still tulip.run them; fresh-eyes F-13)
 ]
 
 
@@ -175,6 +175,23 @@ def _open_apps(shell):
 _app_scan = None
 
 
+_DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
+                 'welcome', 'deckui', 'deckcfg', 'ui_patch', 'fleet',
+                 'forwarder', 'amyfleet', 'homeshell', 'shellmodel',
+                 'navshell', 'calib', 'rack', 'devices', 'screensaver',
+                 'voices', 'wordpad', 'worldui', 'drums',
+                 # these were MISSING, so Apps read them in full every open
+                 'test_deck', 'midimon', 'amyparams', 'curated',
+                 'parameditor', 'decklog', 'drums_kit', 'channels', 'gm',
+                 'gmbig', 'padeditor', 'synthkits')
+
+
+def deck_modules_set():
+    """The deck's own runtime module names (Apps exclusion + the Files
+    browser's delete guard both key on this one list)."""
+    return set(_DECK_MODULES)
+
+
 def _discover_user():
     global _app_scan
     import os
@@ -187,15 +204,7 @@ def _discover_user():
     key = tuple(entries)
     if _app_scan is not None and _app_scan[0] == key:
         return _app_scan[1]
-    deck_modules = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
-                    'welcome', 'deckui', 'deckcfg', 'ui_patch', 'fleet',
-                    'forwarder', 'amyfleet', 'homeshell', 'shellmodel',
-                    'navshell', 'calib', 'rack', 'devices', 'screensaver',
-                    'voices', 'wordpad', 'worldui', 'drums',
-                    # these were MISSING, so Apps read them in full every open
-                    'test_deck', 'midimon', 'amyparams', 'curated',
-                    'parameditor', 'decklog', 'drums_kit', 'channels', 'gm',
-                    'gmbig', 'padeditor', 'synthkits')
+    deck_modules = _DECK_MODULES
     for entry in entries:
         if entry.startswith('.'):
             continue

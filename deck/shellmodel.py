@@ -92,7 +92,17 @@ _KIT_NAMES = {384: 'TR-808', 385: 'TR-909', 386: 'Linn 9000', 387: 'MR-12',
 def instrument_sound(instr):
     """The sound label for an instrument: its kit (drums) or patch name (synth)."""
     if instr.get('type') == 'drums':
-        return _KIT_NAMES.get(instr.get('kit', 384), 'TR-808') + " kit"
+        kit = instr.get('kit', 384)
+        if isinstance(kit, str):
+            # synth kits are string keys ('synth:tr909_d') -- the int-keyed
+            # table always missed and every synth kit read "TR-808 kit" on
+            # the Home row (fresh-eyes F-1)
+            try:
+                import drums_kit
+                return drums_kit.kit_name(kit) + " kit"
+            except Exception:
+                return kit + " kit"
+        return _KIT_NAMES.get(kit, 'TR-808') + " kit"
     return patch_name(instr.get('patch', 0))
 
 
