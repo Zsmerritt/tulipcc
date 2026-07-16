@@ -357,10 +357,10 @@ target_compile_definitions(${MICROPY_TARGET} PUBLIC
     GAMMA9001
     GM_FONTS
     AMY_AUX_REVERB
-    # DIAGNOSTIC: AMY_DEBUG compiles the render profilers in
-    # (amy.send(debug=1) prints per-stage us) to measure whether reverb
-    # crackle is CPU overrun or amplitude headroom. REVERT before release.
-    AMY_DEBUG
+    # (enable AMY_DEBUG for the render profilers -- amy.send(debug=1) --
+    # note its per-call prints use PRIu64, which this toolchain renders as
+    # literal 'luus'; fix the format before trusting the numbers)
+    #AMY_DEBUG
     LV_CONF_INCLUDE_SIMPLE
     ${BOARD_DEFINITION1}
     ${BOARD_DEFINITION2}
