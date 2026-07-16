@@ -72,24 +72,92 @@ def run(screen):
 
 def _run(screen):
     dk.frame(screen, "Settings", "device configuration")
-    # standalone (legacy launcher path) has a taller header, so the columns
-    # may need a little scroll -- the shell panel doesn't scroll at all
+    # standalone (legacy launcher path): the same group builders stacked in
+    # one scroll column -- zero duplicate control code, no tabview here.
     w, H = tulip.screen_size()
     body = dk.scroll_col(screen.group, w - 24, H - 118 - 8)
     body.set_pos(12, 118)
-    _build_cols(body, screen, w, positioned=False)
+    cfg = deckcfg.load()
+    _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
+                live=_amy_volume,
+                commit=lambda v: deckcfg.set_value('volume', v),
+                color=dk.TEAL, slider_w=w - 320)
+    _val_slider(body, 'brightness', "Brightness", cfg.get('brightness', 5),
+                1, 9, live=tulip.brightness,
+                commit=lambda v: (deckcfg.set_value('brightness', v),
+                                  _reload_saver()),
+                color=dk.TEAL, slider_w=w - 320)
+    _build_wifi(body, screen)
+    _build_time(body, screen)
+    _build_display(body)
+    _build_system(body, screen)
     screen.handle_keyboard = True
     screen.present()
 
 
+class _TabBuilder:
+    """Adapter so parameditor.build_tabbed can fill tabs from plain builder
+    functions instead of ParamEditor defs (SETTINGS-TABS.md)."""
+    def __init__(self, fn):
+        self.fn = fn
+        self.group_headers = False
+
+    def build(self, page):
+        self.fn(page)
+
+
 def panel(parent, shell=None):
-    """Settings as a SHELL PANEL (S3) in TWO FIXED COLUMNS with NO scroll
-    container: in DIRECT mode, scrolling repaints the whole scrolled area
-    every frame, and Settings was the deck's longest scroller -- the reported
-    'full redraws while scrolling'. Two columns fit everything on one screen,
-    so there is nothing to scroll (and nothing to repaint)."""
-    _build_cols(parent, shell.screen if shell is not None else None,
-                tulip.screen_size()[0], positioned=True)
+    """Settings as a SHELL PANEL: a PERSISTENT Volume+Brightness strip (the
+    two controls a performer touches mid-set are never behind a tab) above a
+    3-tab left-rail tabview -- Network / Display / System -- using the FX
+    editor's proven build_tabbed pattern (SETTINGS-TABS.md). Tab switches
+    repaint only the content page; nothing scrolls."""
+    screen = shell.screen if shell is not None else None
+    w = tulip.screen_size()[0]
+    _build_strip(parent, w)
+    import parameditor
+    import homeshell
+    h = tulip.screen_size()[1] - homeshell.BAR_H
+    tv = parameditor.build_tabbed(
+        parent,
+        [("Network", lambda page, s=screen: (_build_wifi(page, s),
+                                             _build_time(page, s))),
+         ("Display", lambda page: _build_display(page)),
+         ("System", lambda page, s=screen: _build_system(page, s))],
+        _TabBuilder, x=8, y=104, w=w - 16, h=h - 112)
+    # keyboard left up over a hidden Wi-Fi field on tab switch = the known
+    # textarea use-after-free crash family -- close it on every tab change
+    try:
+        tv.add_event_cb(lambda e: dk.close_keyboard(),
+                        lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
+
+
+def _build_strip(parent, w):
+    strip = lv.obj(parent)
+    strip.set_pos(24, 8)
+    strip.set_size(w - 48, 88)
+    strip.set_style_border_width(0, 0)
+    strip.set_style_pad_all(0, 0)
+    strip.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    strip.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    strip.set_flex_flow(lv.FLEX_FLOW.ROW)
+    strip.set_style_pad_column(16, 0)
+    cfg = deckcfg.load()
+    hw = (w - 48 - 16) // 2
+    left = _vcol(strip, hw)
+    right = _vcol(strip, hw)
+    # both TEAL (X-8 direction): orange stays reserved for warning states
+    _val_slider(left, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
+                live=_amy_volume,
+                commit=lambda v: deckcfg.set_value('volume', v),
+                color=dk.TEAL, slider_w=hw - 230)
+    _val_slider(right, 'brightness', "Brightness", cfg.get('brightness', 5),
+                1, 9, live=tulip.brightness,
+                commit=lambda v: (deckcfg.set_value('brightness', v),
+                                  _reload_saver()),
+                color=dk.TEAL, slider_w=hw - 230)
 
 
 def _vcol(parent, cw, gap=8):
@@ -105,32 +173,9 @@ def _vcol(parent, cw, gap=8):
     return col
 
 
-def _build_cols(parent, screen, w, positioned):
-    cols = lv.obj(parent)
-    if positioned:
-        cols.set_pos(24, 8)
-        cols.set_size(w - 48, lv.SIZE_CONTENT)
-    else:
-        cols.set_width(lv.pct(100))
-        cols.set_height(lv.SIZE_CONTENT)
-    cols.set_style_border_width(0, 0)
-    cols.set_style_pad_all(0, 0)
-    cols.set_style_bg_opa(lv.OPA.TRANSP, 0)
-    cols.remove_flag(lv.obj.FLAG.SCROLLABLE)
-    cols.set_flex_flow(lv.FLEX_FLOW.ROW)
-    cols.set_style_pad_column(16, 0)
-    cw = (w - 48 - 16) // 2
-    left = _vcol(cols, cw)
-    right = _vcol(cols, cw)
-    _build(left, right, cw, screen)
-
-
-def _build(body, right, cw, screen):
-    # `body` = left column, `right` = right column (identity/audio left,
-    # display/system right). `screen` hosts the toasts.
+def _build_wifi(body, screen):
+    """The Wi-Fi card (Network tab). `screen` hosts the toasts."""
     cfg = deckcfg.load()
-
-    # --- Wi-Fi ---
     wcard = lv.obj(body)
     wcard.set_width(lv.pct(100))
     wcard.set_height(214)     # was 196 -- the password field grazed the bottom
@@ -142,7 +187,9 @@ def _build(body, right, cw, screen):
     status_lbl = dk.label(wcard, status, 0, 34, color=(dk.GREEN if ip else dk.MUTED), font=dk.FONT_S)
 
     def _field(text, placeholder, y):
-        t = dk.text_field(wcard, text=text, placeholder=placeholder, w=300, h=44)
+        # full tab width available now -- wider fields, less crowding
+        t = dk.text_field(wcard, text=text, placeholder=placeholder, w=420,
+                          h=44)
         t.group.set_pos(0, y)
         return t
     # NEVER prefill from the store: saved credentials must not render as
@@ -238,20 +285,17 @@ def _build(body, right, cw, screen):
     dk.button(wcard, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
         cb=lambda e: dk.toggle_keyboard_for(ssid.ta)).align(lv.ALIGN.TOP_RIGHT, 0, 118)
 
-    # --- Volume ---
-    _val_slider(body, 'volume', "Volume", cfg.get('volume', 4), 0, 11,
-                live=_amy_volume,
-                commit=lambda v: deckcfg.set_value('volume', v),
-                color=dk.GREEN, slider_w=cw - 230)
 
-    # --- Brightness ---
-    _val_slider(body, 'brightness', "Brightness", cfg.get('brightness', 5), 1, 9,
-                live=tulip.brightness,
-                commit=lambda v: (deckcfg.set_value('brightness', v),
-                                  _reload_saver()),
-                color=dk.ORANGE, slider_w=cw - 230)
+def _build_time(body, screen):
+    """Time group (Network tab): Set time + clock format -- 'time comes
+    from the network', so it lives with Wi-Fi."""
+    cfg = deckcfg.load()
+    r = dk.row(body, h=60)
+    dk.label(r, "Time", color=dk.TEXT)
+    dk.button(r, "Set time now", w=170, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+        cb=lambda e: (deckcfg.sync_time(), dk.toast(screen, "Time set"))
+        if tulip.ip() else dk.toast(screen, "Need Wi-Fi", dk.RED))
 
-    # --- Clock format ---
     def _clock_switch(v):
         deckcfg.set_value('clock_24h', v)
         try:
@@ -259,25 +303,45 @@ def _build(body, right, cw, screen):
             home._shell.refresh_status()   # repaint the bar clock now
         except Exception:
             pass
-    def _debug_switch(v):
-        deckcfg.set_value('debug', v)
-        try:
-            import decklog
-            decklog.set_debug(v)
-        except Exception:
-            pass
-        try:
-            import home
-            home._shell.refresh_status()   # show/hide the bar readout now
-        except Exception:
-            pass
-
-    # clock format + debug mode share one row (the no-scroll columns are full)
     r = dk.row(body, h=56)
     dk.label(r, "24-hour clock", color=dk.TEXT)
     dk.switch(r, bool(cfg.get('clock_24h', True)), _clock_switch)
-    dk.label(r, "Debug", color=dk.TEXT)
-    dk.switch(r, bool(cfg.get('debug', False)), _debug_switch)
+
+
+def _build_display(body):
+    """Display tab: screensaver, render mode, terminal font."""
+    cfg = deckcfg.load()
+
+    # --- Screensaver (dim / sleep after idle) ---
+    opts = sm.screensaver_options_str()
+    for key, title in (('dim_after', "Dim after"), ('sleep_after', "Sleep after")):
+        r = dk.row(body, h=60)
+        dk.label(r, title, color=dk.TEXT)
+        dd = lv.dropdown(r)
+        dd.set_options(opts)
+        dd.set_selected(sm.screensaver_index(cfg.get(key, 0)))
+        dd.set_width(190)
+        dk.style_dropdown(dd)
+        dd.add_event_cb(_screensaver_cb(key), lv.EVENT.VALUE_CHANGED, None)
+
+    # --- Rendering (smoother UI) ---
+    r = dk.row(body, h=88)
+    col = lv.obj(r)
+    col.set_size(360, 60)
+    col.set_style_border_width(0, 0)
+    col.set_style_bg_opa(lv.OPA.TRANSP, 0)
+    col.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
+    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
+    dk.label(col, "Smooth UI (partial buffer)", color=dk.TEXT, font=dk.FONT_M)
+    dk.label(col, "cleaner touch; small memory cost", color=dk.MUTED, font=dk.FONT_S)
+    dk.switch(r, bool(cfg.get('render_partial')),
+              _render_switch('render_partial', _apply_partial))
+
+    r = dk.row(body, h=60)
+    dk.label(r, "V-sync (tear-free)", color=dk.TEXT)
+    dk.switch(r, bool(cfg.get('render_vsync', True)),
+              _render_switch('render_vsync', _apply_vsync))
 
     # --- REPL font size (active size highlighted) ---
     r = dk.row(body, h=56)
@@ -302,73 +366,62 @@ def _build(body, right, cw, screen):
                       cb=_font_cb(code))
         _fontbtns.append((b, code))
 
-    # ================= RIGHT column =================
-    # (the "Menu button size" slider is gone: with the deck shell everywhere
-    # it only resized the Back button on launched stock apps -- not worth a
-    # Settings row. ui_btn in config still applies at boot if present.)
 
-    # --- Rendering (smoother UI) ---
-    r = dk.row(right, h=88)
+def _switch_row(body, title, sub, value, on_change, h=76):
+    """A switch row with a one-line MUTED subtitle (discoverability)."""
+    r = dk.row(body, h=h)
     col = lv.obj(r)
-    col.set_size(cw - 150, 60)
+    col.set_size(560, 60)
     col.set_style_border_width(0, 0)
     col.set_style_bg_opa(lv.OPA.TRANSP, 0)
     col.remove_flag(lv.obj.FLAG.SCROLLABLE)
     col.set_flex_flow(lv.FLEX_FLOW.COLUMN)
-    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.START)
-    dk.label(col, "Smooth UI (partial buffer)", color=dk.TEXT, font=dk.FONT_M)
-    dk.label(col, "cleaner touch; small memory cost", color=dk.MUTED, font=dk.FONT_S)
-    dk.switch(r, bool(cfg.get('render_partial')),
-              _render_switch('render_partial', _apply_partial))
+    col.set_flex_align(lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.START,
+                       lv.FLEX_ALIGN.START)
+    dk.label(col, title, color=dk.TEXT, font=dk.FONT_M)
+    dk.label(col, sub, color=dk.MUTED, font=dk.FONT_S)
+    dk.switch(r, value, on_change)
 
-    r = dk.row(right, h=60)
-    dk.label(r, "V-sync (tear-free)", color=dk.TEXT)
-    dk.switch(r, bool(cfg.get('render_vsync', True)),
-              _render_switch('render_vsync', _apply_vsync))
 
-    # --- Screensaver (dim / sleep after idle) ---
-    opts = sm.screensaver_options_str()
-    for key, title in (('dim_after', "Dim after"), ('sleep_after', "Sleep after")):
-        r = dk.row(right, h=60)
-        dk.label(r, title, color=dk.TEXT)
-        dd = lv.dropdown(r)
-        dd.set_options(opts)
-        dd.set_selected(sm.screensaver_index(cfg.get(key, 0)))
-        dd.set_width(190)
+def _build_system(body, screen):
+    """System tab: MPE gate, Debug, touch, firmware, power."""
+    cfg = deckcfg.load()
+
+    _switch_row(body, "MPE", "per-note expression; shows MPE controls "
+                "on instruments", bool(cfg.get('mpe_enabled')), _mpe_switch)
+
+    def _debug_switch(v):
+        deckcfg.set_value('debug', v)
         try:
-            # near the screen bottom: opening DOWN clipped the last options
-            dd.set_dir(lv.DIR.TOP)
+            import decklog
+            decklog.set_debug(v)
         except Exception:
             pass
-        dk.style_dropdown(dd)
-        dd.add_event_cb(_screensaver_cb(key), lv.EVENT.VALUE_CHANGED, None)
+        try:
+            import home
+            home._shell.refresh_status()   # show/hide the bar readout now
+        except Exception:
+            pass
+    _switch_row(body, "Debug", "status-bar RAM readout + verbose log",
+                bool(cfg.get('debug', False)), _debug_switch)
 
-    # --- MPE (global gate; off by default, hides all MPE UI when off) ---
-    r = dk.row(right, h=60)
-    dk.label(r, "MPE", color=dk.TEXT)
-    dk.switch(r, bool(cfg.get('mpe_enabled')), _mpe_switch)
-
-    # --- System actions ---
-    r = dk.row(right, h=64)
-    dk.label(r, "System", color=dk.TEXT)
-    g = dk.hgroup(r, w=cw - 110, h=48)
-    dk.button(g, "Set time", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
-        cb=lambda e: (deckcfg.sync_time(), dk.toast(screen, "Time set")) if tulip.ip() else dk.toast(screen, "Need Wi-Fi", dk.RED))
-    dk.button(g, "Calibrate", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+    r = dk.row(body, h=64)
+    dk.label(r, "Touch", color=dk.TEXT)
+    dk.button(r, "Calibrate", w=150, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: tulip.run('calib'))
-    # (was bright PURPLE -- the rarest, riskiest action shouldn't be the
-    # loudest element in Settings; X-5)
-    dk.button(g, "Upgrade", w=96, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+
+    r = dk.row(body, h=64)
+    dk.label(r, "Firmware", color=dk.TEXT)
+    # (stays SURFACE2 per X-5 -- the rarest, riskiest action shouldn't be
+    # the loudest element in Settings)
+    dk.button(r, "Upgrade", w=150, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
-    # Two clearly-separated actions (they used to share one ambiguous
-    # "Reset" button):
-    #   Restart      = reboot only, nothing is erased. Single tap.
-    #   Factory reset = wipe the deck config AND reboot: setup_done clears,
-    #                   so the welcome/setup flow runs again -- the software
-    #                   equivalent of "just flashed". Two taps to arm.
-    r2 = dk.row(right, h=64)
+
+    # Power: Restart (benign, one tap) vs Factory reset (destructive, LAST
+    # row, red treatment, two-tap arm -- nothing sits below it).
+    r2 = dk.row(body, h=64)
     dk.label(r2, "Power", color=dk.TEXT)
-    g2 = dk.hgroup(r2, w=cw - 110, h=48)
+    g2 = dk.hgroup(r2, w=420, h=48)
 
     def _restart(e):
         try:

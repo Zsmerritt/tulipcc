@@ -103,6 +103,7 @@ def sh(port, args, timeout=300):
     Tulips -- the IP query then raced the reboot it had itself caused and
     reported 'not on Wi-Fi' on a connected device. Opens with DTR/RTS held
     low (no pulse), raw-REPL, exec, close. Only 'exec' is used here."""
+    args = [a for a in args if a != '--no-follow']   # mpremote-ism, ignored
     assert args and args[0] == 'exec'
     code = args[1]
     try:
@@ -246,7 +247,12 @@ def main():
                           .replace('__SHA__', sha)
                           .replace('__SIZE__', str(len(data))))
         out = sh(port, ['exec', code], timeout=900)
-        if 'OTA:OK' not in out or 'OTA:BOOTSET' not in out:
+        # tagged-prefix parse like every other decision point: chatter can
+        # interleave with (or split) plain substrings; the LAST 'OTA:'-tagged
+        # line is the device script's own final word. Fail-closed either way
+        # -- success markers only originate from the OTA script after BOTH
+        # sha checks pass.
+        if tagged(out, 'OTA:') != 'BOOTSET' or 'OTA:OK' not in out:
             print('OTA FAILED:\n' + out)
             # a failed update must be VISIBLE on the device, not a quiet
             # return to Home (tap the notice to dismiss)

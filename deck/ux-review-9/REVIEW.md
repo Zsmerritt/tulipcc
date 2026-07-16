@@ -175,3 +175,42 @@ synth-kit feature, and schedule the medium polish set (X-2..X-5) — most of whi
 is the recurring RGB332 color problem the fix loop has now bounced on three
 times (review-8 R-1). The Gemini work is better than "needs a lot of work," but
 it is not "perfect": ship the good surfaces, fix the one broken one.
+
+---
+
+# Round 2 — fix-round verification (v2_* shots)
+
+All statuses are recorded per-finding in `findings.json` (`status` +
+`verification` fields). Verified on the live device after the fix round
+deployed (device had WDT-reset earlier; `reset_cause=3` at session start).
+
+**Scorecard: 10 FIXED, 1 PARTIAL, 1 DEFERRED (by design), 1 routed to
+firmware, 1 NEW high (robustness).**
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| X-1 swap picker | **FIXED — verified end-to-end** | `v2_x1a/b/c`: action row on top; 42 packs, column scrolls (0→800); pack tap fills 22 hits; hit tap highlights + auditions; **Use selected commits** (pad shows `bongo_l *`, cfg `hit_swaps {'36':'cr78/bongo_l'}`); Kit default restores. |
+| X-2 pad readouts | **FIXED** | `v2_x1c`: teal numeric readouts on all four sliders. |
+| X-3 kit picker | **FIXED** | `v2_x3a/b/c`: search field; 'Synthesized' header; suffixes gone; live filter ('909' → 6 kits, current highlighted). |
+| X-4 RGB332 colors | **PARTIAL** | Stars FIXED (`v2_x4b`: bright yellow vs dark grey). Files NOT fixed (`v2_x4a`: same olive) — the deployed flat-color fix is defeated by the **theme's DISABLED color filter**; next attempt: `set_style_color_filter_opa(0, PART.MAIN\|STATE.DISABLED)` or drop `add_state(DISABLED)` and gate in the callback. |
+| X-5 factory reset | **FIXED** | `v2_x5`: red border + red text; Upgrade demoted to grey. (Red-on-grey label slightly dark in RGB332 — acceptable.) |
+| X-6 chip meter | **FIXED** | `v2_x6`: slim low-contrast strip; progress-bar misread gone. |
+| X-7 Swap button | **FIXED** | `v2_x1c`: ACCENT blue. |
+| X-8 slider colors | **DEFERRED** (by design) | Fold into SETTINGS-TABS implementation (spec standardizes Settings sliders on teal). |
+| X-9 Welcome Back | **FIXED** | `v2_x9`: no Back button (same launch path as round 1). |
+| X-10 Welcome cards | **FIXED** | `v2_x9`: title+subtitle grouped at top. |
+| X-11 double spaces | **FIXED** | `v2_x6`, `v2_x11`: subtitle + chevrons single-spaced. (DX7 'BRASS  1' is patch-table data, accepted.) |
+| X-12 tile colors | **FIXED** | `v2_x12_system/apps`: Files + Wordpad teal; no adjacent duplicates. |
+| X-13 littlefs | routed to firmware | Did not recur this session. |
+| **X-14 (NEW, high)** | **WDT reproduced** | Config flash write (`toggle_favorite`) + immediate heavy navigation → `Interrupt wdt timeout on CPU1` Guru Meditation, full reboot. Third same-class WDT tonight; full register dump/backtrace captured in the session log; deck-side mitigation suggested in findings.json (defer `_write` while navigation is in flight). |
+
+Device-state note: disk config verified **exactly equal** to the round-1
+backup at end of verification (the fix agent's leftover `type: drums` got
+restored to `juno6` in the course of testing; `hit_swaps`/`favorites` residue
+fully cleaned). Deployed /user files CRC-match the repo (`f6d8e411` +
+`c88c07eb`).
+
+Round-2 deliverable for the owner's clutter concern: **`SETTINGS-TABS.md`** —
+persistent Volume+Brightness strip over a 3-tab left-rail tabview
+(Network / Display / System), FX-editor pattern, full control mapping and
+implementation notes.
