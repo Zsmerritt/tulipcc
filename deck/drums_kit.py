@@ -66,7 +66,7 @@ class SynthKit:
         self.hit_synths = {}       # midi_note -> PatchSynth
         self.hit_slots = {}        # midi_note -> RAM patch slot
         ov = hit_overrides or {}
-        io_frags = []
+        hit_maps = []
         slot = self.slot_base + 1  # base slot holds the kit patch itself
         try:
             from time import sleep_ms as _yield
@@ -83,19 +83,28 @@ class SynthKit:
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1
-            # kit 384's field layout: note,is_log,min,max,offset,<template>;
-            # the template sends the hit synth a fixed-root note-on with the
-            # played velocity. Entries are framed by DOUBLE-Z (the mapping
-            # parser splits on "ZZ" so templates may contain single Zs).
-            io_frags.append('io%d,0,0,1,0,i%dn60l%%vZZ' % (note, hs.synth))
-        # silent placeholder osc + the note maps; flags 3 = route notes via
-        # the map + ignore note-offs (one-shots self-terminate)
-        synthkits.store_patch(self.slot_base, 'v0w0a0,0,0Z' + ''.join(io_frags))
+            hit_maps.append((note, hs.synth))
+        # silent placeholder osc; flags 3 = route notes via the note maps +
+        # ignore note-offs (one-shots self-terminate)
+        synthkits.store_patch(self.slot_base, 'v0w0a0,0,0Z')
         self.kit_synth = synth.PatchSynth(num_voices=1, channel=channel,
                                           patch=self.slot_base,
                                           synth_flags=3)
         self.kit_synth.deferred_init()
         self.synth = self.kit_synth.synth
+        # Register the note maps DIRECTLY on the live kit synth. They cannot
+        # ride inside the stored patch: AMY registers io entries at
+        # patch-STRING parse time keyed on that message's synth -- a store
+        # message has no synth (garbage key) and loading by number replays
+        # pre-parsed deltas, which skip mapping registration entirely. (This
+        # is how MIDI kits went silent when patches moved to store-then-load
+        # slots.) Field layout matches kit 384's baked entries:
+        # note,is_log,min,max,offset,<template>; the template fires the hit
+        # synth's fixed root note with the played velocity.
+        import amy
+        for note, hsn in hit_maps:
+            amy.send(synth=self.kit_synth.synth,
+                     midi_note_cmd='%d,0,0,1,0,i%dn60l%%v' % (note, hsn))
 
     def deferred_init(self):
         pass                       # everything initialized in __init__

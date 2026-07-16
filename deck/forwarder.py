@@ -245,7 +245,25 @@ def reapply_fx():
 
 def start():
     """(Re)build the router from the current instruments. Safe to call
-    repeatedly -- releases the previous internal synths first (no voice leak)."""
+    repeatedly -- releases the previous internal synths first (no voice leak).
+    Reentrancy-guarded: SynthKit builds yield to the scheduler between hits,
+    so a second kit tap used to re-enter mid-build and leave AMY with one
+    kit's instrument and another's note maps. Now a rebuild in progress just
+    queues one more pass."""
+    if _state.get('rebuilding'):
+        _state['rebuild_queued'] = True
+        return
+    _state['rebuilding'] = True
+    try:
+        while True:
+            _start_once()
+            if not _state.pop('rebuild_queued', False):
+                break
+    finally:
+        _state['rebuilding'] = False
+
+
+def _start_once():
     import midi
     cfg = deckcfg.load()
     instruments = cfg.get('instruments', [])
@@ -309,6 +327,27 @@ def start():
             # routing (auto ids never collide with channels 1-15).
             solo = internal_count.get(ch, 0) == 1
             c_own = solo or is_mpe
+            if c_own:
+                # Scrub the channel's C-layer state before taking it over:
+                # AMY NOTE MAPS are keyed by channel and OUTLIVE the synth
+                # that registered them -- a drum kit's io entries (amps up
+                # to ~9) kept firing loud, note-off-ignoring one-shots into
+                # whatever instrument took the channel next. A stale
+                # instrument left on the channel number likewise makes AMY
+                # ignore the new definition. The stock arpeggiator (midi.py
+                # pins one on channel 1) is popped too: when toggled it
+                # flips grab_midi_notes on the channel synth, which silences
+                # the map dispatch drums depend on.
+                try:
+                    import amy as _amy
+                    _amy.send(synth=ch, midi_note_cmd='255')
+                    _amy.send(synth=ch, num_voices=0)
+                except Exception:
+                    pass
+                try:
+                    midi.config.arpeggiator_per_channel.pop(ch, None)
+                except Exception:
+                    pass
             try:
                 if instr.get('type') == 'drums':
                     # A drum instrument is a DrumSynth loaded with a kit patch;
@@ -371,6 +410,15 @@ def start():
                         di()
                     except Exception as e:
                         print("forwarder: synth init failed:", e)
+                if c_own:
+                    # fresh instruments default to grab_midi_notes=1, but a
+                    # leftover arpeggiator toggle can have cleared it -- and
+                    # without it the C layer drops the channel's notes.
+                    try:
+                        import amy as _amy
+                        _amy.send(synth=ch, grab_midi_notes=1)
+                    except Exception:
+                        pass
                 sn = getattr(syn, 'synth', None)
                 if instr.get('type') != 'drums':
                     # (drums carry no osc/filter params)

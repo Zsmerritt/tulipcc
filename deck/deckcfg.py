@@ -201,7 +201,46 @@ def load():
     return cfg
 
 
-def _write(cfg):
+# A FLASH WRITE WHILE AMY RENDERS PCM FROM THE MMAP'D SAMPLE BANKS
+# HARD-CRASHES THE S3: the write suspends the flash cache while the render
+# path still reads the mapped partition -> interrupt watchdog on both cores
+# (reproduced deliberately; Saved PC 0x40375e5b). The output LEVEL alone is
+# the wrong gate both ways: the reverb tail keeps it up after PCM voices die
+# (false block), and a decaying PCM voice renders on below any threshold
+# (false pass -- bisected: the deferred save fired at level<0.002 while the
+# EMU tail still read flash, same WDT). So quiet_now() demands the output
+# stay near-silent CONTINUOUSLY for a full second -- a voice whose envelope
+# has been inaudible that long has ended (AMY stops finished voices), which
+# is what actually stops the flash reads.
+_QUIET = {'last_loud': None}
+
+
+def quiet_now(threshold=0.004, hold_ms=1000):
+    """True when it has been quiet long enough that a flash write is safe."""
+    try:
+        import tulip
+        from time import ticks_ms, ticks_diff
+        now = ticks_ms()
+        if tulip.amy_level() > threshold or _QUIET['last_loud'] is None:
+            _QUIET['last_loud'] = now
+            return False
+        return ticks_diff(now, _QUIET['last_loud']) > hold_ms
+    except Exception:
+        return True    # host tests / no tulip: just write
+
+
+def _write(cfg, _retry=0):
+    # Defer the save until quiet_now(), retrying from the UI defer queue;
+    # capped (~15s) so config is never lost. Always re-reads the LATEST
+    # cached cfg so coalesced retries can't resurrect stale settings.
+    if _retry < 60 and not quiet_now():
+        try:
+            import tulip
+            tulip.defer(lambda x: _write(_state.get('cfg', cfg), _retry + 1),
+                        0, 250)
+            return
+        except Exception:
+            pass
     # Drop the legacy `instances` key if an old config still carries it.
     data = {k: v for k, v in cfg.items() if k != 'instances'}
     try:

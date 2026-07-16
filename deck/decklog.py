@@ -21,10 +21,26 @@ def _ts():
         return 0
 
 
+_PENDING = []       # lines waiting for a quiet moment to hit flash
+
+
 def log(msg):
     line = "[%d] %s" % (_ts(), msg)
     try:
         print("DECKLOG " + line)          # serial -> host terminal
+    except Exception:
+        pass
+    # A flash write while AMY renders PCM from the mmap'd banks crashes the
+    # S3 (see deckcfg.quiet_now). Queue lines while sound may be rendering;
+    # flush the queue on the next quiet log call (the serial copy above
+    # always lands immediately, so nothing is lost for live debugging).
+    _PENDING.append(line)
+    try:
+        import deckcfg
+        if not deckcfg.quiet_now():
+            if len(_PENDING) > 200:
+                del _PENDING[:-200]
+            return
     except Exception:
         pass
     try:
@@ -42,7 +58,8 @@ def log(msg):
         except OSError:
             pass
         with open(_LOGFILE, 'a') as f:
-            f.write(line + "\n")
+            f.write("\n".join(_PENDING) + "\n")
+        del _PENDING[:]
     except Exception:
         pass
 
