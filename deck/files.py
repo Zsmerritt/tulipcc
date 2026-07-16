@@ -157,13 +157,24 @@ def _refresh():
     body = _s['body']
     body.clean()
     path = _s['path']
+    # ONE metadata pass (review F-17): listdir + per-entry _is_dir stat +
+    # per-file size stat was 2-3 littlefs metadata walks per entry -- a
+    # visible stall opening a full /user. ilistdir yields type (and size
+    # on most ports) in a single traversal.
+    dirs, files, sizes = [], [], {}
     try:
-        entries = sorted(os.listdir(path))
+        for ent in os.ilistdir(path):
+            name, typ = ent[0], ent[1]
+            if typ & 0x4000:
+                dirs.append(name)
+            else:
+                files.append(name)
+                if len(ent) > 3:
+                    sizes[name] = ent[3]
     except OSError:
-        entries = []
-    # folders first
-    dirs = [e for e in entries if _is_dir(path.rstrip('/') + '/' + e)]
-    files = [e for e in entries if e not in dirs]
+        pass
+    dirs.sort()
+    files.sort()
     for name in dirs + files:
         full = path.rstrip('/') + '/' + name
         is_dir = name in dirs
@@ -184,7 +195,10 @@ def _refresh():
         if not is_dir:
             try:
                 sz = lv.label(b)
-                sz.set_text(_fmt_size(os.stat(full)[6]))
+                size = sizes.get(name)
+                if size is None:
+                    size = os.stat(full)[6]   # ilistdir gave no size here
+                sz.set_text(_fmt_size(size))
                 sz.set_style_text_color(dk.c(dk.MUTED), 0)
                 sz.set_style_text_font(dk.FONT_S, 0)
                 sz.align(lv.ALIGN.RIGHT_MID, -12, 0)

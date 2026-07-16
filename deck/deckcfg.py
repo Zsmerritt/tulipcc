@@ -282,8 +282,21 @@ def _write(cfg, _retry=0, _chained=False):
     # time: under sustained sound every save used to spawn its own 250ms
     # defer chain and the accumulating storm ground the UI to a halt.
     if _state.get('write_chain') and not _chained:
-        return          # a pending chain will pick up the latest cache
+        # SELF-HEAL (review F-3 belt): a lost defer used to leave the
+        # chain flag stuck True forever -- every save silently skipped
+        # until reboot. If the chain is implausibly old, reclaim it.
+        try:
+            from time import ticks_ms, ticks_diff
+            if ticks_diff(ticks_ms(), _state.get('write_chain_since', 0)) < 5000:
+                return  # a live chain will pick up the latest cache
+        except Exception:
+            return
     _state['write_chain'] = True
+    try:
+        from time import ticks_ms
+        _state['write_chain_since'] = ticks_ms()
+    except Exception:
+        pass
     def do():
         # Drop the legacy `instances` key if an old config still carries it.
         data = {k: v for k, v in cfg.items() if k != 'instances'}

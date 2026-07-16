@@ -348,7 +348,14 @@ def synth_send_calls(params):
     eq = [None, None, None]
 
     for name, val in merged.items():
-        ap = PARAM_BY_NAME[name]['apply']
+        d = PARAM_BY_NAME.get(name)
+        if d is None:
+            # a stored param this schema no longer knows (config written by
+            # a newer deck, or hand-edited) must never kill the router at
+            # boot -- the KeyError escaped all the way to "no sound, every
+            # boot" (review F-7)
+            continue
+        ap = d['apply']
         kind = ap['kind']
         if kind in ('bus_send', 'piano_quality'):
             continue        # router-applied kinds, not amy.send(synth=...)

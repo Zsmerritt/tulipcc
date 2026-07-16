@@ -380,6 +380,11 @@ set_source_files_properties(
     ${AMY_DIR}/src/delay.c
     ${AMY_DIR}/src/filters.c
     ${AMY_DIR}/src/pcm.c
+    # amy.c (mix_with_pan + the fill fold loops) and envelope.c join the
+    # list per the round-2 firmware review (O-4): together they hold a
+    # further ~25-30% of render cycles.
+    ${AMY_DIR}/src/amy.c
+    ${AMY_DIR}/src/envelope.c
     PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
 )
 
@@ -412,6 +417,11 @@ target_link_options(${MICROPY_TARGET} PUBLIC
      -Wl,--wrap=esp_partition_write
      -Wl,--wrap=esp_partition_write_raw
      -Wl,--wrap=esp_partition_erase_range
+     # ... and the chip-level API beneath it (review FW-8): MicroPython's
+     # legacy esp.flash_write/flash_erase bypass the partition layer.
+     # Recursion is safe -- fence_depth is a counter.
+     -Wl,--wrap=esp_flash_write
+     -Wl,--wrap=esp_flash_erase_region
 )
 
 # Add additional extmod and usermod components.

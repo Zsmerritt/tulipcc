@@ -19,9 +19,16 @@ void tulip_amy_sequencer_hook(uint32_t tick_count) {
     #endif
     for(uint8_t i=0;i<DEFER_SLOTS;i++) {
         if(defer_callbacks[i] != NULL && get_ticks_ms() > defer_sysclock[i]) {
-            //fprintf(stderr, "calling defer with sysclock %" PRIu32 " and actual %" PRIu32"\n", defer_sysclock[i], get_ticks_ms() );
-            mp_sched_schedule(defer_callbacks[i], defer_args[i]);
-            defer_callbacks[i] = NULL; defer_sysclock[i] = 0; defer_args[i] = NULL;
+            // Clear the slot ONLY when the scheduler accepted the entry
+            // (review F-3): mp_sched_schedule fails when the shared queue
+            // is full -- exactly when the MP task is stalled and deck code
+            // is leaning on defers. Dropping silently wedged the config
+            // write chain (all saves stopped), stuck preview notes, and
+            // half-completed Back navigation. A refused slot stays armed
+            // and retries next tick.
+            if (mp_sched_schedule(defer_callbacks[i], defer_args[i])) {
+                defer_callbacks[i] = NULL; defer_sysclock[i] = 0; defer_args[i] = NULL;
+            }
         }
     }
 

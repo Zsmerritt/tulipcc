@@ -403,6 +403,11 @@ def _build_system(body, screen):
         try:
             import home
             home._shell.refresh_status()   # show/hide the bar readout now
+            # re-arm the clock at the new cadence (debug repaints every 2s
+            # for a live RAM readout; the subscription is otherwise made
+            # once at 30s -- review F-18)
+            home._shell._clock_running = False
+            home._shell._start_clock()
         except Exception:
             pass
     _switch_row(body, "Debug", "status-bar RAM readout + verbose log",

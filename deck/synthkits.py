@@ -235,8 +235,10 @@ def hit_patch_string(hit_key, overrides=None):
     return 'Z'.join(parts) + 'Z'
 
 
-def audition(hit_key, overrides=None, note=60, vel=1.0, synth=15):
-    """Play one hit immediately (editor preview). Uses a scratch synth.
+def audition(hit_key, overrides=None, note=60, vel=1.0, synth=17):
+    """Play one hit immediately (editor preview). Uses scratch synth 17 --
+    ABOVE the MIDI-channel range: 15 destroyed and re-patched a C-owned
+    channel-15 instrument whenever the pad editor auditioned (review F-8).
     (patch_string implies the osc count -- passing oscs_per_voice alongside
     it makes AMY ignore the stored patch.)"""
     import amy

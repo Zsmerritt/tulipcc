@@ -31,3 +31,9 @@ CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 CONFIG_LWIP_PPP_SUPPORT=n
 
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=8192
+
+# 32KB i-cache (round-2 firmware review P-2): the 16KB default is shared
+# between the render kernels and MP/LVGL -- UI activity evicted the audio
+# inner loops between blocks (~0.5-1.8% of a core in misses). Free win
+# before any IRAM_ATTR placement.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y

@@ -199,13 +199,14 @@ def main():
                 note_map[str(note)] = roles[role][0]
         kits[pack] = {'name': pack.replace('_', ' '), 'notes': note_map}
 
-    data = {'version': 1, 'hits': hits, 'kits': kits,
-            'packs': {p: r.get('_all', []) for p, r in packs.items()}}
-    with open(OUT, 'w', newline='\n') as f:
-        json.dump(data, f, separators=(',', ':'))
+    # DEAD WRITER REMOVED (review F-11): the single-file synthkits.json
+    # this used to emit is read by NOTHING -- the device loads the split
+    # synthkits_data/ layout that only assemble2.py produces. This module
+    # remains the harvest + ROLES + TR808 library assemble2 imports.
     print('hits: %d (%d unparsable dropped)' % (len(hits), bad))
     print('kits: %d -> %s' % (len(kits), ', '.join(sorted(kits))))
-    print('json: %d KB' % (os.path.getsize(OUT) // 1024))
+    print('NOTE: nothing written. Run assemble2.py to (re)generate the')
+    print('      deck/synthkits_data/ layout the device actually loads.')
 
 
 if __name__ == '__main__':

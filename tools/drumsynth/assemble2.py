@@ -6,7 +6,8 @@ kits (packs with 2+ choices per core role yield an A and a B), community
 kits dealt from the combined misc pools, and three more by-the-numbers
 recipe classics (909, 606, Simmons SDS-V) beside the 808.
 
-Writes deck/synthkits.json. Run from tools/drumsynth/."""
+Writes the SPLIT deck/synthkits_data/ layout (index.json + one JSON
+per pack) -- what the device actually loads. Run from tools/drumsynth/."""
 import json
 import os
 import sys

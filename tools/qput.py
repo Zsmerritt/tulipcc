@@ -107,8 +107,15 @@ def main():
     data = open(local, 'rb').read()
     sha = hashlib.sha256(data).hexdigest()[:12]
     b64 = base64.b64encode(data).decode()
-    tmp = remote.rsplit('/', 1)[0] + '/.qput_tmp'
+    # temp under /user/var, NOT the destination dir: a root-dir temp file
+    # commits to littlefs's unrelocatable superblock pair on every deploy
+    # (the exact wear pattern deckcfg E-5 exists to avoid)
+    tmp = '/user/var/.qput_tmp'
     lines = ["import binascii, hashlib, os",
+             "try:",
+             "    os.mkdir('/user/var')",
+             "except OSError:",
+             "    pass",
              "b=''"]
     lines += ["b+='%s'" % b64[i:i + 512] for i in range(0, len(b64), 512)]
     lines += [
@@ -118,6 +125,13 @@ def main():
         "import gc, time",
         "del b",
         "gc.collect()",
+        "try:",
+        "    import tulip",
+        "    _fence = (not hasattr(tulip, 'flash_fence_auto')) and hasattr(tulip, 'flash_fence')",
+        "except Exception:",
+        "    tulip = None; _fence = False",
+        "if _fence:",
+        "    tulip.flash_fence(1); time.sleep_ms(12)",
         "for _a in range(6):",
         "    try:",
         "        f=open('%s','wb'); f.write(d); f.close()" % tmp,
@@ -126,6 +140,8 @@ def main():
         "    except OSError as ex:",
         "        print('QPUT:writeerr', _a, repr(ex))",
         "        time.sleep_ms(400)",
+        "if _fence:",
+        "    tulip.flash_fence(0)",
         "h=hashlib.sha256(open('%s','rb').read()).digest()" % tmp,
         "s=binascii.hexlify(h).decode()[:12]",
         "ok = (s=='%s')" % sha,

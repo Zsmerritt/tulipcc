@@ -219,10 +219,12 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_dump_state_obj, tulip_amy_dump_state)
 
 #ifdef ESP_PLATFORM
 extern uint8_t * external_map;
+extern void tulip_recompute_cv_active(void);
 STATIC mp_obj_t tulip_amy_set_external_channel(size_t n_args, const mp_obj_t *args) {
     uint16_t osc = mp_obj_get_int(args[0]);
     uint8_t ch = mp_obj_get_int(args[1]);
     external_map[osc] = ch;
+    tulip_recompute_cv_active();   // keep the render early-out gate honest (FW-7)
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_set_external_channel_obj, 2, 2, tulip_amy_set_external_channel);
@@ -235,6 +237,7 @@ STATIC mp_obj_t tulip_set_cv_synth(size_t n_args, const mp_obj_t *args) {
     uint8_t cv_channel = mp_obj_get_int(args[1]);  // 1 = CV1, 2 = CV2, 0 = clear
     if (synth < MAX_CV_SYNTHS) {
         cv_synth_map[synth] = cv_channel;
+        tulip_recompute_cv_active();   // FW-7
     }
     return mp_const_none;
 }
@@ -249,10 +252,15 @@ STATIC mp_obj_t tulip_defer(size_t n_args, const mp_obj_t *args) {
         }
     }
     if(index>=0) {
-        defer_callbacks[index] = args[0];
+        // PUBLISH ORDER matters (review F-5): the AMY-task hook on the
+        // other core gates on defer_callbacks[i] != NULL -- if the pointer
+        // lands before the deadline/arg, the hook can fire the callback
+        // immediately with the previous occupant's arg. Deadline and arg
+        // first, compiler barrier, THEN the pointer.
         defer_args[index] = args[1];
         defer_sysclock[index] = get_ticks_ms() + mp_obj_get_int(args[2]);
-
+        __asm__ volatile("" ::: "memory");
+        defer_callbacks[index] = args[0];
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("No more defer slots available"));
     }
@@ -317,22 +325,33 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_seq_ticks_obj, 0, 0, tulip_seq_
 extern uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];
 extern uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
 
-extern int16_t midi_queue_head;
-extern int16_t midi_queue_tail ;
+extern volatile int16_t midi_queue_head;
+extern volatile int16_t midi_queue_tail;
 
 STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
 
-    if(midi_queue_head != midi_queue_tail) {
-        int16_t prev_head = midi_queue_head;
-        // Step on the head, hope no-one notices before we pop it.
-        midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
-        return mp_obj_new_bytes(last_midi[prev_head],
-                                last_midi_len[prev_head]);
+    if(midi_queue_head == midi_queue_tail) {
+        // Clear-then-RECHECK (review F-6): clearing pending after deciding
+        // "empty" raced the writer -- it could enqueue + skip scheduling
+        // (pending still 1) in the gap, stranding a message until the NEXT
+        // event arrived ("pressed a key, nothing; pressed again, both").
+        // Any writer that saw pending==1 enqueued before our clear, so the
+        // recheck finds its message.
+        tulip_midi_py_pending = 0;
+        if (midi_queue_head == midi_queue_tail) {
+            return mp_const_none;
+        }
     }
-    // Queue drained: allow the input hook to schedule the drain again
-    // (coalesced notification -- see tulip_midi_input_hook).
-    tulip_midi_py_pending = 0;
-    return mp_const_none;
+    // Copy BEFORE advancing head: mp_obj_new_bytes can GC-pause, and a
+    // long-enough flood could lap a slot the old code had already
+    // released (it advanced head first and hoped).
+    uint8_t tmp[MAX_MIDI_BYTES_PER_MESSAGE];
+    int16_t prev_head = midi_queue_head;
+    uint8_t n = last_midi_len[prev_head];
+    if (n > MAX_MIDI_BYTES_PER_MESSAGE) n = MAX_MIDI_BYTES_PER_MESSAGE;
+    for (uint8_t i = 0; i < n; i++) tmp[i] = last_midi[prev_head][i];
+    midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
+    return mp_obj_new_bytes(tmp, n);
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_obj, 0, 0, tulip_midi_in);
@@ -394,12 +413,17 @@ STATIC mp_obj_t tulip_midi_routes_fn(size_t n_args, const mp_obj_t *args) {
     size_t alen;
     mp_obj_get_array(args[0], &alen, &items);
     uint32_t py_mask = mp_obj_get_int(args[1]);
+    // deactivate around the rewrite (review F-16): the input hook on the
+    // AMY task reads these entries; with the flag down it falls back to
+    // notify-Python for the microseconds the table is inconsistent
+    tulip_midi_route_active = 0;
     for (int ch = 1; ch <= 16; ch++) {
         uint16_t bm = (ch - 1 < (int)alen) ? (uint16_t)mp_obj_get_int(items[ch - 1]) : 0;
         tulip_midi_routes[ch].board_mask = bm;
         tulip_midi_routes[ch].flags = (py_mask >> (ch - 1)) & 1;
     }
     tulip_midi_notify_all = (n_args > 2 && mp_obj_is_true(args[2])) ? 1 : 0;
+    __asm__ volatile("" ::: "memory");
     tulip_midi_route_active = 1;
     return mp_const_none;
 }
@@ -1037,10 +1061,17 @@ STATIC mp_obj_t tulip_bg_bitmap(size_t n_args, const mp_obj_t *args) {
         }
         return mp_const_none; 
     } else {
-        // return a bitmap
-        uint8_t bitmap[w*h*BYTES_PER_PIXEL];  
+        // return a bitmap -- heap, not a user-sized VLA: a full-screen
+        // get was a ~600KB stack allocation on the MP task (review F-15)
+        size_t n = (size_t)w * h * BYTES_PER_PIXEL;
+        uint8_t *bitmap = malloc_caps(n, MALLOC_CAP_SPIRAM);
+        if (bitmap == NULL) {
+            mp_raise_ValueError(MP_ERROR_TEXT("bg_bitmap: out of memory"));
+        }
         display_get_bg_bitmap_raw(x,y,w,h, bitmap);
-        return mp_obj_new_bytes(bitmap, w*h*BYTES_PER_PIXEL);
+        mp_obj_t r = mp_obj_new_bytes(bitmap, n);
+        free_caps(bitmap);
+        return r;
     }
 }
 

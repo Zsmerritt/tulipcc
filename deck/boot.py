@@ -105,10 +105,19 @@ def _boot():
         forwarder.start()
     except Exception as e:
         print("deck: forwarder failed:", e)
+        try:
+            import decklog
+            decklog.log_exc("boot: forwarder.start failed", e)
+            decklog.flush()
+        except Exception:
+            pass
 
-    # Touch calibration (adjust with run('calibrate') or Settings).
+    # Touch calibration: RESTORE the saved 5-point result (calib.py writes
+    # cfg['touch_delta']) -- the old hardcoded (1,1,0.8) silently threw the
+    # user's calibration away on every reboot (review F-2).
     try:
-        tulip.touch_delta(1, 1, 0.8)
+        td = (cfg or {}).get('touch_delta') or (1, 1, 0.8)
+        tulip.touch_delta(int(td[0]), int(td[1]), float(td[2]))
     except Exception:
         pass
 

@@ -156,7 +156,10 @@ def _release_synths():
     # allocation order makes each rebuild's numbers stable).
     try:
         import synth as _synth
-        _synth.PatchSynth.amy_synth_next = 16
+        # 18, not 16: auto ids must clear the channel range AND the
+        # audition scratch (17) -- a C-owned ch-16 instrument IS synth 16
+        _synth.PatchSynth.amy_synth_next = 18
+        _synth.PatchSynth.amy_synth_free = []
         _synth.PatchSynth.amy_synth_allocated = set()
     except Exception:
         pass
@@ -411,11 +414,51 @@ def start():
     _state['rebuilding'] = True
     try:
         while True:
-            _start_once()
+            with _AmyBatch():
+                _start_once()
             if not _state.pop('rebuild_queued', False):
                 break
     finally:
         _state['rebuilding'] = False
+
+
+class _AmyBatch:
+    """Collect every amy.send() wire message emitted inside the block and
+    flush them through tulip.amy_send_batch in ONE MP->C call (review opt
+    1): a rebuild emits 50-150 messages, and each individual send paid a
+    kwargs walk + an MP call round-trip -- the bulk of the 80-200ms rebuild
+    gap that audibly interrupted other sounding instruments. Message ORDER
+    is preserved; timestamped messages carry their own 't'. No-op (sends
+    pass straight through) without the firmware binding."""
+
+    def __enter__(self):
+        self._on = False
+        try:
+            import amy
+            import tulip
+            if hasattr(tulip, 'amy_send_batch') and hasattr(amy, 'override_send'):
+                self._amy, self._tulip = amy, tulip
+                self._orig = amy.override_send
+                self._msgs = []
+                amy.override_send = self._msgs.append
+                self._on = True
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._on:
+            self._amy.override_send = self._orig
+            if self._msgs:
+                try:
+                    self._tulip.amy_send_batch('\n'.join(self._msgs))
+                except Exception:
+                    for m in self._msgs:      # never lose the rebuild
+                        try:
+                            self._orig(m)
+                        except Exception:
+                            pass
+        return False
 
 
 def _start_once():

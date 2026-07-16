@@ -53,8 +53,11 @@ uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
 // tsequencer.h (a plain extern here would collide with the macro).
 #include "tsequencer.h"
 
-int16_t midi_queue_head = 0;
-int16_t midi_queue_tail = 0;
+// volatile: SPSC ring shared between the AMY MIDI task (writer) and the
+// MP task (reader) on different cores -- the E-11 discipline promised the
+// compiler was never told about (review F-6)
+volatile int16_t midi_queue_head = 0;
+volatile int16_t midi_queue_tail = 0;
 
 // ---- C-side MIDI channel router (review O-2 / boundary sketch 1) ----
 // Python paid ~150-400us + ~3 heap allocs PER MESSAGE for routing that is
@@ -81,6 +84,28 @@ volatile uint32_t tulip_midi_activity = 0;     // messages seen (meter/UI poll)
 // Set from Python via amyboard.set_cv_out(channel, synth)
 #define MAX_CV_SYNTHS 32
 uint8_t cv_synth_map[MAX_CV_SYNTHS];
+// Global CV gate (review FW-7/O-8): with no CV mapped, every voice-owned
+// osc still paid the synth_for_osc scan (~130 cycles) per block. Setters
+// (modtulip tulip_set_cv_* / cv_local) recompute this; the render hook
+// early-outs on it. NOTE (documented, not yet implemented): when CV IS
+// active, the blocking I2C write below runs on the RENDER task with a
+// 10ms worst-case timeout -- an AMYboard mailbox + low-prio drain task is
+// the right fix, pending hardware to validate on.
+volatile uint8_t tulip_any_cv_active = 0;
+
+void tulip_recompute_cv_active(void) {
+    extern uint8_t * external_map;
+    uint8_t any = 0;
+    for (int i = 0; i < MAX_CV_SYNTHS; i++) {
+        if (cv_synth_map[i]) { any = 1; break; }
+    }
+    if (!any && external_map != NULL) {
+        for (uint16_t i = 0; i < amy_config.max_oscs; i++) {
+            if (external_map[i]) { any = 1; break; }
+        }
+    }
+    tulip_any_cv_active = any;
+}
 
 // Look up which synth owns this osc, return synth number or -1
 static int synth_for_osc(uint16_t osc) {
@@ -101,6 +126,7 @@ static int synth_for_osc(uint16_t osc) {
 
 // AMY render hook: route osc audio to CV DAC if its synth is mapped
 uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
+    if (!tulip_any_cv_active) return 0;   // FW-7/O-8: nothing mapped
     // First check old per-osc map for backward compat
     if(external_map[osc]>0) {
         uint8_t cv_channel = external_map[osc] - 1;
@@ -112,7 +138,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if (value_int > 0x7FFF) value_int = 0x7FFF;
         uint8_t reg = (cv_channel == 0) ? 0x02 : 0x04;
         uint8_t bytes[3] = { reg, value_int & 0xFF, (value_int >> 8) & 0xFF };
-        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, 1 /* tick: a wedged bus must not stall a render block (FW-7) */);
 #else
         // Tulip CC DAC (different address/format)
         float volts = S2F(buf[0])*2.5f + 2.5f;
@@ -126,7 +152,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if(cv_channel == 2) addr = 88;
         if(cv_channel == 3) {ch = 0x04; addr=88; }
         bytes[0] = ch;
-        i2c_master_write_to_device(I2C_NUM_0, addr, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, addr, bytes, 3, 1 /* tick (FW-7) */);
 #endif
         return 1;
     }
@@ -140,7 +166,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if (value_int > 0x7FFF) value_int = 0x7FFF;
         uint8_t reg = (cv_channel == 0) ? 0x02 : 0x04;
         uint8_t bytes[3] = { reg, value_int & 0xFF, (value_int >> 8) & 0xFF };
-        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, 1 /* tick: a wedged bus must not stall a render block (FW-7) */);
 #endif
         return 1;
     }
@@ -211,7 +237,10 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
                 last_midi[midi_queue_tail][i] = data[i];
             }
             last_midi_len[midi_queue_tail] = n;
-            midi_queue_tail = next;
+            // RELEASE-publish (review FW-10): the payload stores must be
+            // visible before the tail moves; volatile alone doesn't order
+            // the non-volatile payload writes against it under -O3/LTO.
+            __atomic_store_n(&midi_queue_tail, next, __ATOMIC_RELEASE);
         }
         // else: queue full, drop this (newest) message
 

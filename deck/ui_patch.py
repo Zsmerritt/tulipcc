@@ -407,6 +407,13 @@ def _install_keyboard_partial():
         pass
 
 
+# CCs whose ORDER is semantic (review F-9): bank select pairs with the
+# following program change, sustain transitions matter individually, and
+# 120-127 are channel-mode one-shots. Everything else (mod, breath, CC74
+# brightness, expression...) is a continuous stream where latest-wins.
+_NO_COALESCE = frozenset((0, 32, 64) + tuple(range(120, 128)))
+
+
 def _install_safe_midi_drain():
     """Re-register tulip's MIDI drain with a FAULT-ISOLATED version.
 
@@ -443,8 +450,13 @@ def _install_safe_midi_drain():
                     key = m[0]                      # status+channel
                 elif st == 0xA0 and len(m) > 1:
                     key = (m[0], m[1])              # polytouch: per note
-                elif st == 0xB0 and len(m) > 1:
-                    key = (m[0], m[1])              # CC: per controller
+                elif st == 0xB0 and len(m) > 1 and m[1] not in _NO_COALESCE:
+                    # CC: per controller -- EXCEPT order-sensitive ones
+                    # (review F-9): bank select must stay sequenced with
+                    # program changes, sustain down/up/down must not
+                    # collapse to "down" (hung notes), channel-mode
+                    # messages are one-shots
+                    key = (m[0], m[1])
                 else:
                     key = None                      # notes etc: never coalesce
                 if key is not None:

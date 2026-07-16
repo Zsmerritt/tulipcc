@@ -5,12 +5,6 @@
 # helpers; the shell hands opaque panel handles to PanelStack so the stack
 # bookkeeping is testable with plain objects.
 
-# Patch-index category boundaries, mirroring instrument.py's CATS:
-#   0..127  Juno-6      128..255  DX7      256+  Piano
-_JUNO_END = 128
-_DX_END = 256
-
-
 def name_short(name):
     """Abbreviate an instrument/device name to fit a chip: 'Board A' -> 'A'."""
     if not name:
@@ -20,18 +14,12 @@ def name_short(name):
     return name
 
 
+# catalog.py owns every patch-boundary fact (E-8/F-14); these remain as
+# thin delegates for existing callers and tests.
 def patch_short(patch):
-    """A compact, category-tagged preset label for a chip (full name shows on
-    the Instrument screen)."""
-    try:
-        p = int(patch)
-    except (TypeError, ValueError):
-        p = 0
-    if p < _JUNO_END:
-        return "Juno%d" % p
-    if p < _DX_END:
-        return "DX%d" % (p - _JUNO_END)
-    return "Piano"
+    """A compact, category-tagged preset label for a chip."""
+    import catalog
+    return catalog.chip_sound({'patch': patch})
 
 
 def patch_name(patch):
@@ -46,15 +34,8 @@ def patch_name(patch):
 
 def patch_category(patch):
     """The engine family label for a patch: 'Juno-6' / 'DX7' / 'Piano'."""
-    try:
-        p = int(patch)
-    except (TypeError, ValueError):
-        p = 0
-    if p < _JUNO_END:
-        return "Juno-6"
-    if p < _DX_END:
-        return "DX7"
-    return "Piano"
+    import catalog
+    return catalog.engine_label(patch)
 
 
 def device_name(device):

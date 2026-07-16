@@ -253,13 +253,12 @@ def _root_footer(shell):
         # status line: glanceable state in what used to be dead space
         try:
             import deckcfg
-            from patches import patches
+            import catalog
             instr = deckcfg.get_instrument(deckcfg.active_instrument()) or {}
-            if instr.get('type') == 'drums':
-                import drums_kit
-                sound = drums_kit.kit_name(instr.get('kit', 384))
-            else:
-                sound = patches[instr.get('patch', 0)]
+            # type-aware (review F-12): a GM instrument's patch is a GM
+            # program number -- the raw patches[] lookup printed the
+            # same-numbered Juno name. catalog owns the dispatch (E-8).
+            sound = catalog.sound_label(instr)
             # ASCII separators only: the compiled montserrat range is ASCII
             txt = "%s  %s   |   vol %s" % (instr.get('name', '?'), sound,
                                            deckcfg.get('volume', 4))

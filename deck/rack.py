@@ -584,7 +584,9 @@ def _build_edit(parent, shell):
         rid = deckcfg.active_instrument()
         deckcfg.set_instrument(rid, 'params', {}, flush=False)
         deckcfg.set_instrument(rid, 'reverb_send', 0.0, flush=False)
-        deckcfg.set_instrument(rid, 'hits', {})
+        deckcfg.set_instrument(rid, 'hits', {}, flush=False)
+        # per-pad SWAPS are sound-design overrides too (review F-13)
+        deckcfg.set_instrument(rid, 'hit_swaps', {})
         deckcfg.apply_instrument(rid)   # O-5
         sh2 = _s.get('shell')
         if sh2 is not None:

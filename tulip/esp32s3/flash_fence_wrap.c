@@ -37,12 +37,24 @@
 
 #include "amy.h"    // amy_flash_fence, amy_global.total_blocks
 
+// The whole fence design assumes CODE keeps executing from the PSRAM
+// cache while a flash op suspends the flash cache (review FW-15) -- make
+// un-setting these a build error, not a mystery crash.
+#include "sdkconfig.h"
+#if !defined(CONFIG_SPIRAM_FETCH_INSTRUCTIONS) || !defined(CONFIG_SPIRAM_RODATA)
+#error "flash fence requires CONFIG_SPIRAM_FETCH_INSTRUCTIONS + CONFIG_SPIRAM_RODATA (code must run from PSRAM during flash ops)"
+#endif
+
 esp_err_t __real_esp_partition_write(const esp_partition_t *partition,
                                      size_t dst_offset, const void *src, size_t size);
 esp_err_t __real_esp_partition_write_raw(const esp_partition_t *partition,
                                          size_t dst_offset, const void *src, size_t size);
 esp_err_t __real_esp_partition_erase_range(const esp_partition_t *partition,
                                            size_t offset, size_t size);
+// chip-level API (FW-8): esp.flash_write/flash_erase bypass the partition
+// layer. Declared with void* to avoid dragging esp_flash types here.
+esp_err_t __real_esp_flash_write(void *chip, const void *buffer, uint32_t address, uint32_t length);
+esp_err_t __real_esp_flash_erase_region(void *chip, uint32_t start, uint32_t len);
 
 static portMUX_TYPE fence_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int fence_depth = 0;
@@ -79,11 +91,16 @@ void tulip_flash_fence_acquire(void) {
     }
     if (need_handshake) {
         uint32_t b = amy_global.total_blocks;
-        int guard = 0;
-        // two block boundaries: every render that started before the fence
-        // was visible has finished. Bounded in case AMY isn't running.
-        while (amy_global.total_blocks < b + 2 && guard++ < FENCE_WAIT_MAX_TICKS) {
-            vTaskDelay(1);
+        // b == 0: AMY hasn't rendered yet (early boot -- NVS/wifi writes
+        // land before audio starts). No fetches can race; don't burn the
+        // 25ms bounded wait per boot-time write burst.
+        if (b != 0) {
+            int guard = 0;
+            // two block boundaries: every render that started before the
+            // fence was visible has finished. Bounded in case AMY parked.
+            while (amy_global.total_blocks < b + 2 && guard++ < FENCE_WAIT_MAX_TICKS) {
+                vTaskDelay(1);
+            }
         }
     }
 }
@@ -99,14 +116,26 @@ void tulip_flash_fence_release(void) {
         return;
     }
     if (fence_drop_timer == NULL) {
+        // race-free creation (review FW-11): exactly one task claims the
+        // build; a concurrent releaser just drops immediately this once
+        static volatile uint8_t creating = 0;
+        uint8_t expected = 0;
+        if (!__atomic_compare_exchange_n(&creating, &expected, 1, false,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            amy_flash_fence = 0;
+            return;
+        }
         const esp_timer_create_args_t args = {
             .callback = fence_drop_cb,
             .name = "flash_fence",
         };
-        if (esp_timer_create(&args, (esp_timer_handle_t *)&fence_drop_timer) != ESP_OK) {
+        esp_timer_handle_t t = NULL;
+        if (esp_timer_create(&args, &t) != ESP_OK) {
+            creating = 0;
             amy_flash_fence = 0;            // no timer: drop immediately
             return;
         }
+        fence_drop_timer = t;
     }
     esp_timer_stop(fence_drop_timer);
     if (esp_timer_start_once(fence_drop_timer, FENCE_DROP_DELAY_US) != ESP_OK) {
@@ -134,6 +163,20 @@ esp_err_t __wrap_esp_partition_erase_range(const esp_partition_t *partition,
                                            size_t offset, size_t size) {
     tulip_flash_fence_acquire();
     esp_err_t r = __real_esp_partition_erase_range(partition, offset, size);
+    tulip_flash_fence_release();
+    return r;
+}
+
+esp_err_t __wrap_esp_flash_write(void *chip, const void *buffer, uint32_t address, uint32_t length) {
+    tulip_flash_fence_acquire();
+    esp_err_t r = __real_esp_flash_write(chip, buffer, address, length);
+    tulip_flash_fence_release();
+    return r;
+}
+
+esp_err_t __wrap_esp_flash_erase_region(void *chip, uint32_t start, uint32_t len) {
+    tulip_flash_fence_acquire();
+    esp_err_t r = __real_esp_flash_erase_region(chip, start, len);
     tulip_flash_fence_release();
     return r;
 }
