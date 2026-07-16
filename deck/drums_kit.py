@@ -79,14 +79,30 @@ class SynthKit:
         notes = synthkits.kit_notes(kit_key)
         for note in sorted(notes):
             hit_key = sw.get(note) or sw.get(str(note)) or notes[note]
-            self.note_hits[note] = hit_key
             _yield(2)   # ~20 store+create bursts starve the UI task otherwise
-            # deterministic slot: store (overwrites on rebuild -- the pool is
-            # finite and slots never free), then load by number
-            synthkits.store_patch(slot, synthkits.hit_patch_string(
-                hit_key, ov.get(note) or ov.get(str(note))))
-            hs = synth.PatchSynth(num_voices=1, patch=slot)
-            hs.deferred_init()
+            # Per-hit guard (KITS-1): an unresolvable hit key (partial qput
+            # deploy, index/pack drift) used to raise KeyError out of the whole
+            # loop -- silencing the ENTIRE kit and ORPHANING every hit synth
+            # already created (they were never tracked, so never released ->
+            # leaked AMY synth numbers). Now a bad pad is SKIPPED (left silent
+            # and unmapped), the rest of the kit stays audible, and any synth
+            # created before a mid-build failure is released so it can't leak.
+            hs = None
+            try:
+                # deterministic slot: store (overwrites on rebuild -- the pool
+                # is finite and slots never free), then load by number
+                synthkits.store_patch(slot, synthkits.hit_patch_string(
+                    hit_key, ov.get(note) or ov.get(str(note))))
+                hs = synth.PatchSynth(num_voices=1, patch=slot)
+                hs.deferred_init()
+            except Exception:
+                if hs is not None:
+                    try:
+                        hs.release()   # partial: don't orphan its synth number
+                    except Exception:
+                        pass
+                continue               # skip this pad; slot is reused next note
+            self.note_hits[note] = hit_key
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1

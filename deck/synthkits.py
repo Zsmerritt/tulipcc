@@ -102,7 +102,11 @@ def hit_name(hit_key):
     i = name.rfind('_')
     if i > 0:
         tail = name[i + 1:]
-        if len(tail) >= 4 and all(c in '0123456789abcdef' for c in tail):
+        # Only strip the generator's dedup hash, which is ALWAYS exactly 6 hex
+        # chars (make_synthkits.classify: \b[0-9a-f]{6}\b). The old >=4 test
+        # swallowed legit numeric/hex-word suffixes ('kick_1200', 'snare_9090',
+        # 'x_face') too, merging distinct hits to one display name (F-8).
+        if len(tail) == 6 and all(c in '0123456789abcdef' for c in tail):
             name = name[:i]
     return name
 

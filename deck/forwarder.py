@@ -119,7 +119,20 @@ def _route(m):
                         played = []
                     played.append(iid)
             if played:
-                _state['notes'][(ch, note)] = played
+                key = (ch, note)
+                prior = _state['notes'].get(key)
+                if prior is not None:
+                    # Re-trigger of a still-held (ch,note) with no intervening
+                    # note-off (legato overlap, a duplicated/stuck controller
+                    # msg): the earlier note-on already allocated voices on
+                    # these synths. ACCUMULATE instead of replacing, so the
+                    # single note-off releases every triggered voice -- a plain
+                    # overwrite popped only the latest set and stranded the
+                    # first until a rebuild (MIDI-5). Only layered channels
+                    # reach here (solo/MPE are C-owned).
+                    prior.extend(played)
+                else:
+                    _state['notes'][key] = played
         for dev in boards:
             _emit(m, dev)                      # raw forward to the board
     elif status == 0x80 or (status == 0x90 and len(m) > 2 and m[2] == 0):
@@ -303,73 +316,91 @@ def rebuild_one(iid):
     c_own = ch in _state['c_channels']
     if _sig(instr, c_own) != rec['sig']:
         return start()                      # topology changed
-    import synth as _synth
-    try:
-        old.release()
-    except Exception:
-        pass
-    try:
-        if instr.get('type') == 'drums':
-            import drums_kit
-            syn = drums_kit.make_synth(instr.get('kit', 384),
-                                       num_voices=instr.get('num_voices', 6),
-                                       channel=(ch if c_own else None),
-                                       hit_overrides=instr.get('hits'),
-                                       slot_base=rec['slot'],
-                                       hit_swaps=instr.get('hit_swaps'))
-        elif instr.get('type') in ('gm', 'gm2'):
-            if instr.get('type') == 'gm2':
-                import gmbig as _gmmod
+
+    # The in-place rebuild still emits ~60 amy.send() messages; batch them
+    # into ONE MP->C call like start() does. The mid-build broken-half-state
+    # fallback signals via the return value so start() runs OUTSIDE the batch
+    # context (never nested) -- as do the early topology fallbacks above.
+    def _rebuild_in_place():
+        import synth as _synth
+        try:
+            old.release()
+        except Exception:
+            pass
+        try:
+            if instr.get('type') == 'drums':
+                import drums_kit
+                syn = drums_kit.make_synth(instr.get('kit', 384),
+                                           num_voices=instr.get('num_voices', 6),
+                                           channel=(ch if c_own else None),
+                                           hit_overrides=instr.get('hits'),
+                                           slot_base=rec['slot'],
+                                           hit_swaps=instr.get('hit_swaps'))
+            elif instr.get('type') in ('gm', 'gm2'):
+                if instr.get('type') == 'gm2':
+                    import gmbig as _gmmod
+                else:
+                    import gm as _gmmod
+                import synthkits as _sk
+                gpatch = instr.get('patch', 0)
+                if (instr.get('type') == 'gm2'
+                        and not _gmmod.has_program(gpatch)):
+                    # same uncovered-program fallback as start() (KITS-2): a
+                    # patch swap to an emu4-uncovered gm2 program would KeyError
+                    # here too and fall back to a full router rebuild.
+                    gpatch = _nearest_gm2_program(gpatch)
+                _sk.store_patch(rec['slot'], _gmmod.patch_string(gpatch))
+                syn = _synth.PatchSynth(patch=rec['slot'],
+                                        num_voices=instr.get('num_voices', 10),
+                                        channel=(ch if c_own else None))
             else:
-                import gm as _gmmod
-            import synthkits as _sk
-            _sk.store_patch(rec['slot'],
-                            _gmmod.patch_string(instr.get('patch', 0)))
-            syn = _synth.PatchSynth(patch=rec['slot'],
-                                    num_voices=instr.get('num_voices', 10),
-                                    channel=(ch if c_own else None))
-        else:
-            nv = instr.get('num_voices')
-            nv = min(nv or 4, 4) if instr.get('type') == 'piano' else (nv or 10)
-            syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                    num_voices=nv,
-                                    channel=(ch if c_own else None))
-    except Exception as e:
-        _synth_err(iid, e)
+                nv = instr.get('num_voices')
+                nv = min(nv or 4, 4) if instr.get('type') == 'piano' else (nv or 10)
+                syn = _synth.PatchSynth(patch=instr.get('patch', 0),
+                                        num_voices=nv,
+                                        channel=(ch if c_own else None))
+        except Exception as e:
+            _synth_err(iid, e)
+            return False                    # broken half-state: rebuild all
+        _state['synths'][iid] = syn
+        di = getattr(syn, 'deferred_init', None)
+        if di is not None:
+            try:
+                di()
+            except Exception:
+                pass
+        if c_own:
+            try:
+                import amy as _amy
+                _amy.send(synth=ch, grab_midi_notes=1)
+            except Exception:
+                pass
+        if instr.get('type') != 'drums':
+            _apply_params(syn, instr.get('params', {}))
+        # refresh this instrument's FX-bus target + re-baseline ITS bus only
+        sn = getattr(syn, 'synth', None)
+        if sn is not None and 'bus' in rec:
+            import amyparams as _ap
+            pfx = (_ap.patch_fx(instr.get('patch', 0))
+                   if instr.get('type', 'juno6') in ('juno6', 'dx7', 'piano')
+                   else {})
+            for t in _state.get('fx_targets') or ():
+                if t.get('iid') == iid:
+                    t['synth'] = sn
+                    t['pfx'] = pfx
+                    _apply_device_fx(deckcfg.load(), [t])
+                    break
+        try:
+            import decklog
+            decklog.dbg("router: rebuilt one (%s)" % iid)
+        except Exception:
+            pass
+        return True
+
+    with _AmyBatch():
+        ok = _rebuild_in_place()
+    if not ok:
         return start()                      # broken half-state: rebuild all
-    _state['synths'][iid] = syn
-    di = getattr(syn, 'deferred_init', None)
-    if di is not None:
-        try:
-            di()
-        except Exception:
-            pass
-    if c_own:
-        try:
-            import amy as _amy
-            _amy.send(synth=ch, grab_midi_notes=1)
-        except Exception:
-            pass
-    if instr.get('type') != 'drums':
-        _apply_params(syn, instr.get('params', {}))
-    # refresh this instrument's FX-bus target + re-baseline ITS bus only
-    sn = getattr(syn, 'synth', None)
-    if sn is not None and 'bus' in rec:
-        import amyparams as _ap
-        pfx = (_ap.patch_fx(instr.get('patch', 0))
-               if instr.get('type', 'juno6') in ('juno6', 'dx7', 'piano')
-               else {})
-        for t in _state.get('fx_targets') or ():
-            if t.get('iid') == iid:
-                t['synth'] = sn
-                t['pfx'] = pfx
-                _apply_device_fx(deckcfg.load(), [t])
-                break
-    try:
-        import decklog
-        decklog.dbg("router: rebuilt one (%s)" % iid)
-    except Exception:
-        pass
 
 
 def _room_string(fx, targets):
@@ -450,15 +481,37 @@ class _AmyBatch:
         if self._on:
             self._amy.override_send = self._orig
             if self._msgs:
-                try:
-                    self._tulip.amy_send_batch('\n'.join(self._msgs))
-                except Exception:
-                    for m in self._msgs:      # never lose the rebuild
+                # amy_send_batch's C line buffer (MAX_MESSAGE_LEN, 1023) SILENTLY
+                # truncates any single message that reaches it >= 1023 chars.
+                # Walk the list: batch the normal messages, but when a long one
+                # (>= 1000, leaving headroom) appears, flush the batch-so-far,
+                # send the long one alone via the plain override, then keep
+                # batching -- preserving wire ORDER.
+                batch = []
+                for m in self._msgs:
+                    if len(m) >= 1000:
+                        self._flush_batch(batch)
+                        batch = []
                         try:
-                            self._orig(m)
+                            self._orig(m)     # plain path: no line-buffer limit
                         except Exception:
                             pass
+                    else:
+                        batch.append(m)
+                self._flush_batch(batch)
         return False
+
+    def _flush_batch(self, batch):
+        if not batch:
+            return
+        try:
+            self._tulip.amy_send_batch('\n'.join(batch))
+        except Exception:
+            for m in batch:                   # never lose the rebuild
+                try:
+                    self._orig(m)
+                except Exception:
+                    pass
 
 
 def _start_once():
@@ -589,8 +642,15 @@ def _start_once():
                         continue
                     mslot = _sk.SLOT_MELODIC + _next_melodic_slot[0]
                     _next_melodic_slot[0] += 1
-                    _sk.store_patch(mslot,
-                                    _gmmod.patch_string(instr.get('patch', 0)))
+                    gpatch = instr.get('patch', 0)
+                    if (instr.get('type') == 'gm2'
+                            and not _gmmod.has_program(gpatch)):
+                        # emu4 covers only 92 of 128 GM programs; a stale/
+                        # hand-edited gm2 patch used to KeyError here and mute
+                        # the instrument. Degrade to the nearest covered
+                        # program so it still sounds (KITS-2).
+                        gpatch = _nearest_gm2_program(gpatch)
+                    _sk.store_patch(mslot, _gmmod.patch_string(gpatch))
                     syn = _synth.PatchSynth(
                         patch=mslot,
                         num_voices=instr.get('num_voices', 10),
@@ -785,16 +845,36 @@ def live_voices():
     return n
 
 
-def activity():
-    """Monotonic count of MIDI messages seen; delta > 0 = activity. Reads
-    the C layer's counter when available (with the C router active, Python
-    never sees C-owned channels' traffic at all -- O-2), else the Python
-    router's own count."""
+def _nearest_gm2_program(program):
+    """The emu4 GM program covered by gm2 nearest to `program` (ties -> lower),
+    or 0 if the font somehow covers nothing. Only used when a stale/hand-edited
+    gm2 config names one of the 36 GM programs the emu4 font doesn't carry, so
+    it degrades to the closest sound instead of a KeyError-silenced instrument
+    (KITS-2)."""
     try:
-        import tulip
-        return tulip.midi_activity() + _state['seen']
+        import gmbig
+        progs = gmbig.programs()
+        if not progs:
+            return 0
+        return min(progs, key=lambda p: (abs(p - program), p))
     except Exception:
-        return _state['seen']
+        return 0
+
+
+def activity():
+    """Monotonic count of MIDI messages seen; delta > 0 = activity. With the C
+    router active its counter already counts EVERY non-sysex message before
+    routing -- including layered-channel traffic that also reaches _route -- so
+    it alone is the total; adding _state['seen'] on top double-counted every
+    layered message (MIDI-6). Without the C router (or when its counter is
+    unavailable) the Python router sees everything, so use _state['seen']."""
+    if _state.get('c_router'):
+        try:
+            import tulip
+            return tulip.midi_activity()
+        except Exception:
+            pass
+    return _state['seen']
 
 
 def set_midi_tap(on):

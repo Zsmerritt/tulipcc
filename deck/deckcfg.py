@@ -181,7 +181,14 @@ def load():
                 pass
         except (OSError, ValueError):
             data = {}
-    cfg = dict(DEFAULTS)
+    # Deep-copy the MUTABLE defaults (dicts/lists) so cfg never aliases the
+    # module-level DEFAULTS objects. A shallow dict(DEFAULTS) shared cfg['fx']
+    # (and 'favorites') with DEFAULTS, so set_device_fx's in-place mutation
+    # (:547) permanently polluted DEFAULTS['fx'] -- every later fresh/reset
+    # config in the same session then inherited the old device's FX (CFG-1).
+    cfg = {k: (dict(v) if isinstance(v, dict)
+               else list(v) if isinstance(v, list) else v)
+           for k, v in DEFAULTS.items()}
     cfg.update({k: v for k, v in data.items()
                 if k not in ('instances', 'instruments')})
 
@@ -684,9 +691,9 @@ def apply(cfg=None):
         # volume was never actually restored at boot (UX-REVIEW-6 C1 fallout).
         vol = getattr(amy, 'volume', None)
         if callable(vol):        # callable, not is-None: see settings (E-14)
-            vol(cfg.get('volume', 4))
+            vol(cfg.get('volume', 1))
         else:
-            amy.send(volume=cfg.get('volume', 4))
+            amy.send(volume=cfg.get('volume', 1))
     for fn in (_volume,
                lambda: tulip.brightness(cfg.get('brightness', 5)),
                lambda: tulip.tfb_font(cfg.get('tfb_font', 0)),

@@ -411,7 +411,13 @@ def _install_keyboard_partial():
 # following program change, sustain transitions matter individually, and
 # 120-127 are channel-mode one-shots. Everything else (mod, breath, CC74
 # brightness, expression...) is a continuous stream where latest-wins.
-_NO_COALESCE = frozenset((0, 32, 64) + tuple(range(120, 128)))
+# RPN/NRPN are a SEQUENCE, not a latest-wins stream: a parameter is selected
+# by 99/98 (NRPN MSB/LSB) or 101/100 (RPN MSB/LSB) then written by 6/38 (data
+# entry MSB/LSB) or stepped by 96/97 (data inc/dec). Coalescing per (status,
+# controller) would drop the earlier value of a pair (e.g. an MPE bend-range
+# setup), so keep them all sequenced alongside bank-select/sustain (F-9).
+_NO_COALESCE = frozenset((0, 6, 32, 38, 64, 96, 97, 98, 99, 100, 101)
+                         + tuple(range(120, 128)))
 
 
 def _install_safe_midi_drain():

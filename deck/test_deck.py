@@ -904,18 +904,11 @@ def test_synth_send_calls_envelopes():
     assert not any('eq' in c for c in calls)
 
 
-def test_fx_calls_map_to_amy_kwargs():
-    import amyparams as ap
-    calls = dict(ap.fx_calls({'reverb': {'level': 0.4}}))
-    assert calls['reverb'] == {'level': 0.4, 'liveness': 0.85, 'damping': 0.5}
-    # ONLY touched buses are emitted: patch strings set their own chorus/EQ
-    # (juno character), so untouched buses must not be zeroed by the UI.
-    assert 'chorus' not in calls and 'echo' not in calls
-    assert dict(ap.fx_calls({})) == {}
-    calls = dict(ap.fx_calls({'chorus': {'level': 0.3}}))
-    assert calls['chorus']['level'] == 0.3 and calls['chorus']['amp'] == 0.5
-    # eq is not a fn-applied bus
-    assert 'eq' not in calls
+# NOTE: test_fx_calls_map_to_amy_kwargs was removed here: the concurrent
+# group-B change (commit 8f6f2b05) deleted the dead amyparams.fx_calls (its
+# REVIEW-KITS finding 5 -- the production apply path uses fx_send_strings /
+# fx_eq_string / the reverb room string instead). The layering test below keeps
+# its still-live fx_value / fx_eq_string coverage.
 
 
 def test_fx_layering_patch_values_are_the_baseline():
@@ -927,10 +920,10 @@ def test_fx_layering_patch_values_are_the_baseline():
     # a user override wins...
     assert ap.fx_value({'chorus': {'level': 0.2}}, pfx, 'chorus', 'level') == 0.2
     # ...and the resulting SEND keeps the patch's other fields, not defaults
-    calls = dict(ap.fx_calls({'chorus': {'level': 0.2}}, pfx))
-    assert calls['chorus']['level'] == 0.2 and calls['chorus']['freq'] == 0.83
+    o = ap.fx_send_strings({'chorus': {'level': 0.2}}, pfx)
+    assert o['chorus'] == '0.2,,0.83,0.5'
     # untouched bus still not sent even though the patch sets it
-    assert dict(ap.fx_calls({}, pfx)) == {}
+    assert ap.fx_send_strings({}, pfx) == {}
     # eq: user layer over patch values
     pfx2 = {'eq': {'low': 7, 'mid': -3, 'high': -3}}
     assert ap.fx_eq_string({}, pfx2) is None
@@ -1495,3 +1488,287 @@ def test_gmbig_missing_program_falls_back_like_old_code():
     assert gmbig.has_program(1) is False
     with pytest.raises(KeyError):
         gmbig.patch_string(1)
+
+
+# ---------------------------------------------------------------------------
+# _AmyBatch: a message >= 1000 chars must bypass the batch line buffer
+# (tulip.amy_send_batch silently truncates at MAX_MESSAGE_LEN=1023) and arrive
+# complete and in order.
+# ---------------------------------------------------------------------------
+
+def test_amy_batch_long_line_sent_individually(deck):
+    _deckcfg, forwarder = deck
+    tulip = sys.modules['tulip']
+    amy = sys.modules['amy']
+    stream = []                         # reconstructed ordered wire stream
+    # amy_send_batch receives a '\n'-joined batch; override_send is the plain
+    # single-message path (both patched onto the fakes, cleaned up in finally).
+    tulip.amy_send_batch = lambda s: stream.extend(s.split('\n'))
+    amy.override_send = lambda m: stream.append(m)      # the saved _orig path
+    long_msg = 'u0' + 'a' * 1500        # 1502 chars: past MAX_MESSAGE_LEN
+    try:
+        with forwarder._AmyBatch():
+            amy.override_send('m1')     # collected into the batch
+            amy.override_send('m2')
+            amy.override_send(long_msg)  # must be sent alone, complete
+            amy.override_send('m3')
+        # complete + in order: the batch-so-far flushed, then the long one
+        # alone, then the rest.
+        assert stream == ['m1', 'm2', long_msg, 'm3']
+        assert len(long_msg) >= 1000    # the whole thing, untruncated
+    finally:
+        del tulip.amy_send_batch
+        del amy.override_send
+
+
+# ---------------------------------------------------------------------------
+# rebuild_one must batch its ~60 sends into exactly ONE amy_send_batch call.
+# ---------------------------------------------------------------------------
+
+def test_rebuild_one_batches_into_single_call(deck):
+    deckcfg, forwarder = deck
+    iid0 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid0, 'type', 'gm')
+    forwarder.start()
+    tulip = sys.modules['tulip']
+    amy = sys.modules['amy']
+    batch_calls = []
+    tulip.amy_send_batch = lambda s: batch_calls.append(s)
+    amy.override_send = None
+    orig_send = amy.send
+    # route the fake amy.send through override_send (like real amy) so the
+    # batch actually collects the rebuild's messages.
+    def _send(**k):
+        orig_send(**k)
+        if amy.override_send is not None:
+            amy.override_send(repr(k))
+    amy.send = _send
+    try:
+        deckcfg.set_instrument(iid0, 'patch', 12)     # non-topology edit
+        forwarder.rebuild_one(iid0)
+        assert forwarder._state['synths'][iid0] is not None
+        assert len(batch_calls) == 1                  # one MP->C call, not ~60
+    finally:
+        amy.send = orig_send
+        del tulip.amy_send_batch
+        del amy.override_send
+
+
+# ===========================================================================
+# Group-A correctness fixes (PyA): CFG-1/6, KITS-1/2/3, MIDI-2/5/6, E-1 UAF
+# ===========================================================================
+
+# --- CFG-1: DEFAULTS['fx'] must not be mutated in place -------------------
+def test_device_fx_does_not_pollute_defaults(deck):
+    """set_device_fx mutates cfg['fx'] in place; load() must deep-copy the
+    mutable defaults so that mutation never reaches module-level DEFAULTS and
+    bleeds into a later fresh/reset config in the same session (CFG-1)."""
+    deckcfg, _ = deck
+    deckcfg.set_device_fx('internal', 'reverb', 'level', 0.4)
+    assert deckcfg.DEFAULTS['fx'] == {}, "set_device_fx polluted DEFAULTS['fx']"
+    # simulate a factory reset / fresh config produced in the same process
+    deckcfg._state.clear()
+    try:
+        os.remove(deckcfg.PATH)
+    except OSError:
+        pass
+    fresh = deckcfg.load()
+    assert fresh['fx'] == {}, "a fresh config inherited a prior device's FX"
+    assert fresh['fx'] is not deckcfg.DEFAULTS['fx']   # not the aliased object
+
+
+# --- CFG-6: apply() volume fallback aligns with DEFAULTS['volume'] ---------
+def test_apply_volume_fallback_matches_default(deck):
+    deckcfg, _ = deck
+    amy = sys.modules['amy']
+    calls = []
+    orig = amy.volume
+    amy.volume = lambda *a, **k: calls.append(a)
+    try:
+        deckcfg.apply({})          # degraded path (boot cfg-load failure): no keys
+    finally:
+        amy.volume = orig
+    assert calls and calls[0][0] == deckcfg.DEFAULTS['volume'] == 1
+
+
+# --- MIDI-2: RPN/NRPN data-entry CCs must not coalesce ---------------------
+def test_no_coalesce_covers_rpn_nrpn(uipatch):
+    _ui, ui_patch = uipatch
+    nc = ui_patch._NO_COALESCE
+    for cc in (6, 38, 96, 97, 98, 99, 100, 101):   # data-entry / RPN / NRPN
+        assert cc in nc
+    for cc in (0, 32, 64, 120, 127):               # existing guards retained
+        assert cc in nc
+    assert 1 not in nc and 74 not in nc            # continuous streams coalesce
+
+
+# --- MIDI-5: layered retrigger must not strand voices ----------------------
+def test_layered_retrigger_does_not_strand_voices(deck):
+    deckcfg, forwarder = deck
+    deckcfg.add_instrument(device='internal', channel=1)   # 2 internals: layered
+    forwarder.start()
+    assert 1 not in forwarder._state['c_channels']
+    forwarder._route((0x90, 60, 100))              # first note-on
+    forwarder._route((0x90, 60, 100))              # re-trigger, no note-off
+    syns = list(forwarder._state['synths'].values())
+    assert all(s.on.count(60) == 2 for s in syns)  # two voices per synth
+    forwarder._route((0x80, 60, 0))                # single note-off
+    assert all(60 not in s.on for s in syns), "a stale voice was stranded"
+    assert forwarder._state['notes'] == {}
+
+
+# --- MIDI-6: activity() must not double-count layered traffic --------------
+def test_activity_does_not_double_count(deck):
+    deckcfg, forwarder = deck
+    tulip = sys.modules['tulip']
+    tulip.midi_activity = lambda: 7
+    try:
+        forwarder._state['seen'] = 5
+        forwarder._state['c_router'] = True        # C counts everything pre-route
+        assert forwarder.activity() == 7           # C counter alone (no +seen)
+        forwarder._state['c_router'] = False        # Python sees everything
+        assert forwarder.activity() == 5
+    finally:
+        del tulip.midi_activity
+        forwarder._state['c_router'] = False
+
+
+# --- KITS-2: gm2 uncovered program degrades to sound, not silence ----------
+def test_gm2_uncovered_program_still_sounds(deck):
+    deckcfg, forwarder = deck
+    import gmbig
+    assert not gmbig.has_program(1)                # program 1 absent from emu4
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'gm2')
+    deckcfg.set_instrument(iid, 'patch', 1)
+    amy = sys.modules['amy']
+    amy._sends.clear()
+    forwarder.start()
+    assert forwarder._state['synths'].get(iid) is not None   # not KeyError-muted
+    assert iid not in forwarder._state.get('err_iids', ())
+    assert any('patch_string' in k for k in amy._sends)      # a covered patch stored
+    # the in-place patch-swap path (rebuild_one) shares the same fallback
+    assert not gmbig.has_program(3)
+    deckcfg.set_instrument(iid, 'patch', 3)
+    forwarder.rebuild_one(iid)
+    assert forwarder._state['synths'].get(iid) is not None   # still sounds
+    assert iid not in forwarder._state.get('err_iids', ())
+
+
+# --- KITS-3: hit_name strips only the 6-char dedup hash --------------------
+def test_hit_name_strips_only_six_char_hash():
+    import synthkits
+    synthkits._state['index'] = {'kits': {}, 'packs': {}, 'names': {}}
+    # the generator's 6-char all-hex dedup hash IS stripped (hex-word + digits)
+    assert synthkits.hit_name('kick_7dbbaa') == 'kick'
+    assert synthkits.hit_name('brush1_139732') == 'brush1'
+    # legit numeric / hex-word suffixes are PRESERVED (were wrongly collapsed)
+    assert synthkits.hit_name('kick_1200') == 'kick_1200'
+    assert synthkits.hit_name('snare_9090') == 'snare_9090'
+    assert synthkits.hit_name('x_face') == 'x_face'
+    assert synthkits.hit_name('x_beef') == 'x_beef'
+
+
+# --- KITS-1: one unresolvable hit key skips its pad, keeps the kit, no leak -
+def test_synthkit_skips_unresolvable_hit_no_leak():
+    _install_hw_mocks()
+    for m in ('synthkits', 'drums_kit'):
+        sys.modules.pop(m, None)
+    import synthkits
+    import drums_kit
+    synth = sys.modules['synth']
+    notes = {36: 'p/kick', 38: 'p/missing', 40: 'p/snare'}
+    synthkits.kit_notes = lambda k: dict(notes)
+    synthkits.store_patch = lambda slot, ps: slot
+
+    def _hps(hit_key, ov=None):
+        if hit_key == 'p/missing':
+            raise KeyError(hit_key)            # partial deploy / index drift
+        return 'v0w0a1Z'
+    synthkits.hit_patch_string = _hps
+
+    kit = drums_kit.SynthKit('somekit')
+    assert set(kit.hit_synths) == {36, 40}     # bad pad skipped, rest audible
+    assert 38 not in kit.note_hits
+    # no orphan: exactly 2 hit synths + 1 kit synth created, all tracked
+    assert len(synth.PatchSynth.instances) == 3
+    kit.release()
+    assert all(s.released for s in synth.PatchSynth.instances)   # no leaked number
+
+
+# --- E-1: patch-picker search debounce must not UAF a freed panel ----------
+def _import_instrument_with_fakes():
+    """Import instrument.py against lightweight LVGL/deckui fakes so the
+    search-debounce UAF guard is exercisable on the host (the real UI stack is
+    not importable here). tulip.defer runs callbacks INLINE so the debounced
+    _do fires synchronously."""
+    _install_hw_mocks()
+    tulip = sys.modules['tulip']
+    tulip.defer = lambda fn, arg, ms: fn(arg)
+
+    class _NS:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    lv = types.ModuleType('lvgl')
+    lv.EVENT = _NS(DELETE=100, VALUE_CHANGED=2, FOCUSED=3, DEFOCUSED=4,
+                   CLICKED=1)
+    sys.modules['lvgl'] = lv
+
+    dk = types.ModuleType('deckui')
+    for c in ('ACCENT', 'SURFACE', 'SURFACE2', 'TEXT', 'MUTED', 'WHITE', 'BG',
+              'ORANGE', 'FONT_S', 'FONT_M', 'FONT_L'):
+        setattr(dk, c, object())
+    dk.c = lambda x: x
+    dk.label = lambda *a, **k: object()
+    sys.modules['deckui'] = dk
+
+    patches = types.ModuleType('patches')
+    patches.patches = ['patch%d' % i for i in range(257)]
+    sys.modules['patches'] = patches
+
+    catalog = types.ModuleType('catalog')
+    catalog.JUNO_END = 128
+    catalog.DX_END = 256
+    catalog.engine_of = lambda p: 'juno6'
+    sys.modules['catalog'] = catalog
+
+    sys.modules.pop('instrument', None)
+    return importlib.import_module('instrument')
+
+
+def test_search_debounce_guard_after_teardown():
+    instrument = _import_instrument_with_fakes()
+    calls = []
+    instrument._build_list = lambda: calls.append(1)
+
+    class _TA:
+        def get_text(self):
+            return 'ab'
+
+    instrument._s.clear()
+    instrument._s.update({'alive': True, 'listbody': object(),
+                          'searchta': _TA(), 'search_gen': 0})
+    instrument._search_changed(None)              # defer -> _do inline
+    assert calls == [1], "live panel: debounce should rebuild the list"
+
+    # panel torn down: LVGL DELETE fires -> _mark_dead flips the alive token
+    calls.clear()
+    instrument._mark_dead()
+    assert instrument._s.get('alive') is False
+    instrument._search_changed(None)
+    assert calls == [], "freed panel: debounce must not rebuild against it"
+
+
+def test_build_list_bails_on_freed_body():
+    instrument = _import_instrument_with_fakes()
+
+    class _Freed:
+        def clean(self):
+            raise RuntimeError("poked a deleted widget")
+
+    instrument._s.clear()
+    instrument._s.update({'alive': True, 'listbody': _Freed(), 'rows': []})
+    instrument._build_list()          # must swallow, not propagate a hard crash
+    instrument._s['alive'] = False
+    instrument._build_list()          # alive gate: never even calls clean()

@@ -47,6 +47,15 @@ def _fav_key(n):
 _s = {}
 
 
+def _mark_dead():
+    # Called from the content panel's LVGL DELETE event: the moment this panel
+    # is freed (Back, or a rebuild deleting the old content), flag it so any
+    # in-flight search debounce (_search_changed._do) bails instead of
+    # rebuilding the list against the freed scroll body -- a hard device crash
+    # (E-1). Re-armed to True at the end of _rebuild_content for the new panel.
+    _s['alive'] = False
+
+
 def _inst():
     return deckcfg.get_instrument(deckcfg.active_instrument())
 
@@ -161,26 +170,33 @@ def _append_rows(body, cur, favs):
 
 def _build_list():
     body = _s.get('listbody')
-    if body is None:
+    # Validity bail (E-1): never touch the body once the panel is torn down.
+    # `alive` is cleared by the content's DELETE handler, and the whole
+    # clean()+build is wrapped so a stale handle can't propagate a hard crash
+    # -- the same guarded shape rack.kit_panel._fill uses.
+    if body is None or not _s.get('alive'):
         return
-    body.clean()
-    _s['rows'] = []
-    _s['morebtn'] = None
-    cur = (_inst() or {}).get('patch', 0)
-    favs = set(deckcfg.favorites())      # loaded once for the whole list
-    q = _s.get('query', '').strip().lower()
-    _s['matches'] = [n for n in _nums(favs)
-                     if not q or q in _pname(n).lower()]
-    _s['shown'] = 0
-    if not _s['matches']:
-        if _s.get('fav_only') and not q:
-            msg = "No favorites in %s yet -- tap the star on a patch." % \
-                _TYPE_NAME.get(_type(), '')
-        else:
-            msg = "No patches match \"%s\"." % _s.get('query', '')
-        dk.label(body, msg, color=dk.MUTED, font=dk.FONT_S)
-        return
-    _append_rows(body, cur, favs)
+    try:
+        body.clean()
+        _s['rows'] = []
+        _s['morebtn'] = None
+        cur = (_inst() or {}).get('patch', 0)
+        favs = set(deckcfg.favorites())      # loaded once for the whole list
+        q = _s.get('query', '').strip().lower()
+        _s['matches'] = [n for n in _nums(favs)
+                         if not q or q in _pname(n).lower()]
+        _s['shown'] = 0
+        if not _s['matches']:
+            if _s.get('fav_only') and not q:
+                msg = "No favorites in %s yet -- tap the star on a patch." % \
+                    _TYPE_NAME.get(_type(), '')
+            else:
+                msg = "No patches match \"%s\"." % _s.get('query', '')
+            dk.label(body, msg, color=dk.MUTED, font=dk.FONT_S)
+            return
+        _append_rows(body, cur, favs)
+    except Exception:
+        return                               # widget deleted mid-build
 
 
 def _toggle_favonly(btn):
@@ -284,7 +300,13 @@ def _search_changed(e):
     gen = _s['search_gen']
 
     def _do(x):
-        if _s.get('search_gen') == gen and _s.get('listbody') is not None:
+        # UAF guard (E-1): the panel can be torn down (Back) inside the 250ms
+        # debounce window. `alive` (cleared by the content's DELETE handler)
+        # survives that teardown -- the search_gen/listbody checks alone did
+        # not, since _s isn't cleared until the NEXT open, so the deleted
+        # listbody handle lingered and _build_list poked a freed widget.
+        if (_s.get('alive') and _s.get('search_gen') == gen
+                and _s.get('listbody') is not None):
             _build_list()
     try:
         tulip.defer(_do, 0, 250)
@@ -313,6 +335,15 @@ def _rebuild_content():
     content.set_size(w, chh)
     dk._flat(content, bg=dk.BG)
     _s['content'] = content
+    # alive token for the search debounce (E-1): the DELETE handler flips it
+    # off the instant LVGL frees this panel (Back), so a pending _build_list
+    # bails instead of poking a freed scroll body. Armed True below, after any
+    # old-content delete above has already fired its DELETE (-> _mark_dead).
+    try:
+        content.add_event_cb(lambda e: _mark_dead(), lv.EVENT.DELETE, None)
+    except Exception:
+        pass
+    _s['alive'] = True
 
     # STABLE title = the collection ("Juno-6 patches"); the current selection
     # lives in the subtitle + highlighted row. The old selection-as-title
