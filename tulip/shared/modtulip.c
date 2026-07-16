@@ -60,6 +60,15 @@ STATIC mp_obj_t tulip_flash_fence(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_obj, 1, 1, tulip_flash_fence);
+
+// tulip.flash_fence_auto(): True -- marker that this firmware fences EVERY
+// partition write/erase in C (flash_fence_wrap.c linker wraps), so Python
+// write paths need no fence/quiet machinery of their own. Probe with
+// hasattr(); manual flash_fence() remains as an override.
+STATIC mp_obj_t tulip_flash_fence_auto(size_t n_args, const mp_obj_t *args) {
+    return mp_const_true;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_auto_obj, 0, 0, tulip_flash_fence_auto);
 #endif
 
 STATIC mp_obj_t tulip_stderr_write(size_t n_args, const mp_obj_t *args) {
@@ -1814,6 +1823,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_amy_ticks_ms), MP_ROM_PTR(&tulip_amy_ticks_ms_obj) },
 #ifdef ESP_PLATFORM
     { MP_ROM_QSTR(MP_QSTR_flash_fence), MP_ROM_PTR(&tulip_flash_fence_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence_auto), MP_ROM_PTR(&tulip_flash_fence_auto_obj) },
 #endif
     { MP_ROM_QSTR(MP_QSTR_pcm_load_file), MP_ROM_PTR(&tulip_pcm_load_file_obj) },
 #endif

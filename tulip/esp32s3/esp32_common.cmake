@@ -135,6 +135,7 @@ list(APPEND MICROPY_SOURCE_PORT
     ${MICROPY_PORT_DIR}/modsocket.c
     ${MICROPY_PORT_DIR}/mphalport.c
     ${MICROPY_PORT_DIR}/usb.c
+    ${MICROPY_PORT_DIR}/flash_fence_wrap.c
 
     ${MICROPY_ESP32_DIR}/panichandler.c
     ${MICROPY_ESP32_DIR}/adc.c
@@ -367,7 +368,20 @@ target_compile_definitions(${MICROPY_TARGET} PUBLIC
     ${MICROPY_DEF_TINYUSB}
 )
 
-#LFS2_NO_DEBUG LFS2_NO_WARN LFS2_NO_ERROR 
+#LFS2_NO_DEBUG LFS2_NO_WARN LFS2_NO_ERROR
+
+# Hot render translation units get -O3 + unrolling (OPT-6); the rest of the
+# build stays at the sdkconfig PERF (-O2) level. These four hold the
+# per-sample loops (oscillator LUTs, delay lines/reverb, biquads, PCM);
+# typical gain on such loops is 3-8%. Measure with AMY_DEBUG profilers
+# before/after if the size delta matters.
+set_source_files_properties(
+    ${AMY_DIR}/src/oscillators.c
+    ${AMY_DIR}/src/delay.c
+    ${AMY_DIR}/src/filters.c
+    ${AMY_DIR}/src/pcm.c
+    PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
+)
 
 # Disable some warnings to keep the build output clean.
 target_compile_options(${MICROPY_TARGET} PUBLIC
@@ -391,6 +405,13 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
 
 target_link_options(${MICROPY_TARGET} PUBLIC
      ${MICROPY_LINK_TINYUSB}
+     # Route EVERY partition write/erase (littlefs, OTA, NVS, future code)
+     # through the AMY flash fence -- see flash_fence_wrap.c. This is what
+     # makes "flash write during mmap'd-PCM render crashes the S3"
+     # structurally impossible instead of opt-in Python discipline.
+     -Wl,--wrap=esp_partition_write
+     -Wl,--wrap=esp_partition_write_raw
+     -Wl,--wrap=esp_partition_erase_range
 )
 
 # Add additional extmod and usermod components.

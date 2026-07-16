@@ -16,14 +16,13 @@ import hashlib
 import os
 import subprocess
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
     dev, local = sys.argv[1], sys.argv[2]
-    nonce = '%08x' % (int(time.time() * 1000) & 0xFFFFFFFF)
+    nonce = os.urandom(4).hex()   # random beats time-derived for uniqueness
     code = (
         "import binascii, hashlib\n"
         "h = hashlib.sha256()\n"

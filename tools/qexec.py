@@ -17,12 +17,13 @@ deck/SERIAL-PROTOCOL.md): scripts print their meaningful results with a
 unique prepended type, callers listen only for that type, and console
 chatter can never corrupt a decision.
 """
+import os
 import sys
 import time
 
 import serial
 
-PORT = 'COM11'
+PORT = os.environ.get('DECK_PORT', 'COM11')
 
 
 def open_port():
@@ -39,7 +40,11 @@ def open_port():
 
 
 def exec_code(s, code):
-    s.write(b'\r\x03')            # interrupt to a clean prompt (idle REPL)
+    # TWO interrupts, spaced: a busy MP task (mid-GC, mid-panel-build) can
+    # eat the first ^C -- mpremote does the same for the same reason
+    s.write(b'\r\x03')
+    time.sleep(0.1)
+    s.write(b'\x03')
     time.sleep(0.15)
     s.reset_input_buffer()
     s.write(b'\x01')              # raw REPL

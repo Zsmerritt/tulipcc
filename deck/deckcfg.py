@@ -1,6 +1,6 @@
 # deckcfg.py -- the shared JSON config for the deck apps.
 #
-# Lives at /user/deck_config.json (in the /user partition, so it survives
+# Lives at /user/var/deck_config.json (in the /user partition, so it survives
 # tulip.upgrade()). Settings / Instrument / MPE / Fleet write to it, and boot.py
 # calls apply() on startup to restore everything.
 #
@@ -21,7 +21,12 @@
 
 import json
 
-PATH = '/user/deck_config.json'
+# Under /user/var, NOT the /user root (E-5): littlefs commits land on the
+# parent dir's metadata pair, and the root's pair is the unrelocatable
+# superblock -- every root-file rewrite wore exactly the blocks that
+# corrupted. load() migrates a legacy root config on first read.
+PATH = '/user/var/deck_config.json'
+_LEGACY_PATH = '/user/deck_config.json'
 
 # runtime-only state (not persisted). _state['cfg'] caches the parsed config so
 # load() stops re-reading + re-parsing the JSON file on every call -- on the
@@ -161,6 +166,10 @@ def _instrument_from_flat(data):
 
 
 def load():
+    """Return THE live config dict (cached; every caller aliases the same
+    object). CONTRACT (E-6): treat the result as read-only -- mutate only
+    via the setters in this module, or your change silently persists on the
+    next unrelated save(). test_deck.py holds a canary for this."""
     cached = _state.get('cfg')
     if cached is not None:
         return cached
@@ -168,7 +177,17 @@ def load():
         with open(PATH) as f:
             data = json.load(f)
     except (OSError, ValueError):
-        data = {}
+        # one-time migration from the legacy /user-root location (E-5)
+        try:
+            with open(_LEGACY_PATH) as f:
+                data = json.load(f)
+            import os
+            try:
+                os.remove(_LEGACY_PATH)
+            except OSError:
+                pass
+        except (OSError, ValueError):
+            data = {}
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in data.items()
                 if k not in ('instances', 'instruments')})
@@ -231,13 +250,18 @@ def quiet_now(threshold=0.004, hold_ms=1000):
 
 def fenced_write(fn):
     """Run fn() (a flash write) safely against AMY's PCM rendering.
-    Firmware with tulip.flash_fence: raise the fence (mapped-flash PCM oscs
-    go silent, everything else keeps sounding), wait two render blocks so an
-    in-flight block that already passed the check drains, write, drop the
-    fence -- total added latency ~12ms. Older firmware: True only when
-    quiet_now() says a write is safe; caller defers otherwise."""
+
+    AUTO-FENCE firmware (tulip.flash_fence_auto exists): the C storage
+    layer fences EVERY partition write itself with an exact block-boundary
+    handshake (flash_fence_wrap.c) -- just write. Manual-fence firmware:
+    raise the fence, wait two render blocks, write, drop (~12ms). Oldest
+    firmware: True only when quiet_now() says a write is safe; caller
+    defers otherwise."""
     try:
         import tulip
+        if hasattr(tulip, 'flash_fence_auto'):
+            fn()
+            return True
         fence = getattr(tulip, 'flash_fence', None)
     except Exception:
         fence = None
@@ -271,8 +295,22 @@ def _write(cfg, _retry=0, _chained=False):
         # Drop the legacy `instances` key if an old config still carries it.
         data = {k: v for k, v in cfg.items() if k != 'instances'}
         try:
-            with open(PATH, 'w') as f:
+            import os
+            try:
+                os.mkdir('/user/var')
+            except OSError:
+                pass
+            # ATOMIC (E-5): write beside, rename over. A crash mid-write
+            # leaves the old config intact instead of a torn file
+            # (os.rename is atomic in littlefs).
+            with open(PATH + '.new', 'w') as f:
                 json.dump(data, f)
+            try:
+                os.rename(PATH + '.new', PATH)   # clobbers on littlefs
+            except OSError:
+                # Windows host (tests): rename won't clobber
+                os.remove(PATH)
+                os.rename(PATH + '.new', PATH)
         except OSError as e:
             print("deckcfg: could not save:", e)
     if fenced_write(do):
@@ -628,7 +666,7 @@ def apply(cfg=None):
         # amy.volume call here failed silently inside the try, so the saved
         # volume was never actually restored at boot (UX-REVIEW-6 C1 fallout).
         vol = getattr(amy, 'volume', None)
-        if vol is not None:
+        if callable(vol):        # callable, not is-None: see settings (E-14)
             vol(cfg.get('volume', 4))
         else:
             amy.send(volume=cfg.get('volume', 4))

@@ -316,11 +316,18 @@ def kit_panel(parent, shell=None):
     for k, n in drums_kit.synth_kits():
         n = n[:-8] if n.endswith(' (synth)') else n
         rows.append((k, n, True))
-    for kit, name, _synth in rows:
+    # Chunked fill (O-8): ~80 rows x (button+label+styles) in one LVGL tick
+    # was a 40-80 ms event-callback stall -- the interrupt-WDT shape this
+    # codebase has been bitten by before. First screenful lands inline, the
+    # rest arrives in deferred chunks; the whole list exists within ~3 ticks.
+    _s['kitgen'] = _s.get('kitgen', 0) + 1
+    gen = _s['kitgen']
+
+    def _build_row(kit, name):
         if kit is None:
             h = dk.label(body, name, color=dk.MUTED, font=dk.FONT_S)
             _s['kitbtns'].append((h, None, ''))
-            continue
+            return
         b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
                       bg=(dk.ACCENT if kit == cur else dk.SURFACE))
         b.add_event_cb((lambda k: (lambda e: _set_kit(k)
@@ -329,14 +336,31 @@ def kit_panel(parent, shell=None):
         _s['kitbtns'].append((b, kit, name.lower()))
         if kit == cur:
             _s['kitcur'] = b
-    # jump (no animation -- an animated scroll repaints every frame) so the
-    # CURRENT kit is visible on open instead of ~10 screens down (F-2)
-    curbtn = _s.pop('kitcur', None)
-    if curbtn is not None:
+
+    def _fill(start):
+        if gen != _s.get('kitgen'):
+            return                        # panel rebuilt/closed mid-chain
+        end = min(len(rows), start + (16 if start == 0 else 25))
         try:
-            curbtn.scroll_to_view(lv.ANIM.OFF)
+            for kit, name, _synth in rows[start:end]:
+                _build_row(kit, name)
         except Exception:
-            pass
+            return                        # widgets deleted mid-chain
+        if end < len(rows):
+            try:
+                tulip.defer(_fill, end, 10)
+            except Exception:
+                _fill(end)                # no defer slot: finish inline
+            return
+        # all built: jump (no animation -- an animated scroll repaints
+        # every frame) so the CURRENT kit is visible on open (F-2)
+        curbtn = _s.pop('kitcur', None)
+        if curbtn is not None:
+            try:
+                curbtn.scroll_to_view(lv.ANIM.OFF)
+            except Exception:
+                pass
+    _fill(0)
 
     def _filter(e):
         try:

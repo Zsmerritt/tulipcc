@@ -3,8 +3,8 @@
 #
 # Every line is BOTH printed to the serial console (the connected computer's
 # terminal captures it live, so it survives a device reboot on the host side) AND
-# appended to /user/deck.log on the device (survives reboots on the device -- read
-# it back with `mpremote fs cat :/user/deck.log`). The return-to-Home paths and
+# appended to /user/var/deck.log on the device (survives reboots on the device --
+# read it back with tools/qget.py). The return-to-Home paths and
 # panel-builder exceptions log here with a traceback, so the next occurrence is
 # captured either way.
 
@@ -15,13 +15,22 @@ _MAX = 40000        # cap the on-device log (bytes) so it can't fill flash
 
 def _logfile():
     """Prefer /sd (its own peripheral: writes never race the flash cache or
-    need the fence) when a card is mounted; else internal flash."""
+    need the fence) when a card is mounted; else internal flash. On flash
+    the log lives under /user/var: littlefs commits land on the parent
+    directory's metadata pair, and for root files that is the UNRELOCATABLE
+    superblock pair -- concentrating every log append there is what wore it
+    into the 'Corrupted dir pair {0x1,0x0}' state (E-5)."""
+    import os
     try:
-        import os
         os.stat('/sd')
         return '/sd/deck.log'
     except OSError:
-        return '/user/deck.log'
+        pass
+    try:
+        os.mkdir('/user/var')
+    except OSError:
+        pass
+    return '/user/var/deck.log'
 
 
 _LOGFILE = _logfile()
@@ -34,7 +43,65 @@ def _ts():
         return 0
 
 
-_PENDING = []       # lines waiting for a quiet moment to hit flash
+_PENDING = []       # buffered lines (serial copy always lands immediately)
+_state = {'size': None,     # on-flash log size, tracked in RAM (no per-call
+                            # os.stat -- that was a littlefs metadata walk
+                            # PER LOG LINE, O-6)
+          'pend': 0,        # buffered bytes
+          'armed': False}   # a deferred flush is scheduled
+_FLUSH_BYTES = 2048         # flush when this much is buffered...
+_FLUSH_MS = 3000            # ...or this long after the first buffered line
+
+
+def _write_pending():
+    """One append + at most one rollover per FLUSH, not per line: batching
+    turns N metadata-pair commits into 1 (O-6)."""
+    import os
+    if not _PENDING:
+        return
+    data = "\n".join(_PENDING) + "\n"
+    del _PENDING[:]
+    _state['pend'] = 0
+    if _state['size'] is None:
+        try:
+            _state['size'] = os.stat(_LOGFILE)[6]
+        except OSError:
+            _state['size'] = 0
+    if _state['size'] + len(data) > _MAX:
+        # Roll over keeping ONE previous generation -- deleting the log
+        # outright could throw away the lead-up to the very event being
+        # diagnosed.
+        try:
+            os.remove(_LOGFILE + '.old')
+        except OSError:
+            pass
+        try:
+            os.rename(_LOGFILE, _LOGFILE + '.old')
+        except OSError:
+            pass
+        _state['size'] = 0
+    with open(_LOGFILE, 'a') as f:
+        f.write(data)
+    _state['size'] += len(data)
+
+
+def flush(_=None):
+    """Flush buffered lines to storage now. Deferred-timer target; also
+    call before an intentional reboot so the tail isn't lost."""
+    _state['armed'] = False
+    try:
+        if _LOGFILE.startswith('/sd'):
+            _write_pending()  # SD is its own peripheral: no fence needed
+        else:
+            # A flash write while AMY renders PCM from the mmap'd banks
+            # crashed the S3 (see deckcfg.fenced_write). Fence firmware
+            # writes immediately; older firmware waits for quiet.
+            import deckcfg
+            if not deckcfg.fenced_write(_write_pending) \
+                    and len(_PENDING) > 200:
+                del _PENDING[:-200]
+    except Exception:
+        pass
 
 
 def log(msg):
@@ -43,40 +110,16 @@ def log(msg):
         print("DECKLOG " + line)          # serial -> host terminal
     except Exception:
         pass
-    # A flash write while AMY renders PCM from the mmap'd banks crashes the
-    # S3 (see deckcfg.fenced_write). With flash-fence firmware every line
-    # lands immediately (~12ms fence); older firmware queues lines while
-    # sound may be rendering and flushes on the next quiet log call (the
-    # serial copy above always lands immediately either way).
     _PENDING.append(line)
-
-    def _flush():
-        import os
+    _state['pend'] += len(line) + 1
+    if _state['pend'] >= _FLUSH_BYTES:
+        flush()
+    elif not _state['armed']:
+        _state['armed'] = True
         try:
-            if os.stat(_LOGFILE)[6] > _MAX:
-                # Roll over keeping ONE previous generation -- deleting the log
-                # outright could throw away the lead-up to the very event being
-                # diagnosed.
-                try:
-                    os.remove(_LOGFILE + '.old')
-                except OSError:
-                    pass
-                os.rename(_LOGFILE, _LOGFILE + '.old')
-        except OSError:
-            pass
-        with open(_LOGFILE, 'a') as f:
-            f.write("\n".join(_PENDING) + "\n")
-        del _PENDING[:]
-
-    try:
-        if _LOGFILE.startswith('/sd'):
-            _flush()      # SD is its own peripheral: no fence, no waiting
-        else:
-            import deckcfg
-            if not deckcfg.fenced_write(_flush) and len(_PENDING) > 200:
-                del _PENDING[:-200]
-    except Exception:
-        pass
+            tulip.defer(flush, 0, _FLUSH_MS)
+        except Exception:
+            flush()                        # no defer slot: flush inline
 
 
 _DBG = None    # tri-state: None = read config lazily on first dbg()

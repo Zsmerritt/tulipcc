@@ -537,10 +537,32 @@ def switch(parent, value, on_change=None, color=GREEN):
     return sw
 
 
+# The open confirm overlay, if any. It lives on lv.layer_top, ABOVE the
+# panel stack -- navigation must dismiss it or it strands over an unrelated
+# screen with its callbacks pointing at torn-down state (fresh-eyes F-12,
+# same lifecycle hazard as the soft keyboard).
+_confirm_open = None
+
+
+def close_confirm():
+    """Dismiss any open confirm modal. Safe no-op when none is showing.
+    Call from every navigation path (push/back/reset), alongside
+    close_keyboard()."""
+    global _confirm_open
+    ov, _confirm_open = _confirm_open, None
+    if ov is not None:
+        try:
+            ov.delete()
+        except Exception:
+            pass
+
+
 def confirm(title, message, on_yes, yes_text="Delete", yes_bg=RED):
     # A modal confirmation over everything (lv.layer_top blocks the background).
     # Cancel dismisses; the yes button runs on_yes() then dismisses. Used to gate
     # destructive actions (remove instrument, etc.).
+    global _confirm_open
+    close_confirm()             # never stack two
     w, h = tulip.screen_size()
     ov = lv.obj(lv.layer_top())
     ov.set_size(w, h)
@@ -560,6 +582,9 @@ def confirm(title, message, on_yes, yes_text="Delete", yes_bg=RED):
     label(card, message, 32, 84, color=MUTED, font=FONT_M, w=536)
 
     def _close():
+        global _confirm_open
+        if _confirm_open is ov:
+            _confirm_open = None
         try:
             ov.delete()
         except Exception:
@@ -581,6 +606,7 @@ def confirm(title, message, on_yes, yes_text="Delete", yes_bg=RED):
         except Exception:
             pass
     yes.add_event_cb(_do, lv.EVENT.CLICKED, None)
+    _confirm_open = ov
     return ov
 
 

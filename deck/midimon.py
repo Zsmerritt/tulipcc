@@ -134,6 +134,11 @@ def _tick(sid):
     try:
         if _s['dirty']:
             _render()
+        else:
+            # unconditional liveness probe (E-7): with no MIDI traffic (or
+            # paused) 'dirty' never fires, so a closed panel used to leave
+            # this chain AND the per-message _cb running forever
+            _s['lbl'].get_text()
     except Exception:
         # the panel (and our label) was deleted: stop + unregister
         _close()
@@ -193,6 +198,13 @@ def panel(parent, shell=None):
     lbl = dk.label(card, "waiting for MIDI...", 16, 12, color=dk.GREEN,
                    font=dk.FONT_MONO)
     _s['lbl'] = lbl
+    # immediate teardown on panel deletion (E-7): unregisters the
+    # per-message MIDI callback the moment the label dies instead of
+    # waiting for the next tick's probe
+    try:
+        lbl.add_event_cb(lambda e: _close(), lv.EVENT.DELETE, None)
+    except Exception:
+        pass
     _s['show'] = max(10, (card_h - 28) // _line_h())
 
     _s['buf'] = []

@@ -3,7 +3,12 @@
 #define __TSEQUENCERH
 
 #define SEQUENCER_SLOTS 8
-#define DEFER_SLOTS 32
+// 64 (was 32): the pool is a global failure domain -- exhaustion raises at
+// the CALLER, and several deck features respond by permanently disabling
+// themselves (E-9). Steady state uses 3-4; bursts (panel fills, toasts,
+// preview note-offs, tab chains) stacked toward the old cap. 32 more
+// pointers of RAM.
+#define DEFER_SLOTS 64
 #include "py/mphal.h"
 #include "py/runtime.h"
 #include <stdio.h>

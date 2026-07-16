@@ -394,6 +394,13 @@ def _start_once():
                     # GM notes on its channel trigger the kit's samples.
                     import drums_kit
                     import synthkits as _sk
+                    if _next_kit_slot[0] >= _sk.MAX_KIT_SLOTS:
+                        # E-4: the next window would walk past AMY's 128-slot
+                        # pool (or into rejection range) -- refuse loudly
+                        # instead of corrupting another kit's patches
+                        _synth_err(instr['id'], RuntimeError(
+                            "kit slot map full (%d kits max)" % _sk.MAX_KIT_SLOTS))
+                        continue
                     kslot = _sk.SLOT_KITS + _sk.SLOT_KIT_STRIDE * _next_kit_slot[0]
                     _next_kit_slot[0] += 1
                     syn = drums_kit.make_synth(instr.get('kit', 384),
@@ -413,6 +420,13 @@ def _start_once():
                     else:
                         import gm as _gmmod
                     import synthkits as _sk
+                    if _next_melodic_slot[0] >= _sk.MAX_MELODIC_SLOTS:
+                        # E-4: the 6th melodic store would land in the first
+                        # kit's slot window -- refuse loudly instead
+                        _synth_err(instr['id'], RuntimeError(
+                            "melodic slot map full (%d max)"
+                            % _sk.MAX_MELODIC_SLOTS))
+                        continue
                     mslot = _sk.SLOT_MELODIC + _next_melodic_slot[0]
                     _next_melodic_slot[0] += 1
                     _sk.store_patch(mslot,

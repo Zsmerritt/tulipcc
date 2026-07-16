@@ -22,7 +22,10 @@ def _amy_volume(v):
     the whole Settings screen (UX-REVIEW-6 C1)."""
     vol = getattr(amy, 'volume', None)
     try:
-        if vol is not None:
+        # callable() not is-None (E-14): if upstream amy ever grows a
+        # module-level volume VALUE, vol(v) would raise here -- swallowed --
+        # and volume would silently stop applying.
+        if callable(vol):
             vol(v)
         else:
             amy.send(volume=v)

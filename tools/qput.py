@@ -13,12 +13,13 @@ inside the flash fence. Usage:
 """
 import base64
 import hashlib
+import os
 import sys
 import time
 
 import serial
 
-PORT = 'COM11'
+PORT = os.environ.get('DECK_PORT', 'COM11')
 
 
 def open_port():

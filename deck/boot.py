@@ -3,7 +3,7 @@
 # Lives in /user (survives tulip.upgrade()). Everything is wrapped in try/except
 # so a failure here can never stop you reaching the REPL. It:
 #   * puts /user on the import path so the deck apps are runnable anywhere
-#   * restores audio/display/instrument/MPE from /user/deck_config.json
+#   * restores audio/display/instrument/MPE from /user/var/deck_config.json
 #   * installs ui_patch (bigger task bar + launcher menu with the deck apps)
 #   * lands on the Welcome screen (first boot) or the Home launcher
 

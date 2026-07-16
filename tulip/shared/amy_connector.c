@@ -165,19 +165,24 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         }
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_true);
     } else {
-        for(uint32_t i = 0; i < (uint32_t)len; i++) {
-            if(i < MAX_MIDI_BYTES_PER_MESSAGE) {
-                //fprintf(stderr, "%02x ", data[i]);
+        // SPSC discipline (E-11): only this writer moves TAIL; only the
+        // Python reader moves HEAD. The old wrap handling advanced head
+        // from the writer -- mutating the reader's cursor unsynchronized,
+        // so a flood could tear/duplicate the slot being read. Drop-NEWEST
+        // on full instead: the writer never touches head.
+        int16_t next = (midi_queue_tail + 1) % MIDI_QUEUE_DEPTH;
+        if (next != midi_queue_head) {
+            // clamp stored length to what was actually copied (C-8: a
+            // >255-byte blob stored len%256 while only 3 bytes landed)
+            uint8_t n = (len > MAX_MIDI_BYTES_PER_MESSAGE)
+                        ? MAX_MIDI_BYTES_PER_MESSAGE : (uint8_t)len;
+            for (uint8_t i = 0; i < n; i++) {
                 last_midi[midi_queue_tail][i] = data[i];
             }
+            last_midi_len[midi_queue_tail] = n;
+            midi_queue_tail = next;
         }
-        last_midi_len[midi_queue_tail] = (uint16_t)len;
-        midi_queue_tail = (midi_queue_tail + 1) % MIDI_QUEUE_DEPTH;
-        if (midi_queue_tail == midi_queue_head) {
-            // Queue wrap, drop oldest item.
-            midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
-            //fprintf(stderr, "dropped midi message\n");
-        }
+        // else: queue full, drop this (newest) message
 
         // We tell Python that a MIDI message has been received
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_false);

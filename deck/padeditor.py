@@ -119,7 +119,16 @@ def _apply(note, key, val, commit):
         hits = dict(instr.get('hits') or {})
         hits[str(note)] = ov
         deckcfg.set_instrument(iid, 'hits', hits)
-    _audition(note)
+        _audition(note)
+    else:
+        # drag ticks fire per VALUE_CHANGED -- a machine-gun of hits +
+        # store_patch traffic (E-12). Keep retweak per tick (the NEXT
+        # natural hit stays live) but rate-limit the triggered note ~5 Hz.
+        from time import ticks_ms, ticks_diff
+        now = ticks_ms()
+        if ticks_diff(now, _s.get('last_audition', -10000)) >= 200:
+            _s['last_audition'] = now
+            _audition(note)
 
 
 def _reset(note):

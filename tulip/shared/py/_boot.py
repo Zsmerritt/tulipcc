@@ -29,10 +29,20 @@ try:
         s = Partition.find(Partition.TYPE_DATA, label="system")[0]
         u = Partition.find(Partition.TYPE_DATA, label="vfs")[0]
         uos.mount(s,"/sys")
-        uos.mount(u,"/user")
+        try:
+            uos.mount(u,"/user")
+        except OSError:
+            # An unmountable /user means corrupted littlefs (interrupted
+            # commits from a crash loop tear both halves of a metadata
+            # pair). The old bare-except left the device booting with NO
+            # /user at all -- dead in a much less obvious way. Reformat
+            # and continue with an empty /user instead; say so loudly.
+            print("!!! /user filesystem corrupt: reformatting (contents lost)")
+            uos.VfsLfs2.mkfs(u)
+            uos.mount(u,"/user")
         cd('/user')
         sys.path.append("/sys/ex")
-        
+
     except:
         print("Tulip flash not setup properly. Try resetting the device.")
 

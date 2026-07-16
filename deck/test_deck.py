@@ -625,7 +625,7 @@ def test_device_name_and_instrument_summary():
     assert sm.device_name(0) == 'Board A'
     assert sm.device_name(1) == 'Board B'
     summ = sm.instrument_summary({'device': 1, 'channel': 2, 'patch': 130})
-    assert summ == 'Board B  ch2  DX2'
+    assert summ == 'Board B ch2 DX2'
     assert all(ord(c) < 128 for c in summ)
 
 
@@ -1017,9 +1017,9 @@ def test_forwarder_reapply_fx(deck):
     forwarder.start()
     deckcfg.set_device_fx('internal', 'reverb', 'level', 0.4)
     amy = sys.modules['amy']
-    amy._fx.clear()
+    amy._sends.clear()
     forwarder.reapply_fx()
-    assert dict(amy._fx)['reverb']['level'] == 0.4
+    assert any(k.get('reverb') == '0.4,0.85,0.5' for k in amy._sends)
 
 
 # --- D3.2: force synth allocation before per-bus routing ---
@@ -1156,13 +1156,14 @@ def test_forwarder_applies_params_to_synth(deck):
 
 
 def test_forwarder_applies_device_fx(deck):
+    # Reverb is the shared device ROOM sent as a wire string (the old
+    # amy.reverb(level) API is gone from the apply path)
     deckcfg, forwarder = deck
     deckcfg.set_device_fx('internal', 'reverb', 'level', 0.4)
     amy = sys.modules['amy']
-    amy._fx.clear()
+    amy._sends.clear()
     forwarder.start()
-    fx = dict(amy._fx)
-    assert fx['reverb']['level'] == 0.4
+    assert any(k.get('reverb') == '0.4,0.85,0.5' for k in amy._sends)
 
 
 def test_quitting_app_returns_to_home(uipatch):
@@ -1276,3 +1277,56 @@ def test_channels_channel_map():
     slots2 = channels.channel_map(insts2, 'internal', True, active_iid='lead')
     assert slots2[2]['conflict']       # ch3: lead member + bass
     assert not slots2[3]['conflict']   # ch4: lead member only, no conflict
+
+
+# ---------------------------------------------------------------------------
+# E-4: RAM-patch slot map bounds (pure invariants + forwarder refusal)
+# ---------------------------------------------------------------------------
+
+def test_slot_map_fits_amy_pool():
+    import synthkits
+    # melodic block ends exactly where the kit block begins
+    assert (synthkits.SLOT_MELODIC + synthkits.MAX_MELODIC_SLOTS
+            == synthkits.SLOT_KITS)
+    # worst-case kit map stays inside AMY's max_memory_patches window
+    top = (synthkits.SLOT_KITS
+           + synthkits.MAX_KIT_SLOTS * synthkits.SLOT_KIT_STRIDE)
+    assert top <= synthkits.SLOT_LIMIT == 1024 + 128
+    # a kit's hits (base+1..) must fit its stride window
+    assert synthkits.SLOT_KIT_STRIDE >= 20   # 19 hits + kit patch
+
+
+def test_forwarder_refuses_sixth_melodic_instrument(deck):
+    deckcfg, forwarder = deck
+    import synthkits
+    iid0 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid0, 'type', 'gm')
+    for ch in range(2, 7):                       # 5 more gm instruments
+        deckcfg.add_instrument(device='internal', channel=ch, type='gm')
+    forwarder.start()
+    synths = forwarder._state['synths']
+    built = [i for i, s in synths.items() if s is not None]
+    # exactly MAX_MELODIC_SLOTS built; the 6th refused and recorded
+    assert len(built) == synthkits.MAX_MELODIC_SLOTS
+    assert len(forwarder._state['err_iids']) == 1
+
+
+# ---------------------------------------------------------------------------
+# E-6: deckcfg.load() aliasing canary -- read paths must not mutate the cfg
+# ---------------------------------------------------------------------------
+
+def test_read_paths_do_not_mutate_config(deck):
+    deckcfg, forwarder = deck
+    import copy
+    import shellmodel
+    deckcfg.add_instrument(device='internal', channel=2, type='drums')
+    before = copy.deepcopy(deckcfg.load())
+    # panel-build-ish read paths
+    shellmodel.chip_specs(deckcfg.instruments(), deckcfg.active_instrument())
+    deckcfg.device_list()
+    deckcfg.device_load('internal')
+    for i in deckcfg.instruments():
+        shellmodel.instrument_sound(i)
+    forwarder.start()                    # the router is read-only over cfg
+    assert deckcfg.load() == before, \
+        "a read path mutated the live config dict (E-6 contract)"

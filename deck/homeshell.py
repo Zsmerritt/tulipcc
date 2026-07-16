@@ -322,6 +322,7 @@ class HomeShell:
         on the next tick -- long builds (Apps discovery scans /user) otherwise
         read as a frozen UI."""
         dk.close_keyboard()     # panels never share the keyboard (see back())
+        dk.close_confirm()      # a modal never outlives its panel (F-12)
         self._refill_gen += 1   # cancel any pending back()-refill
         panel = lv.obj(self.content)
         panel.set_size(self.W, self.H - BAR_H)
@@ -398,6 +399,7 @@ class HomeShell:
         # then tapping its close/checkmark, use-after-freed the deleted
         # field and hard-crashed the device (seen live on Wi-Fi settings).
         dk.close_keyboard()
+        dk.close_confirm()      # a modal never outlives its panel (F-12)
         removed, revealed = self.stack.pop()
         if removed is None:
             return
@@ -442,6 +444,7 @@ class HomeShell:
 
     def reset_to_root(self):
         dk.close_keyboard()     # same hazard as back(): don't strand the kb
+        dk.close_confirm()      # F-12
         self._refill_gen += 1   # cancel any pending back()-refill
         for h in self.stack.reset_to_root():
             try:

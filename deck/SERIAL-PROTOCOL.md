@@ -35,6 +35,14 @@ Conventions for new code:
   payload matters (see qget).
 - One in-flight request per port (serial is exclusive); nonces are for
   RETRIES and stale-line rejection, not concurrency.
+- Typed payloads must be line-oriented TEXT; binary goes base64 (qget
+  complies). The raw-REPL framing parse assumes script stdout never
+  contains a bare `\x04`.
+- File pushes use `tools/qput.py` (raw-paste mode with flow control):
+  plain raw REPL silently drops bytes past a few KB of exec payload.
+  All three tools honor `DECK_PORT` (default COM11). The KNOWN GAP row
+  above is thereby CLOSED — qput replaces mpremote `fs cp` with an
+  on-device sha256-verify + fenced rename.
 
 ## Architecture decision: where the router lives
 

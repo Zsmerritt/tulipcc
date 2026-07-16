@@ -31,6 +31,14 @@ SLOT_AUDITION = 1024
 SLOT_MELODIC = 1025
 SLOT_KITS = 1030
 SLOT_KIT_STRIDE = 24
+# Hard bounds (E-4). AMY caps user patches at max_memory_patches=128
+# (amy_connector.c) -> valid slots are 1024..1151. Without these caps the
+# 6th melodic instrument would store into the first kit's window and the
+# 6th kit would walk past 1151 into AMY's rejection range -- both present
+# as "wrong sounds on another instrument".
+MAX_MELODIC_SLOTS = SLOT_KITS - SLOT_MELODIC          # 5
+MAX_KIT_SLOTS = (1024 + 128 - SLOT_KITS) // SLOT_KIT_STRIDE   # 5
+SLOT_LIMIT = 1024 + 128
 
 
 def store_patch(slot, patch_string):

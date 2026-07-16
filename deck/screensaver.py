@@ -64,12 +64,12 @@ def _apply_phase(phase):
 
 
 def note_activity(*a):
-    """Wake on MIDI: reset the idle timer, and if dimmed/asleep restore full now
-    (so a played note lights the screen instantly rather than on the next tick)."""
-    try:
-        lv.display_get_default().trigger_activity()
-    except Exception:
-        pass
+    """Wake on MIDI. Hot path: this runs per MIDI message, so it does ONE
+    dict store; the lv trigger_activity() round-trip (~20-50us/msg through
+    the MP binding -- ~1-2% of the MP core under an MPE stream) happens
+    once per 300ms tick instead (O-3). Dim/sleep still restores instantly
+    on the first message after idle (that branch is rare by definition)."""
+    _state['midi_seen'] = True
     if _state['phase'] in ('dim', 'sleep'):
         _apply_phase('full')
 
@@ -80,6 +80,12 @@ def _tick(x):
     # from flash every few seconds bought nothing.
     if not _state['on']:
         return
+    if _state.get('midi_seen'):
+        _state['midi_seen'] = False
+        try:
+            lv.display_get_default().trigger_activity()
+        except Exception:
+            pass
     idle = _idle_ms()
     sa = _state['sleep_after']
     da = _state['dim_after']
