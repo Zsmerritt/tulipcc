@@ -174,12 +174,10 @@ def swap_panel(parent, shell=None):
 
     body = dk.row(parent, h=H - 96)
     body.set_pos(0, 72)
-    packs = lv.obj(body)
-    packs.set_size(260, H - 110)
-    dk._flat(packs, bg=dk.BG, scroll=True)
-    hits = lv.obj(body)
-    hits.set_size(w - 320, H - 110)
-    dk._flat(hits, bg=dk.BG, scroll=True)
+    # scroll_col, not bare lv.obj: without a flex column every pack/hit
+    # button stacked at (0,0) and only the last one showed
+    packs = dk.scroll_col(body, 260, H - 110, gap=8)
+    hits = dk.scroll_col(body, w - 320, H - 110, gap=8)
 
     def _pick(key, btn):
         _s['swap_sel'] = key
