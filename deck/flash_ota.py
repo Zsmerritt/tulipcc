@@ -20,206 +20,19 @@ the serial path (seconds vs ~20 minutes) -- serial carries only the small
 command scripts. The on-device progress modal (fwprogress) tracks the
 download. If there's no network path, it says so and points at flash_fw.py
 (the chunked serial fallback).
+
+The serial transport, device-side write-verify-retry pull and HTTP image
+server are shared with flash_pingpong.py via deck/flashlib.py.
 """
 
 import hashlib
-import http.server
-import os
-import shutil
-import socket
-import subprocess
 import sys
-import tempfile
-import threading
 import time
 
 import functools
 print = functools.partial(print, flush=True)
-from functools import partial
 
-# Device-side updater. Placeholders (__BASE__/__SHA__/__SIZE__) are replaced
-# textually -- no %-format, so the device code can use % freely.
-DEVICE_OTA = """
-import hashlib, binascii
-from esp32 import Partition
-import tuliprequests as ur
-try:
-    import fwprogress
-    fwprogress.show(100, title='Firmware update (OTA)')
-except Exception:
-    fwprogress = None
-SEC = 4096
-SIZE = __SIZE__
-ota = Partition(Partition.RUNNING).get_next_update()
-assert SIZE <= ota.info()[3], 'image larger than partition'
-r = ur.get('__BASE__/fw.bin')
-h = hashlib.sha256()
-block = 0
-total = (SIZE + SEC - 1) // SEC
-# ACCUMULATE to exact sectors: the socket can return SHORT reads mid-
-# stream (not just at EOF), and padding those to a full block misaligned
-# every byte after -- download hash fine, partition content wrong.
-buf = b''
-vbuf = bytearray(SEC)
-retried = 0
-def wr(blk, w):
-    # WRITE-VERIFY-RETRY: sustained multi-MB writes on this part land a
-    # scatter of bad sectors that single-block writes don't (seen live:
-    # 10/13 regions mismatched with a hash-verified download). Verify
-    # every block; rewrite up to 3x; report what it took.
-    global retried
-    for attempt in range(4):
-        ota.writeblocks(blk, w)
-        ota.readblocks(blk, vbuf)
-        if bytes(vbuf) == w:
-            return attempt
-    print('BADBLK:%d' % blk)
-    return -1
-for chunk in r.generate(chunk_size=SEC):
-    h.update(chunk)
-    buf += chunk
-    while len(buf) >= SEC:
-        if wr(block, buf[:SEC]):
-            retried += 1
-        buf = buf[SEC:]
-        block += 1
-        if fwprogress and block % 32 == 0:
-            try:
-                fwprogress.update(int(96 * block / total))
-            except Exception:
-                pass
-r.close()
-if buf:
-    if wr(block, buf + bytes(b'\\xff' * (SEC - len(buf)))):
-        retried += 1
-    block += 1
-print('RETRIED:%d' % retried)
-got = binascii.hexlify(h.digest()).decode()
-print('DL:' + got)
-assert got == '__SHA__', 'download hash mismatch'
-if fwprogress:
-    try:
-        fwprogress.stage('Verifying flash...')
-    except Exception:
-        pass
-rh = hashlib.sha256()
-buf = bytearray(SEC)
-left = SIZE
-for i in range(block):
-    ota.readblocks(i, buf)
-    take = SEC if left >= SEC else left
-    rh.update(bytes(buf[0:take]))
-    left -= take
-if binascii.hexlify(rh.digest()).decode() != '__SHA__':
-    # ADVISORY only: sustained bulk re-reads on this 120MHz octal-flash
-    # bin proved UNSTABLE (two consecutive read passes disagreed with
-    # each other while per-block write-verify passed 809/809). The
-    # per-block verify above is the integrity gate; the ESP bootloader
-    # re-validates the image sha at boot and rolls back on failure.
-    print('OTA:BULK-REVERIFY-FLAKY (per-block verify + boot validation govern)')
-print('OTA:OK')
-ota.set_boot()
-print('OTA:BOOTSET')
-if fwprogress:
-    try:
-        fwprogress.done()
-    except Exception:
-        pass
-"""
-
-
-def sh(port, args, timeout=300):
-    """Run `exec <code>` on the device WITHOUT resetting it.
-
-    mpremote's port-open pulses DTR/RTS, which power-cycles CH340-wired
-    Tulips -- the IP query then raced the reboot it had itself caused and
-    reported 'not on Wi-Fi' on a connected device. Opens with DTR/RTS held
-    low (no pulse), raw-REPL, exec, close. Only 'exec' is used here."""
-    args = [a for a in args if a != '--no-follow']   # mpremote-ism, ignored
-    assert args and args[0] == 'exec'
-    code = args[1]
-    try:
-        import serial
-    except ImportError:
-        cp = subprocess.run(
-            [sys.executable, '-m', 'mpremote', 'connect', port, 'resume'] + args,
-            capture_output=True, text=True, timeout=timeout)
-        return (cp.stdout or '') + (cp.stderr or '')
-    s = serial.Serial()
-    s.port = port
-    s.baudrate = 115200
-    s.timeout = 0.5
-    s.dtr = False
-    s.rts = False
-    s.open()
-    s.dtr = False
-    s.rts = False
-    try:
-        s.write(b'\r\x03')
-        time.sleep(0.1)
-        s.write(b'\x03')       # twice: a busy MP task can eat the first ^C
-        time.sleep(0.15)
-        s.reset_input_buffer()
-        s.write(b'\x01')
-        buf = b''
-        t0 = time.time()
-        while time.time() - t0 < 5 and not buf.endswith(b'raw REPL; CTRL-B to exit\r\n>'):
-            c = s.read(1)
-            if c:
-                buf += c
-        # RAW-PASTE mode (windowed flow control): plain raw REPL has none
-        # and silently DROPS BYTES past a few KB of payload -- the OTA
-        # pull script arrived on-device with a SyntaxError mid-line.
-        s.write(b'\x05A\x01')
-        hdr = b''
-        t0 = time.time()
-        while time.time() - t0 < 5 and not hdr.endswith(b'R\x01'):
-            c = s.read(1)
-            if c:
-                hdr += c
-        win = int.from_bytes(s.read(2), 'little') or 256
-        data = code.encode()
-        remaining, i = win, 0
-        while i < len(data):
-            while remaining <= 0:
-                c = s.read(1)
-                if c == b'\x01':
-                    remaining += win
-                elif c == b'':
-                    raise RuntimeError('raw-paste flow-control timeout')
-            n = min(remaining, len(data) - i)
-            s.write(data[i:i + n])
-            i += n
-            remaining -= n
-        s.write(b'\x04')
-        t0 = time.time()
-        while time.time() - t0 < 5:
-            c = s.read(1)
-            if c == b'\x04':
-                break              # end-of-data ack; output follows
-        out = b''
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            chunk = s.read(4096)
-            if chunk:
-                out += chunk
-            if out.endswith(b'\x04>'):
-                break
-        s.write(b'\x02')
-    finally:
-        s.close()
-    if b'OK' in out[:10]:
-        out = out.split(b'OK', 1)[1]
-    return out.replace(b'\x04', b'\n').decode('utf-8', 'replace')
-
-
-def tagged(out, tag):
-    """Last line starting with `tag` -- immune to console chatter."""
-    val = None
-    for line in (out or '').replace('\r', '').splitlines():
-        if line.startswith(tag):
-            val = line[len(tag):]
-    return val
+from flashlib import sh, tagged, build_ota_code, image_server
 
 
 def main():
@@ -268,23 +81,10 @@ def main():
         return 3
     print('device ip: %s' % dev_ip)
 
-    # 2. our IP on the network route that reaches the device
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect((dev_ip, 1))
-    host_ip = s.getsockname()[0]
-    s.close()
-    base = 'http://%s:%d' % (host_ip, http_port)
-    print('serving from: %s' % base)
-
-    # 3. temp server hosting the image
-    tmp = tempfile.mkdtemp(prefix='tulip_ota_')
-    try:
-        shutil.copyfile(image, os.path.join(tmp, 'fw.bin'))
-        with open(os.path.join(tmp, 'ping.txt'), 'w') as f:
-            f.write('pong')
-        handler = partial(http.server.SimpleHTTPRequestHandler, directory=tmp)
-        httpd = http.server.ThreadingHTTPServer(('0.0.0.0', http_port), handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    # 2 + 3. temp server hosting the image; our IP is the route to the device
+    with image_server(image, http_port) as srv:
+        base = srv.base_for(dev_ip)
+        print('serving from: %s' % base)
 
         # 4. prove the DEVICE can reach us before flashing anything
         out = sh(port, ['exec', (
@@ -305,10 +105,9 @@ def main():
             return 4
         print('device can reach the server; starting OTA pull')
 
-        # 5. device pulls, writes, verifies, sets boot
-        code = (DEVICE_OTA.replace('__BASE__', base)
-                          .replace('__SHA__', sha)
-                          .replace('__SIZE__', str(len(data))))
+        # 5. device pulls, writes, verifies, sets boot (default target: the
+        # inactive OTA slot -- exactly as this tool always did)
+        code = build_ota_code(base, sha, len(data))
         out = sh(port, ['exec', code], timeout=900)
         # tagged-prefix parse like every other decision point: chatter can
         # interleave with (or split) plain substrings; the LAST 'OTA:'-tagged
@@ -328,10 +127,7 @@ def main():
         sh(port, ['exec', '--no-follow', 'import machine; machine.reset()'], 30)
         print('DONE -- device rebooting into the new firmware')
         time.sleep(1)
-        httpd.shutdown()
         return 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == '__main__':

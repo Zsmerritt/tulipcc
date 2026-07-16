@@ -1772,3 +1772,214 @@ def test_build_list_bails_on_freed_body():
     instrument._build_list()          # must swallow, not propagate a hard crash
     instrument._s['alive'] = False
     instrument._build_list()          # alive gate: never even calls clean()
+
+
+# ---------------------------------------------------------------------------
+# flashmode.py / flashlib.py -- ping-pong dual-frequency flash update (pure
+# logic, faked esp32/NVS/Partition/machine). No hardware, no device calls.
+# ---------------------------------------------------------------------------
+def _install_flash_mocks(running='ota_1', slots=('ota_0', 'ota_1'),
+                         nvs_seed=None):
+    """Fake esp32 (NVS + Partition) and machine so flashmode runs on a host.
+
+    Returns a dict of handles the tests assert against: the NVS store, and the
+    recorded set_boot / reset targets.
+    """
+    rec = {'nvs': dict(nvs_seed or {}), 'boot': None, 'reset': 0}
+
+    esp32 = types.ModuleType('esp32')
+
+    class NVS:
+        def __init__(self, ns):
+            self.ns = ns
+
+        def get_i32(self, k):
+            key = (self.ns, k)
+            if key not in rec['nvs']:
+                raise OSError('NVS key not found')     # MicroPython behaviour
+            return rec['nvs'][key]
+
+        def set_i32(self, k, v):
+            rec['nvs'][(self.ns, k)] = int(v)
+
+        def erase_key(self, k):
+            rec['nvs'].pop((self.ns, k), None)
+
+        def commit(self):
+            pass
+
+    class Partition:
+        TYPE_APP = 0
+        RUNNING = 1
+
+        def __init__(self, which=None, label=None):
+            self.label = running if which == Partition.RUNNING else label
+
+        def info(self):
+            return (0, 0, 0x10000, 0x390000, self.label, False)
+
+        def get_next_update(self):
+            other = [s for s in slots if s != self.label][0]
+            return Partition(label=other)
+
+        def set_boot(self):
+            rec['boot'] = self.label
+
+        @staticmethod
+        def find(ptype, label=None):
+            return [Partition(label=label)] if label in slots else []
+
+    esp32.NVS = NVS
+    esp32.Partition = Partition
+    sys.modules['esp32'] = esp32
+
+    machine = types.ModuleType('machine')
+
+    def _reset():
+        rec['reset'] += 1
+    machine.reset = _reset
+    sys.modules['machine'] = machine
+    return rec
+
+
+def _fresh_flashmode(**mock_kw):
+    _install_hw_mocks()                 # provides a 'tulip' module
+    # a build-identity default: no compiled binding, no stamped constant
+    sys.modules['tulip'].__dict__.pop('flash_freq', None)
+    sys.modules.pop('flashbuild', None)
+    rec = _install_flash_mocks(**mock_kw)
+    sys.modules.pop('flashmode', None)
+    fm = importlib.import_module('flashmode')
+    return fm, rec
+
+
+def test_flashmode_imports_on_host_without_esp32():
+    # module must import even with NO esp32/machine present (host test env)
+    for m in ('esp32', 'machine', 'flashbuild'):
+        sys.modules.pop(m, None)
+    _install_hw_mocks()
+    sys.modules['tulip'].__dict__.pop('flash_freq', None)
+    sys.modules.pop('flashmode', None)
+    fm = importlib.import_module('flashmode')
+    assert fm.get_flash_pending() == 0            # no NVS -> not pending
+    assert fm.set_flash_pending(1) is False       # no NVS -> fail-soft
+    assert fm.clear_flash_pending() is False
+    assert fm.find_partition('ota_0') is None      # no Partition -> None
+    assert fm.should_enter_flash_mode() is False   # never hijacks
+
+
+def test_is_flasher_build_via_tulip_binding():
+    fm, _ = _fresh_flashmode()
+    sys.modules['tulip'].flash_freq = lambda: '80m'   # compiled binding wins
+    assert fm.flash_freq() == '80m'
+    assert fm.is_flasher_build() is True
+    sys.modules['tulip'].flash_freq = lambda: '120m'
+    assert fm.is_flasher_build() is False
+
+
+def test_is_flasher_build_via_flashbuild_constant():
+    fm, _ = _fresh_flashmode()
+    fb = types.ModuleType('flashbuild')
+    fb.FLASH_FREQ = '80m'
+    sys.modules['flashbuild'] = fb
+    assert fm.is_flasher_build() is True
+    fb.FLASH_FREQ = '120m'
+    assert fm.is_flasher_build() is False
+
+
+def test_is_flasher_build_defaults_to_play():
+    # neither a binding nor a stamped constant -> unknown -> play (never flash)
+    fm, _ = _fresh_flashmode()
+    assert fm.flash_freq() == '120m'
+    assert fm.is_flasher_build() is False
+
+
+def test_flashmode_nvs_roundtrip():
+    fm, rec = _fresh_flashmode()
+    assert fm.get_flash_pending() == 0
+    assert fm.set_flash_pending(1) is True
+    assert fm.get_flash_pending() == 1
+    assert rec['nvs'][('deckboot', 'flash_pending')] == 1
+    assert fm.clear_flash_pending() is True
+    assert fm.get_flash_pending() == 0
+
+
+def test_flashmode_slot_helpers_by_label():
+    fm, _ = _fresh_flashmode(running='ota_0')
+    assert fm.running_label() == 'ota_0'
+    assert fm.flasher_partition().label == 'ota_0'
+    assert fm.play_partition().label == 'ota_1'
+    assert fm.find_partition('nope') is None
+
+
+def test_should_enter_flash_mode_gating():
+    # flasher build + pending -> yes
+    fm, _ = _fresh_flashmode(nvs_seed={('deckboot', 'flash_pending'): 1})
+    sys.modules['tulip'].flash_freq = lambda: '80m'
+    assert fm.should_enter_flash_mode() is True
+    # flasher build but NOT pending -> no (functional fallback deck)
+    fm, _ = _fresh_flashmode()
+    sys.modules['tulip'].flash_freq = lambda: '80m'
+    assert fm.should_enter_flash_mode() is False
+    # play build with a stray pending flag -> no (normal play untouched)
+    fm, _ = _fresh_flashmode(nvs_seed={('deckboot', 'flash_pending'): 1})
+    sys.modules['tulip'].flash_freq = lambda: '120m'
+    assert fm.should_enter_flash_mode() is False
+
+
+def test_request_update_arms_flasher():
+    fm, rec = _fresh_flashmode(running='ota_1')     # on the play slot
+    assert fm.request_update() is True
+    assert rec['nvs'][('deckboot', 'flash_pending')] == 1
+    assert rec['boot'] == 'ota_0'                    # set_boot -> flasher
+    assert rec['reset'] == 0                         # request_update never resets
+
+
+def test_arm_and_reboot_resets_after_arming():
+    fm, rec = _fresh_flashmode(running='ota_1')
+    assert fm.arm_and_reboot() is True
+    assert rec['boot'] == 'ota_0'
+    assert rec['reset'] == 1
+
+
+def test_finalize_to_play_clears_and_boots_play():
+    fm, rec = _fresh_flashmode(running='ota_0',       # booted in the flasher
+                              nvs_seed={('deckboot', 'flash_pending'): 1})
+    assert fm.finalize_to_play() is True
+    assert fm.get_flash_pending() == 0                # flag cleared
+    assert rec['boot'] == 'ota_1'                     # set_boot -> play
+    assert rec['reset'] == 1
+
+
+def test_request_update_fail_soft_without_flasher_slot():
+    # no matching slots -> cannot arm; must NOT set the flag or reboot
+    fm, rec = _fresh_flashmode(running='ota_1', slots=('ota_1',))
+    assert fm.request_update() is False
+    assert ('deckboot', 'flash_pending') not in rec['nvs']
+    assert rec['boot'] is None
+
+
+# --- flashlib.py: device-code builder is shared + parametrised ---
+def test_build_ota_code_default_matches_flash_ota():
+    import flashlib
+    code = flashlib.build_ota_code('http://h:1', 'a' * 64, 4096)
+    assert '__' not in code                            # every placeholder filled
+    # flash_ota's historical target + modal title, byte-for-byte
+    assert 'ota = Partition(Partition.RUNNING).get_next_update()' in code
+    assert "title='Firmware update (OTA)'" in code
+    assert "SIZE = 4096" in code
+    assert "ur.get('http://h:1/fw.bin')" in code
+
+
+def test_build_ota_code_pingpong_targets_play_by_label():
+    import flashlib
+    import flashmode as fm
+    target = "Partition.find(Partition.TYPE_APP, label=%r)[0]" % fm.PLAY_LABEL
+    code = flashlib.build_ota_code('http://h:2', 'b' * 64, 8192,
+                                   target=target, title='Safe update (80MHz)')
+    assert '__' not in code
+    assert ("ota = Partition.find(Partition.TYPE_APP, label='ota_1')[0]"
+            in code)
+    assert "title='Safe update (80MHz)'" in code
+    # the proven write-verify-retry loop is intact in the shared copy
+    assert 'def wr(blk, w):' in code and "print('OTA:BOOTSET')" in code

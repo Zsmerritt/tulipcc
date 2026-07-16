@@ -15,6 +15,22 @@ if '/user' not in sys.path:
 def _boot():
     import tulip
 
+    # PING-PONG flash mode (see deck/flashmode.py, deck/PINGPONG.md): if THIS
+    # is the 80MHz flasher build AND an update was armed (NVS flash_pending),
+    # do NOT boot the deck UI. Bring up Wi-Fi and idle so the host can stream
+    # the new play image into the play slot at 80MHz -- the thermally safe
+    # write path. This is checked FIRST and is completely fail-soft: any error
+    # (no esp32/NVS, unknown build, missing slots) falls through to a normal
+    # boot, and on the 120MHz play image should_enter_flash_mode() is always
+    # False so normal-play behaviour is untouched.
+    try:
+        import flashmode
+        if flashmode.should_enter_flash_mode():
+            flashmode.enter_flash_mode()
+            return
+    except Exception as e:
+        print("deck: flash mode check failed:", e)
+
     # FIRST, before anything slow or interruptible (Wi-Fi join, config apply):
     # the task-bar/launcher patch is what gives the stock REPL screen its
     # "Home" button. A boot interrupted by a host serial tool used to strand

@@ -420,10 +420,19 @@ def _build_system(body, screen):
 
     r = dk.row(body, h=64)
     dk.label(r, "Firmware", color=dk.TEXT)
+    fwg = dk.hgroup(r, w=420, h=48)
     # (stays SURFACE2 per X-5 -- the rarest, riskiest action shouldn't be
     # the loudest element in Settings)
-    dk.button(r, "Upgrade", w=150, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+    dk.button(fwg, "Upgrade", w=150, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
+    # Ping-pong "safe update": reboot into the 80MHz flasher so the next image
+    # is written at a thermally safe flash clock (see deck/PINGPONG.md). Two-tap
+    # armed like Factory reset because it reboots the deck; the host tool
+    # (flash_pingpong.py) then streams the new play image. Flash mode
+    # auto-recovers to play if no host shows up, so a mis-tap can't strand the
+    # deck.
+    dk.button(fwg, "Safe update", w=170, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+        cb=(lambda st={'armed': False}: (lambda e: _safe_update(screen, st)))())
 
     # Power: Restart (benign, one tap) vs Factory reset (destructive, LAST
     # row, red treatment, two-tap arm -- nothing sits below it).
@@ -548,3 +557,30 @@ def _upgrade(screen):
         return
     dk.toast(screen, "Switch to Terminal for upgrade prompts", dk.PURPLE)
     tulip.defer(lambda x: tulip.upgrade(), 0, 400)
+
+
+def _safe_update(screen, st):
+    """Two-tap: arm the ping-pong update and reboot into the 80MHz flasher.
+
+    First tap warns; second tap calls flashmode.arm_and_reboot() (sets the NVS
+    flag, set_boot(flasher), reset). Fully guarded -- if flashmode/NVS isn't
+    available the deck is NOT rebooted, so nothing can be stranded.
+    """
+    if not st.get('armed'):
+        st['armed'] = True
+        dk.toast(screen, "Tap again: reboots into safe-update mode",
+                 dk.PURPLE)
+        return
+    try:
+        import flashmode
+        # arm first (no reset yet) so a failure is visible instead of a reboot
+        # into nowhere
+        if not flashmode.request_update():
+            dk.toast(screen, "Safe update unavailable on this build", dk.RED)
+            st['armed'] = False
+            return
+        dk.toast(screen, "Rebooting into safe-update mode...", dk.PURPLE)
+        tulip.defer(lambda x: flashmode._reset(), 0, 600)
+    except Exception:
+        dk.toast(screen, "Safe update unavailable on this build", dk.RED)
+        st['armed'] = False
