@@ -199,7 +199,7 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
             amy.send(synth=t['synth'], bus=t['bus'])
             base = amyparams.fx_bus_baseline(t['pfx'])
             amy.send(bus=t['bus'], chorus=base['chorus'], echo=base['echo'],
-                     reverb_send=t.get('send', 1.0))
+                     reverb_send=t.get('send', 0.0))
             amy.send(synth=t['synth'], eq=base['eq'])
             over = amyparams.fx_send_strings(fx, t['pfx'])
             if over:
@@ -210,11 +210,13 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
         except Exception:
             pass
     # Reverb is the shared per-device ROOM: one master reverb on the mixed
-    # output (AMY_MASTER_REVERB), configured once without a bus.
+    # output (AMY_MASTER_REVERB), configured once without a bus. Sends
+    # default DRY (0 -- built-in patches bake no reverb, so dry matches the
+    # patch); when an instrument's send is raised and the user never
+    # configured the room, the room auto-enables at a sensible default so
+    # the send slider is audible by itself.
     try:
-        rv = amyparams.fx_reverb_string(fx)
-        if rv is not None:
-            amy.send(reverb=rv)
+        amy.send(reverb=_room_string(fx, targets))
     except Exception:
         pass
     # Silence per-instrument FX on buses that fell out of use.
@@ -236,6 +238,30 @@ def reapply_params(iid):
         return
     instr = deckcfg.get_instrument(iid) or {}
     _apply_params(syn, instr.get('params', {}))
+
+
+def _room_string(fx, targets):
+    """The device room's wire string: the user's FX settings when they set
+    any, else a default audible room while ANY instrument sends into it,
+    else off."""
+    import amyparams
+    user_set = bool(fx and isinstance(fx.get('reverb'), dict)
+                    and fx['reverb'])
+    if not user_set and any((t.get('send') or 0) > 0 for t in targets):
+        return '0.35,0.85,0.5'
+    return amyparams.fx_reverb_string(fx)
+
+
+def refresh_room():
+    """Re-assert the device room from current FX config + live sends -- the
+    rack's Reverb send slider calls this so sliding up from dry is audible
+    immediately (auto-room) without a rebuild."""
+    try:
+        import amy
+        fx = deckcfg.device_fx('internal')
+        amy.send(reverb=_room_string(fx, _state.get('fx_targets') or ()))
+    except Exception:
+        pass
 
 
 def reapply_fx():
@@ -436,7 +462,9 @@ def _start_once():
                     _state['fx_targets'].append(
                         {'bus': min(_next_bus, 3), 'synth': sn, 'pfx': pfx,
                          'iid': instr['id'],
-                         'send': instr.get('reverb_send', 1.0)})
+                         # default DRY: built-in patches bake no reverb, so
+                         # the send starts where the patch is (slider left)
+                         'send': instr.get('reverb_send', 0.0)})
                     _next_bus += 1
             route[0].append(instr['id'])
             # MPE only when the global gate AND this instrument both enable it.

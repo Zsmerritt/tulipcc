@@ -303,11 +303,9 @@ def _build(body, right, cw, screen):
         _fontbtns.append((b, code))
 
     # ================= RIGHT column =================
-    # --- Menu / task-bar button size (drives ui_patch) ---
-    _val_slider(right, 'ui_btn', "Menu button size", cfg.get('ui_btn', 60), 40, 104,
-                live=_uiscale_live,
-                commit=lambda v: deckcfg.set_value('ui_btn', v),
-                color=dk.TEAL, slider_w=cw - 250)
+    # (the "Menu button size" slider is gone: with the deck shell everywhere
+    # it only resized the Back button on launched stock apps -- not worth a
+    # Settings row. ui_btn in config still applies at boot if present.)
 
     # --- Rendering (smoother UI) ---
     r = dk.row(right, h=88)
@@ -360,16 +358,33 @@ def _build(body, right, cw, screen):
         cb=lambda e: tulip.run('calib'))
     dk.button(g, "Upgrade", w=96, h=48, bg=dk.PURPLE, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
-    # Factory reset = wipe the deck config and reboot: setup_done clears, so
-    # the welcome/setup flow runs again -- the software equivalent of "just
-    # flashed". Two taps to arm, like the Files delete.
+    # Two clearly-separated actions (they used to share one ambiguous
+    # "Reset" button):
+    #   Restart      = reboot only, nothing is erased. Single tap.
+    #   Factory reset = wipe the deck config AND reboot: setup_done clears,
+    #                   so the welcome/setup flow runs again -- the software
+    #                   equivalent of "just flashed". Two taps to arm.
+    r2 = dk.row(right, h=64)
+    dk.label(r2, "Power", color=dk.TEXT)
+    g2 = dk.hgroup(r2, w=cw - 110, h=48)
+
+    def _restart(e):
+        try:
+            import machine
+            machine.reset()
+        except Exception:
+            pass
+    dk.button(g2, "Restart", w=130, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+              cb=_restart)
+
     _frstate = {'armed': False}
 
     def _freset(e, btn):
         if not _frstate['armed']:
             _frstate['armed'] = True
             btn.set_style_bg_color(dk.c(dk.RED), 0)
-            dk.toast(screen, "Tap again to wipe config + reboot", dk.RED)
+            dk.toast(screen, "Tap again: ERASES all settings + reboots",
+                     dk.RED)
             return
         try:
             import os
@@ -381,7 +396,8 @@ def _build(body, right, cw, screen):
             machine.reset()
         except Exception:
             pass
-    frbtn = dk.button(g, "Reset", w=88, h=48, bg=dk.SURFACE2, font=dk.FONT_S)
+    frbtn = dk.button(g2, "Factory reset", w=190, h=48, bg=dk.SURFACE2,
+                      font=dk.FONT_S)
     frbtn.add_event_cb(
         (lambda b: (lambda e: _freset(e, b)
                     if e.get_code() == lv.EVENT.CLICKED else None))(frbtn),

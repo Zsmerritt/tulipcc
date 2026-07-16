@@ -312,6 +312,14 @@ def slider(parent, value, vmin, vmax, w=340, cb=None, color=ACCENT, h=22,
     s.set_style_bg_color(c(MUTED), lv.PART.KNOB | lv.STATE.DISABLED)
     s.set_range(vmin, vmax)
     s.set_value(int(value), lv.ANIM.OFF)
+    # Grow the TOUCH area well beyond the drawn track (visuals unchanged):
+    # every slider was hard to grab -- the finger has to land ON the thin
+    # track/knob. ext_click_area accepts presses this many px around the
+    # widget, so a near-miss still grabs the slider.
+    try:
+        s.set_ext_click_area(28)
+    except Exception:
+        pass
     if cb is not None:
         s.add_event_cb(cb, lv.EVENT.VALUE_CHANGED, None)
     if on_release is not None:

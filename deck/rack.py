@@ -599,6 +599,7 @@ def _build_edit(parent, shell):
                         amy.send(bus=t['bus'], reverb_send=val)
                         t['send'] = val
                         break
+                forwarder.refresh_room()   # auto-room: audible from dry
             except Exception:
                 pass
         # Value-card layout (the MPE pattern): title + live readout on the
@@ -618,36 +619,27 @@ def _build_edit(parent, shell):
         except Exception:
             pass
         if cur_send is None:
-            cur_send = instr.get('reverb_send', 1.0)
-        # The send only matters while the device ROOM is on -- built-in
-        # patches bake NO reverb (verified: zero 'h' params in patches.h),
-        # so with the room off this slider changes nothing audible. Say so
-        # in the readout instead of letting it feel broken.
-        try:
-            import amyparams as _ap
-            _rvfx = deckcfg.device_fx('internal') or {}
-            _room_on = bool(_ap.fx_value(_rvfx, {}, 'reverb', 'level'))
-        except Exception:
-            _room_on = True
+            # default DRY, matching the patch: built-in patches bake no
+            # reverb, so the slider starts all the way left. Raising it
+            # auto-enables the device room (forwarder.refresh_room), so
+            # this one slider IS the instrument's reverb amount.
+            cur_send = instr.get('reverb_send', 0.0)
         card = lv.obj(right)
         card.set_width(lv.pct(100))
         card.set_height(108)
         dk._flat(card, bg=dk.SURFACE)
         tl = dk.label(card, "Reverb send", color=dk.TEXT)
         tl.align(lv.ALIGN.TOP_LEFT, 16, 12)
-        rd = dk.label(card, ("%d%%" % int(cur_send * 100)) if _room_on
-                      else "room off -- set Reverb in FX",
-                      color=(dk.TEAL if _room_on else dk.MUTED),
+        rd = dk.label(card, "%d%%" % int(cur_send * 100), color=dk.TEAL,
                       font=dk.FONT_S)
         rd.align(lv.ALIGN.TOP_RIGHT, -16, 14)
 
         def _send_cb(e, commit):
             v = e.get_target_obj().get_value()
-            if _room_on:
-                try:
-                    rd.set_text("%d%%" % v)
-                except Exception:
-                    pass
+            try:
+                rd.set_text("%d%%" % v)
+            except Exception:
+                pass
             _set_send(v, commit)
         sl = dk.slider(card, int(cur_send * 100), 0, 100, w=lv.pct(90),
                        h=28, cb=lambda e: _send_cb(e, False),
