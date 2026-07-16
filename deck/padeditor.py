@@ -211,8 +211,15 @@ def swap_panel(parent, shell=None):
         hits.clean()
         _s['swap_btn'] = None
         keys = synthkits.pack_hits(pack)
+        seen = {}
         for key in keys[:150]:
-            b = dk.button(hits, synthkits.hit_name(key), w=lv.pct(96), h=52,
+            nm = synthkits.hit_name(key)
+            # suffix-stripping can collapse distinct hits to one display
+            # name; number the repeats (round-2 F-8 nit)
+            seen[nm] = seen.get(nm, 0) + 1
+            if seen[nm] > 1:
+                nm = "%s (%d)" % (nm, seen[nm])
+            b = dk.button(hits, nm, w=lv.pct(96), h=52,
                           bg=dk.SURFACE, font=dk.FONT_S)
             b.add_event_cb(
                 (lambda k: (lambda e: _pick(k, e.get_target_obj())

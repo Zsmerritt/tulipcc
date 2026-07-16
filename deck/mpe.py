@@ -43,6 +43,18 @@ def _members_str(instr):
     return s
 
 
+def _eff_members(instr):
+    """Member count that actually fits below ch16 (same clamp as above)."""
+    m = instr.get('mpe', {})
+    n = m.get('members', 15)
+    master = instr.get('channel', 1)
+    if master == 16:
+        lo, hi = max(1, 16 - n), 15
+    else:
+        lo, hi = master + 1, min(16, master + n)
+    return hi - lo + 1
+
+
 def _apply():
     deckcfg.apply_all()
     instr = _inst()
@@ -71,7 +83,11 @@ def _apply_dep_state(on):
     they rendered fully live with the gate off (UX-REVIEW-6 M2)."""
     for r in _w.get('dep_rows', ()):
         try:
-            r.set_style_opa(255 if on else 102, 0)
+            # No opa blend: 40% opa on RGB332 muddied the DISABLED slider
+            # colors into olive (fresh-eyes F-4) and costs a per-pixel
+            # blend. Mute the inherited text instead; the controls get
+            # flat DISABLED colors from deckui.
+            r.set_style_text_color(dk.c(dk.TEXT if on else dk.MUTED), 0)
         except Exception:
             pass
         _disable_tree(r, not on)
@@ -188,8 +204,10 @@ def _render_strip():
                                              instr.get('channel', 1),
                                              m.get('members', 15), active, True)
         if fits:
+            # clamped count: the raw setting contradicted the "(N of M
+            # fit)" line above it (fresh-eyes F-10 residual)
             msg, colr = ("Zone fits: master ch%d + %d members"
-                         % (instr.get('channel', 1), m.get('members', 15)),
+                         % (instr.get('channel', 1), _eff_members(instr)),
                          dk.MUTED)
         else:
             msg, colr = ("%s Zone overlaps ch %s: shrink it or move those"

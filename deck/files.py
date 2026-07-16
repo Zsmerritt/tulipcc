@@ -130,10 +130,12 @@ def _select(path, name, btn):
     # the red we just set (fresh-eyes F-6). Pin the cached enabled color.
     _BTN_ON_BG['delbtn'] = dk.c(dk.RED)
     _s['delbtn'].set_style_bg_color(dk.c(dk.RED), 0)
-    # per-file capability: Run only for .py, Edit only for small text files
+    # per-file capability: Run only for .py, Edit only for small text files,
+    # Delete never arms for protected runtime modules (round-2 F-11 nit:
+    # it rendered enabled-red and only refused on tap)
     _set_btn('run', path.endswith('.py'))
     _set_btn('edit', _editable(path))
-    _set_btn('delbtn', True)
+    _set_btn('delbtn', not _is_system_module(path))
 
 
 def _open(path):

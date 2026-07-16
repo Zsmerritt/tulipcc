@@ -282,9 +282,15 @@ def _paint_active_tab(tv):
         for i in range(bar.get_child_count()):
             btn = bar.get_child(i)
             on = (i == act)
-            btn.set_style_bg_color(dk.c(dk.ACCENT if on else dk.SURFACE2), 0)
-            btn.set_style_text_color(
-                dk.c(dk.WHITE if on else dk.PLACEHOLDER), 0)
+            bg = dk.c(dk.ACCENT if on else dk.SURFACE2)
+            fg = dk.c(dk.WHITE if on else dk.PLACEHOLDER)
+            # The theme's exact CHECKED-state style outranks local
+            # default-state props (round-2 F-3: maroon/teal active tab),
+            # so pin the same colors at CHECKED as well.
+            for sel in (0, lv.STATE.CHECKED):
+                btn.set_style_bg_color(bg, sel)
+                btn.set_style_text_color(fg, sel)
+                btn.set_style_bg_opa(lv.OPA.COVER, sel)
     except Exception:
         pass
 

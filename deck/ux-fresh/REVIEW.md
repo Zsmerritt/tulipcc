@@ -1,5 +1,19 @@
 # Tulip "deck" UI — UX Review (fresh crawl)
 
+> **Round 2 verification (v2):** every finding re-verified live on-device after the
+> fix round; per-finding `status` + `v2_evidence`/`v2_note` are in `findings.json`,
+> screenshots in `shots/v2_*.png`. Verdicts: **FIXED** F-1, F-2, F-5, F-6, F-7,
+> F-8, F-11, F-13, F-15 · **NO-CHANGE-NEEDED** F-9 (starred = bright yellow,
+> verified) · **PARTIAL** F-10 (status string clamps to "3-16 (14 of 15 fit)";
+> the channel-map footer still says "Zone fits: … + 15 members") ·
+> **REGRESSED** F-3 (active tab now renders the LVGL default-theme MAROON with
+> teal text instead of accent+white — `_paint_active_tab` sets local colors at the
+> default state selector, which the theme's exact CHECKED-state match outranks;
+> set them at `lv.STATE.CHECKED` too) · **NOT-FIXED** F-4 (deckui's DISABLED
+> slider styles are deployed but mpe.py still dims dependent cards via
+> `set_style_opa(102)` — the 40% blend on RGB332 is the olive/black source),
+> F-12 (deferred), F-14, F-16 (not in this round's scope).
+
 Reviewer: senior UX designer (touchscreen / machine-controller displays).
 Target: the `deck/` home-shell app on the physical Tulip (TULIP4_R11), 1024x600
 RGB332 on an ESP32-S3 in DIRECT render mode. Reviewed live over the qexec/qget
