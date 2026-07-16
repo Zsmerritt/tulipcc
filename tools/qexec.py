@@ -6,8 +6,16 @@ deck and races its ~35s boot (the all-night plague). This opens COM11 with
 DTR/RTS held LOW from the start (no pulse), enters raw REPL, runs the
 script, returns output. Usage:
 
-    python qexec.py script.py        # run a file
-    python qexec.py - "print(1+1)"   # run an inline snippet
+    python qexec.py script.py           # run a file
+    python qexec.py - "print(1+1)"      # run an inline snippet
+    python qexec.py script.py TAG:      # only lines starting TAG: reach
+                                        # stdout; the rest (chatter, boot
+                                        # noise) goes to stderr
+
+The optional TAG filter is the serial-protocol convention (see
+deck/SERIAL-PROTOCOL.md): scripts print their meaningful results with a
+unique prepended type, callers listen only for that type, and console
+chatter can never corrupt a decision.
 """
 import sys
 import time
@@ -61,8 +69,10 @@ def exec_code(s, code):
 def main():
     if sys.argv[1] == '-':
         code = sys.argv[2]
+        tag = sys.argv[3] if len(sys.argv) > 3 else None
     else:
         code = open(sys.argv[1], 'rb').read()
+        tag = sys.argv[2] if len(sys.argv) > 2 else None
     s = open_port()
     try:
         out = exec_code(s, code)
@@ -75,9 +85,20 @@ def main():
     parts = body.split(b'\x04')
     stdout = parts[0] if parts else b''
     stderr = parts[1] if len(parts) > 1 else b''
-    sys.stdout.write(stdout.decode('utf-8', 'replace'))
+    text = stdout.decode('utf-8', 'replace')
+    if tag:
+        # tagged-listener mode: only exactly-typed lines are results;
+        # everything else on the shared console is chatter -> stderr
+        for line in text.replace('\r', '').splitlines():
+            if line.startswith(tag):
+                sys.stdout.write(line + '\n')
+            elif line.strip():
+                sys.stderr.write(line + '\n')
+    else:
+        sys.stdout.write(text)
     if stderr.strip():
-        sys.stdout.write('\n[stderr] ' + stderr.decode('utf-8', 'replace'))
+        sys.stderr.write('\n[device stderr] '
+                         + stderr.decode('utf-8', 'replace'))
         sys.exit(1)
 
 
