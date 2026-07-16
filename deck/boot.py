@@ -64,6 +64,23 @@ def _boot():
         except Exception as e:
             print("wifi failed:", e)
 
+    # Optional microSD as a TRUE second write channel: SD goes over its own
+    # peripheral, so writing there can never race the flash cache AMY's
+    # sample banks read through (see deckcfg.fenced_write). The v4r9 main
+    # board has no SD nets in its schematic, so pins are NOT guessed --
+    # set cfg['sd_pins'] = {'sck':.., 'miso':.., 'mosi':.., 'cs':..}
+    # (AMYboard uses 12/13/11/10) and decklog will prefer /sd/deck.log.
+    sdp = (cfg or {}).get('sd_pins')
+    if isinstance(sdp, dict):
+        try:
+            import machine, uos
+            sd = machine.SDCard(sck=sdp['sck'], miso=sdp['miso'],
+                                mosi=sdp['mosi'], cs=sdp['cs'], slot=2)
+            uos.mount(uos.VfsFat(sd), '/sd')
+            print("deck: SD mounted at /sd")
+        except Exception as e:
+            print("deck: SD mount failed:", e)
+
     # Audio / display / instrument / MPE from config.
     try:
         import deckcfg

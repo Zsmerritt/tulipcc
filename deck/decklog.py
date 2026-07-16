@@ -10,8 +10,21 @@
 
 import tulip
 
-_LOGFILE = '/user/deck.log'
 _MAX = 40000        # cap the on-device log (bytes) so it can't fill flash
+
+
+def _logfile():
+    """Prefer /sd (its own peripheral: writes never race the flash cache or
+    need the fence) when a card is mounted; else internal flash."""
+    try:
+        import os
+        os.stat('/sd')
+        return '/sd/deck.log'
+    except OSError:
+        return '/user/deck.log'
+
+
+_LOGFILE = _logfile()
 
 
 def _ts():
@@ -56,9 +69,12 @@ def log(msg):
         del _PENDING[:]
 
     try:
-        import deckcfg
-        if not deckcfg.fenced_write(_flush) and len(_PENDING) > 200:
-            del _PENDING[:-200]
+        if _LOGFILE.startswith('/sd'):
+            _flush()      # SD is its own peripheral: no fence, no waiting
+        else:
+            import deckcfg
+            if not deckcfg.fenced_write(_flush) and len(_PENDING) > 200:
+                del _PENDING[:-200]
     except Exception:
         pass
 

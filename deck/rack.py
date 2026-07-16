@@ -506,7 +506,7 @@ def _build_edit(parent, shell):
             return
         rid = deckcfg.active_instrument()
         deckcfg.set_instrument(rid, 'params', {}, flush=False)
-        deckcfg.set_instrument(rid, 'reverb_send', 1.0, flush=False)
+        deckcfg.set_instrument(rid, 'reverb_send', 0.0, flush=False)
         deckcfg.set_instrument(rid, 'hits', {})
         deckcfg.apply_all()
         sh2 = _s.get('shell')
@@ -584,67 +584,10 @@ def _build_edit(parent, shell):
     nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_fx_row, lv.EVENT.CLICKED, None)
 
-    # Reverb send: how much of THIS instrument feeds the shared room
-    # (AMY aux-send; 1.0 = classic everything-in-the-room, 0 = dry).
-    if instr.get('device') == 'internal':
-        def _set_send(v, commit):
-            val = v / 100.0
-            if commit:
-                deckcfg.set_instrument(iid, 'reverb_send', val)
-            try:
-                import forwarder
-                for t in (forwarder._state.get('fx_targets') or ()):
-                    if t.get('iid') == iid:
-                        import amy
-                        amy.send(bus=t['bus'], reverb_send=val)
-                        t['send'] = val
-                        break
-                forwarder.refresh_room()   # auto-room: audible from dry
-            except Exception:
-                pass
-        # Value-card layout (the MPE pattern): title + live readout on the
-        # top line, a FAT full-width track underneath, inset from the screen
-        # edge -- the old single-row slider was too narrow to grab and its
-        # knob at 100% sat in the touchscreen's edge deadzone.
-        # Show the LIVE send (what the router actually told AMY), falling
-        # back to the stored value -- the slider used to show the default
-        # 100% while the bus sat elsewhere.
-        cur_send = None
-        try:
-            import forwarder as _fwd
-            for t in (_fwd._state.get('fx_targets') or ()):
-                if t.get('iid') == iid:
-                    cur_send = t.get('send')
-                    break
-        except Exception:
-            pass
-        if cur_send is None:
-            # default DRY, matching the patch: built-in patches bake no
-            # reverb, so the slider starts all the way left. Raising it
-            # auto-enables the device room (forwarder.refresh_room), so
-            # this one slider IS the instrument's reverb amount.
-            cur_send = instr.get('reverb_send', 0.0)
-        card = lv.obj(right)
-        card.set_width(lv.pct(100))
-        card.set_height(108)
-        dk._flat(card, bg=dk.SURFACE)
-        tl = dk.label(card, "Reverb send", color=dk.TEXT)
-        tl.align(lv.ALIGN.TOP_LEFT, 16, 12)
-        rd = dk.label(card, "%d%%" % int(cur_send * 100), color=dk.TEAL,
-                      font=dk.FONT_S)
-        rd.align(lv.ALIGN.TOP_RIGHT, -16, 14)
-
-        def _send_cb(e, commit):
-            v = e.get_target_obj().get_value()
-            try:
-                rd.set_text("%d%%" % v)
-            except Exception:
-                pass
-            _set_send(v, commit)
-        sl = dk.slider(card, int(cur_send * 100), 0, 100, w=lv.pct(90),
-                       h=28, cb=lambda e: _send_cb(e, False),
-                       on_release=lambda e: _send_cb(e, True))
-        sl.align(lv.ALIGN.BOTTOM_MID, 0, -14)
+    # (Reverb send moved into the Sound editor's FX group: it's a
+    # per-instrument sound parameter, edited where the rest of the
+    # instrument's sound lives. amyparams 'reverb_send' + forwarder
+    # _apply_params carry the semantics: dry default, auto-room on raise.)
 
     # MPE -> sub-panel, only when the global MPE gate is on (C.4). When off,
     # no MPE button shows and the MPE panel is unreachable.

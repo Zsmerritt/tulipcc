@@ -141,6 +141,13 @@ PARAMS = [
             _osc(OSC_CTL, 'filter_freq', COEF_MOD), scale=100),
     # NOTE: EQ is per-BUS (per-device), not per-synth (verified on AMY) -- it
     # lives in FX below, not here.
+
+    # Per-instrument reverb SEND (aux room). Default DRY: built-in patches
+    # bake no reverb, so the slider starts where the patch is. Applied via
+    # the instrument's FX BUS (forwarder handles kind 'bus_send'), not
+    # amy.send(synth=...) -- synth_send_calls skips it.
+    _slider('reverb_send', 'FX', 'reverb send', 0.0, 1.0, 0.0, 'basic',
+            {'kind': 'bus_send'}, scale=100, unit='%'),
 ]
 
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
@@ -337,6 +344,8 @@ def synth_send_calls(params):
     for name, val in merged.items():
         ap = PARAM_BY_NAME[name]['apply']
         kind = ap['kind']
+        if kind == 'bus_send':
+            continue        # bus-directed; the router applies it (not synth=)
         if kind == 'osc':
             for osc, arg, coef in ap['targets']:
                 if coef is None:

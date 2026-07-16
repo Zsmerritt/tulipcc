@@ -394,6 +394,20 @@ def style_keyboard():
         kb.set_style_text_color(c(WHITE), lv.PART.ITEMS)
         kb.set_style_radius(8, lv.PART.ITEMS)
         kb.set_style_bg_color(c(ACCENT), lv.PART.ITEMS | lv.STATE.CHECKED)
+        # KILL the theme's style TRANSITIONS on the key matrix: releasing a
+        # key starts a fade-back animation, and every animation frame
+        # invalidates the WHOLE keyboard widget -- in DIRECT mode that is
+        # the visible full-keyboard flash on each keypress. With no
+        # transition, a press/release invalidates just the one key.
+        for part in (lv.PART.MAIN, lv.PART.ITEMS):
+            for state in (0, lv.STATE.PRESSED, lv.STATE.CHECKED,
+                          lv.STATE.FOCUSED, lv.STATE.FOCUS_KEY):
+                try:
+                    kb.set_style_transition(None, part | state)
+                except Exception:
+                    pass
+        # pressed keys still give instant visual feedback (no anim needed)
+        kb.set_style_bg_color(c(ACCENT), lv.PART.ITEMS | lv.STATE.PRESSED)
     except Exception:
         pass
 

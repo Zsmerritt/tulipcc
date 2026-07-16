@@ -28,7 +28,7 @@ _VIEWS = {
             ('VCF', ['filter_freq', 'resonance', 'filter_env', 'filter_kbd']),
             ('ENV', ['amp_attack', 'amp_decay', 'amp_sustain', 'amp_release']),
             ('LFO', ['lfo_freq', 'lfo_pitch', 'lfo_pwm', 'lfo_filter']),
-            ('VCA', ['level', 'pan']),
+            ('VCA', ['level', 'pan', 'reverb_send']),
         ],
         'labels': {
             'oscA_wave': 'DCO wave', 'oscA_duty': 'DCO pulse width',
@@ -40,12 +40,13 @@ _VIEWS = {
             'lfo_filter': 'LFO to VCF', 'level': 'volume', 'pan': 'pan',
             'amp_attack': 'attack', 'amp_decay': 'decay',
             'amp_sustain': 'sustain', 'amp_release': 'release',
+            'reverb_send': 'reverb send',
         },
     },
     'dx7': {
         'name': 'DX7',
         'tabs': [
-            ('Level', ['level', 'pan']),
+            ('Level', ['level', 'pan', 'reverb_send']),
             ('Tone', ['filter_freq', 'resonance']),
             ('EG', ['amp_attack', 'amp_decay', 'amp_sustain', 'amp_release']),
             ('Mod', ['lfo_freq', 'lfo_pitch']),
@@ -61,7 +62,8 @@ _VIEWS = {
     'piano': {
         'name': 'Piano',
         'tabs': [
-            ('Tone', ['level', 'filter_freq', 'resonance', 'pan']),
+            ('Tone', ['level', 'filter_freq', 'resonance', 'pan',
+                      'reverb_send']),
             ('Dynamics', ['amp_attack', 'amp_decay', 'amp_sustain',
                           'amp_release']),
         ],

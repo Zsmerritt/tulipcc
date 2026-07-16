@@ -356,10 +356,35 @@ def _install_keyboard_partial():
     and unconditionally dropped to DIRECT on close -- stomping Settings >
     Smooth UI for users who run partial full-time. The deck's repaint fixes
     have cut flashing enough that the render mode now follows the Settings
-    switch alone; the keyboard no longer touches it in either direction."""
+    switch alone; the keyboard no longer touches it in either direction.
+
+    Also filters the frozen ui.py key callback: with a TEXTAREA attached
+    (the deck's mode) LVGL's own keyboard handler already inserts the
+    character, but ui.py's callback STILL tulip.key_send()s it -- phantom
+    keystrokes into the REPL/console under the UI on every press. Only the
+    close (keyboard-symbol) key keeps its original behavior."""
     try:
         import ui
         _orig_kb = ui.keyboard
+        _orig_cb = ui.lv_soft_kb_cb
+
+        def _filtered_cb(e):
+            kb = e.get_target_obj()
+            try:
+                btn = kb.get_selected_button()
+                text = kb.get_button_text(btn)
+            except Exception:
+                return _orig_cb(e)
+            if text and text[0] == lv.SYMBOL.KEYBOARD:
+                return _orig_cb(e)          # close key: original teardown
+            try:
+                ta = kb.get_textarea()
+            except Exception:
+                ta = None
+            if ta is not None:
+                return                      # LVGL already typed into the ta
+            return _orig_cb(e)              # legacy path (REPL screens)
+        ui.lv_soft_kb_cb = _filtered_cb     # ui.keyboard() resolves by name
 
         def _kb():
             was_up = getattr(ui, 'lv_soft_kb', None) is not None

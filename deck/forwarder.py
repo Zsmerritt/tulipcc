@@ -178,6 +178,20 @@ def _apply_params(syn, params):
             amy.send(synth=sn, **kw)
         except Exception:
             pass
+    # reverb_send is BUS-directed (skipped by synth_send_calls): push it to
+    # this instrument's FX bus and refresh the auto-room so editing it in
+    # the Sound editor is audible immediately.
+    rs = (params or {}).get('reverb_send')
+    if rs is not None:
+        try:
+            for t in (_state.get('fx_targets') or ()):
+                if t.get('synth') == sn:
+                    amy.send(bus=t['bus'], reverb_send=rs)
+                    t['send'] = rs
+                    break
+            refresh_room()
+        except Exception:
+            pass
 
 
 def _apply_device_fx(cfg, targets, prev_buses=()):
@@ -463,8 +477,12 @@ def _start_once():
                         {'bus': min(_next_bus, 3), 'synth': sn, 'pfx': pfx,
                          'iid': instr['id'],
                          # default DRY: built-in patches bake no reverb, so
-                         # the send starts where the patch is (slider left)
-                         'send': instr.get('reverb_send', 0.0)})
+                         # the send starts where the patch is (slider left).
+                         # Lives in params (Sound editor) now; the top-level
+                         # key is the legacy location.
+                         'send': (instr.get('params') or {}).get(
+                             'reverb_send',
+                             instr.get('reverb_send', 0.0))})
                     _next_bus += 1
             route[0].append(instr['id'])
             # MPE only when the global gate AND this instrument both enable it.
