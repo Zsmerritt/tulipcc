@@ -515,6 +515,10 @@ void run_amy(uint8_t midi_out_pin) {
     amy_config.midi = AMY_MIDI_IS_UART;
 #endif
     amy_config.features.default_synths = 0; // midi.py does this for us
+    // Synthesized drum kits store one RAM patch per hit (~19 per kit) at
+    // deterministic slots; the stock 32-slot pool can't hold two kits plus
+    // the deck's other patch_string synths.
+    amy_config.max_memory_patches = 128;
     amy_config.i2s_lrc = CONFIG_I2S_LRCLK;
     amy_config.i2s_bclk = CONFIG_I2S_BCLK;
     amy_config.i2s_dout = CONFIG_I2S_DOUT;

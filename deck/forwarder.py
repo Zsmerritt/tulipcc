@@ -144,6 +144,17 @@ def _release_synths():
         except Exception:
             pass
     _state['synths'] = {}
+    # Rewind the auto synth-number counter: it only counts up, AMY caps
+    # instruments at 64, and a synth kit consumes ~19 numbers per rebuild --
+    # a few rebuilds used to march the allocator off the cliff. Everything we
+    # allocated was just released, so the numbers are free again (and
+    # allocation order makes each rebuild's numbers stable).
+    try:
+        import synth as _synth
+        _synth.PatchSynth.amy_synth_next = 16
+        _synth.PatchSynth.amy_synth_allocated = set()
+    except Exception:
+        pass
 
 
 def _apply_params(syn, params):
@@ -254,6 +265,10 @@ def start():
     prev_fx_buses = {t['bus'] for t in (_state.get('fx_targets') or ())}
     _state['fx_targets'] = []
     _next_bus = 0
+    # deterministic RAM-patch slots (see synthkits.py slot map): raw
+    # patch_string sends allocate a fresh slot per rebuild and leak the pool
+    _next_melodic_slot = [0]
+    _next_kit_slot = [0]
     _state['err_iids'] = set()
     _state['c_channels'] = set()
     _state['has_device_arg'] = None    # re-probe (firmware can't change, but
@@ -299,20 +314,31 @@ def start():
                     # A drum instrument is a DrumSynth loaded with a kit patch;
                     # GM notes on its channel trigger the kit's samples.
                     import drums_kit
+                    import synthkits as _sk
+                    kslot = _sk.SLOT_KITS + _sk.SLOT_KIT_STRIDE * _next_kit_slot[0]
+                    _next_kit_slot[0] += 1
                     syn = drums_kit.make_synth(instr.get('kit', 384),
                                                num_voices=instr.get('num_voices', 6),
-                                               channel=(ch if c_own else None))
+                                               channel=(ch if c_own else None),
+                                               hit_overrides=instr.get('hits'),
+                                               slot_base=kslot)
                 elif instr.get('type') in ('gm', 'gm2'):
                     # A GM instrument plays one program from a SoundFont
                     # bank; its 'patch' slot holds the GM program number.
                     # 'gm' = GeneralUser bank, 'gm2' = E-mu 4MB font from
-                    # the big bank.
+                    # the big bank. Stored at a deterministic RAM slot so
+                    # rebuilds don't leak the patch pool.
                     if instr.get('type') == 'gm2':
                         import gmbig as _gmmod
                     else:
                         import gm as _gmmod
+                    import synthkits as _sk
+                    mslot = _sk.SLOT_MELODIC + _next_melodic_slot[0]
+                    _next_melodic_slot[0] += 1
+                    _sk.store_patch(mslot,
+                                    _gmmod.patch_string(instr.get('patch', 0)))
                     syn = _synth.PatchSynth(
-                        patch_string=_gmmod.patch_string(instr.get('patch', 0)),
+                        patch=mslot,
                         num_voices=instr.get('num_voices', 10),
                         channel=(ch if c_own else None))
                 else:

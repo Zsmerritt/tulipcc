@@ -301,7 +301,9 @@ def kit_panel(parent, shell=None):
     dk.label(body, "Drum kit: swaps all the sounds at once.", color=dk.MUTED,
              font=dk.FONT_S)
     _s['kitbtns'] = []
-    for kit, name in drums_kit.KITS:
+    # sampled kits first, then the synthesized ones (drums_kit.synth_kits) --
+    # same list, same tap; the kit id encodes which engine plays it
+    for kit, name in list(drums_kit.KITS) + drums_kit.synth_kits():
         b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
                       bg=(dk.ACCENT if kit == cur else dk.SURFACE))
         b.add_event_cb((lambda k: (lambda e: _set_kit(k)

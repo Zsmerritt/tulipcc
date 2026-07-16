@@ -15,6 +15,25 @@ import json
 _JSON_PATHS = ('/user/synthkits.json', 'synthkits.json')
 _state = {'data': None}
 
+# Deck-wide RAM-patch SLOT MAP (user patches 1024+). AMY stores every
+# patch_string into a RAM slot and slots are never freed -- sending raw
+# patch_string on each router rebuild leaked the pool dry. Deck code stores
+# at EXPLICIT numbers instead (stores overwrite), then loads by number:
+#   1024        audition scratch (this module)
+#   1025..1029  melodic patch_string instruments by creation order (forwarder)
+#   1030+24*n   drum kit instance n: kit patch at base, hits at base+1..
+SLOT_AUDITION = 1024
+SLOT_MELODIC = 1025
+SLOT_KITS = 1030
+SLOT_KIT_STRIDE = 24
+
+
+def store_patch(slot, patch_string):
+    """Store a patch string at an explicit reusable RAM slot."""
+    import amy
+    amy.send(patch=slot, patch_string=patch_string)
+    return slot
+
 # wire letters per osc kwarg (see amy parse.c); order chosen so envelopes
 # arrive before amp
 _WIRE = (('wave', 'w'), ('freq', 'f'), ('duty', 'd'), ('phase', 'P'),
@@ -129,7 +148,8 @@ def audition(hit_key, overrides=None, note=60, vel=1.0, synth=15):
     (patch_string implies the osc count -- passing oscs_per_voice alongside
     it makes AMY ignore the stored patch.)"""
     import amy
+    store_patch(SLOT_AUDITION, hit_patch_string(hit_key, overrides))
     amy.send(synth=synth, num_voices=0)   # release: a re-patch on a live
     amy.send(synth=synth, num_voices=1,   # synth keeps its old config
-             patch_string=hit_patch_string(hit_key, overrides))
+             patch=SLOT_AUDITION)
     amy.send(synth=synth, note=note, vel=vel)
