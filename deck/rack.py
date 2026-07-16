@@ -603,6 +603,19 @@ def _build_edit(parent, shell):
                 pass
         r = dk.row(right)
         dk.label(r, "Reverb send", color=dk.TEXT)
+        # The send only matters while the device ROOM is on -- built-in
+        # patches bake NO reverb (verified: zero 'h' params in patches.h),
+        # so with the room off this slider changes nothing audible. Say so
+        # instead of letting it feel broken.
+        try:
+            import amyparams as _ap
+            _rvfx = deckcfg.device_fx('internal') or {}
+            _lvl = _ap.fx_value(_rvfx, {}, 'reverb', 'level')
+        except Exception:
+            _lvl = 0
+        if not _lvl:
+            dk.label(r, "(room off -- set Reverb in FX)", color=dk.MUTED,
+                     font=dk.FONT_S)
         # Show the LIVE send (what the router actually told AMY), falling
         # back to the stored value -- the slider used to show the default
         # 100% while the bus sat elsewhere.

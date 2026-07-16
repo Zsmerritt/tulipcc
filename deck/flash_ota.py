@@ -132,10 +132,26 @@ def main():
     sha = hashlib.sha256(data).hexdigest()
     print('image: %d bytes, sha256 %s' % (len(data), sha))
 
-    # 1. can the device tell us its IP?
-    out = sh(port, ['exec', "import tulip; print('IP:' + str(tulip.ip()))"], 60)
+    # 1. can the device tell us its IP? Put the update modal up FIRST --
+    # the prep phase (wifi check, ping) used to be invisible, so the player
+    # had no idea an update was in motion and kept using the deck.
+    out = sh(port, ['exec', (
+        "import tulip\n"
+        "try:\n"
+        "    import fwprogress\n"
+        "    fwprogress.show(100, title='Firmware update (OTA)')\n"
+        "    fwprogress.stage('Preparing... do not touch the deck.')\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print('IP:' + str(tulip.ip()))")], 60)
     dev_ip = tagged(out, 'IP:')
     if not dev_ip or dev_ip == 'None':
+        # drop the modal again -- nothing is going to happen
+        sh(port, ['exec', ("try:\n"
+                           "    import fwprogress\n"
+                           "    fwprogress.fail('No Wi-Fi -- update not started.')\n"
+                           "except Exception:\n"
+                           "    pass")], 30)
         print('Device is not on Wi-Fi (tulip.ip() = %r).' % dev_ip)
         print('Connect it in Settings > Wi-Fi, or use the serial fallback:')
         print('  python deck/flash_fw.py %s --port %s' % (image, port))

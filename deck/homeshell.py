@@ -318,6 +318,7 @@ class HomeShell:
         slow=True paints a 'Loading...' placeholder first and runs the builder
         on the next tick -- long builds (Apps discovery scans /user) otherwise
         read as a frozen UI."""
+        dk.close_keyboard()     # panels never share the keyboard (see back())
         self._refill_gen += 1   # cancel any pending back()-refill
         panel = lv.obj(self.content)
         panel.set_size(self.W, self.H - BAR_H)
@@ -389,6 +390,11 @@ class HomeShell:
                      font=dk.FONT_S)
 
     def back(self):
+        # The global soft keyboard outlives panels and keeps a raw pointer
+        # to its target textarea -- leaving a panel with the keyboard up,
+        # then tapping its close/checkmark, use-after-freed the deleted
+        # field and hard-crashed the device (seen live on Wi-Fi settings).
+        dk.close_keyboard()
         removed, revealed = self.stack.pop()
         if removed is None:
             return
@@ -432,6 +438,7 @@ class HomeShell:
         self._sync_chrome()
 
     def reset_to_root(self):
+        dk.close_keyboard()     # same hazard as back(): don't strand the kb
         self._refill_gen += 1   # cancel any pending back()-refill
         for h in self.stack.reset_to_root():
             try:

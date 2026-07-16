@@ -438,6 +438,26 @@ def autoshow_keyboard(ta):
         pass
 
 
+def close_keyboard():
+    """Hide the soft keyboard and DETACH it from its textarea. Must run
+    before tearing down any screen/panel that hosts text fields: the global
+    keyboard outlives them holding a raw pointer to its target textarea, and
+    its close/checkmark callback poking the deleted field hard-crashed the
+    whole device (LVGL use-after-free; seen live leaving Wi-Fi settings with
+    the keyboard up). Safe no-op when the keyboard isn't showing."""
+    try:
+        import ui
+        kb = getattr(ui, 'lv_soft_kb', None)
+        if kb is not None:
+            try:
+                kb.set_textarea(None)
+            except Exception:
+                pass
+            tulip.keyboard()          # toggle off (tears down the overlay)
+    except Exception:
+        pass
+
+
 def switch(parent, value, on_change=None, color=GREEN):
     # A real toggle switch -- unambiguous on/off state (vs a button labelled
     # "On"/"Off", which reads as either the current state or the action).

@@ -52,9 +52,18 @@ def run(screen):
     _big_card(screen.group, 380, 190, "2. Instrument",
         "Pick the synth your MIDI keys play.", dk.PURPLE,
         lambda e: _done_and_run('instrument'))
+    def _opt_in_mpe(e):
+        # Choosing the MPE step IS the opt-in: flip the global gate so the
+        # panel that opens is configurable, not a "turned off in Settings"
+        # pointer (the only surface that showed MPE while the gate was off).
+        try:
+            import deckcfg
+            deckcfg.set_value('mpe_enabled', True)
+        except Exception:
+            pass
+        _done_and_run('mpe')
     _big_card(screen.group, 700, 190, "3. MPE",
-        "Optional: per-note expression.", dk.TEAL,
-        lambda e: _done_and_run('mpe'))
+        "Optional: per-note expression.", dk.TEAL, _opt_in_mpe)
 
     dk.button(screen.group, "Get started  " + lv.SYMBOL.RIGHT, w=280, h=68,
         bg=dk.GREEN, font=dk.FONT_L,

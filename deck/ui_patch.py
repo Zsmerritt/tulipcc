@@ -351,10 +351,12 @@ def _apply_standalone_taskbar(screen):
 
 
 def _install_keyboard_partial():
-    """The soft keyboard flashes in the default DIRECT render mode (LVGL draws
-    into the live framebuffer). Switch to PARTIAL -- tear-free -- only while the
-    keyboard is on screen, and back to fast DIRECT when it closes, so typing is
-    clean without making the rest of the UI feel sluggish."""
+    """Restyle the soft keyboard the moment it opens. It used to also FORCE
+    PARTIAL render mode while the keyboard was up (tear-free but sluggish)
+    and unconditionally dropped to DIRECT on close -- stomping Settings >
+    Smooth UI for users who run partial full-time. The deck's repaint fixes
+    have cut flashing enough that the render mode now follows the Settings
+    switch alone; the keyboard no longer touches it in either direction."""
     try:
         import ui
         _orig_kb = ui.keyboard
@@ -365,14 +367,11 @@ def _install_keyboard_partial():
             now_up = getattr(ui, 'lv_soft_kb', None) is not None
             try:
                 if now_up and not was_up:
-                    tulip.display_partial(1)
                     # same-tick restyle: it's ~7 style calls on one button
                     # matrix (cheap); deferring it flashed the theme-black
                     # keyboard for a beat before the deck palette landed
                     import deckui
                     deckui.style_keyboard()
-                elif was_up and not now_up:
-                    tulip.display_partial(0)
             except Exception:
                 pass
         ui.keyboard = _kb
