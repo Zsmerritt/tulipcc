@@ -335,6 +335,14 @@ def _open_sound(e):
         _s['shell'].push(sound_panel, "Sound", key='sound')
 
 
+def _open_pads(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    if _s.get('shell') is not None:
+        import padeditor
+        _s['shell'].push(padeditor.panel, "Pads", key='pads')
+
+
 def _open_fx_row(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
@@ -521,13 +529,18 @@ def _build_edit(parent, shell):
     nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
-    # Sound (per-instrument params) -> ParamEditor sub-panel. Drums have no
-    # osc/filter design (per-pad tune/decay is a planned follow-up), so no Sound.
+    # Sound (per-instrument params) -> ParamEditor sub-panel. Sampled drums
+    # have no osc/filter design; SYNTH kits get the per-pad editor instead.
     if not is_drum:
         r = dk.row(right)
         dk.label(r, "Sound", color=dk.TEXT)
         nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
         nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
+    elif isinstance(instr.get('kit'), str) and instr['kit'].startswith('synth:'):
+        r = dk.row(right)
+        dk.label(r, "Pads", color=dk.TEXT)
+        nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+        nav.add_event_cb(_open_pads, lv.EVENT.CLICKED, None)
 
     # FX -> the OWNING DEVICE's FX bus (shared by all instruments on it)
     r = dk.row(right)
