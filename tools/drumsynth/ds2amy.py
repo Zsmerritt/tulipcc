@@ -72,10 +72,19 @@ def _env_to_bp(pts, stretch=1.0, max_pts=4):
     if pts[0][0] > 0.5:
         pts.insert(0, (0.0, pts[0][1]))
     if len(pts) > max_pts:
+        # Keep the middles that carry the biggest LEVEL STEPS (E-13). The
+        # old sort by -abs(level) kept the highest points -- long-decay
+        # envelopes lost their body and collapsed toward the attack, part
+        # of why converted hits read thinner/quieter than their sources.
         first, last = pts[0], pts[-1]
         mids = pts[1:-1]
-        mids.sort(key=lambda p: -abs(p[1]))
-        keep = sorted(mids[:max_pts - 2])
+        steps = []
+        prev = first
+        for p in mids:
+            steps.append((abs(p[1] - prev[1]), p))
+            prev = p
+        steps.sort(key=lambda sp: -sp[0])
+        keep = sorted(p for _, p in steps[:max_pts - 2])
         pts = [first] + keep + [last]
     if pts[-1][1] > 0.001:
         pts.append((pts[-1][0] + 30.0, 0.0))

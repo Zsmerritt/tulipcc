@@ -362,6 +362,62 @@ def main():
             packs[pkey][role] = [key]
             packs[pkey].setdefault('_all', []).append(key)
 
+    # ---- content-hash dedupe + loudness normalization (review mystery 4) --
+    # 1) Pool DEPTH drives variant fan-out, but the harvest keeps byte-
+    #    identical .ds files under name_<hash> aliases -- tr909's "D" kit
+    #    existed only because duplicates padded its pools, and its hit deal
+    #    was an arbitrary re-index with no loudness relationship to A.
+    #    Dedupe pools by CONTENT before anything counts them.
+    seen_sig = {}
+    dropped = 0
+    for pack, roles in packs.items():
+        for role, keys in list(roles.items()):
+            if role == '_all':
+                continue
+            kept = []
+            for k in keys:
+                h = hits.get(k) or {}
+                sig = json.dumps(h.get('oscs') or h.get('patch_string'),
+                                 sort_keys=True)
+                if seen_sig.setdefault((pack, role, sig), k) == k:
+                    kept.append(k)
+                else:
+                    dropped += 1
+            roles[role] = kept
+    # 2) Normalize amplitude-quiet hits into [0.5, 1.0] peak BEFORE the
+    #    deck's KIT_GAIN, so that gain is a policy trim, not a rescue.
+    #    (Quietness from collapsed envelopes was the ds2amy E-13 sort bug,
+    #    fixed there; this catches the level-shaped remainder.)
+    boosted = 0
+    for key, h in hits.items():
+        oscs = h.get('oscs')
+        if not oscs:
+            continue
+        score = 0.0
+        for o in oscs:
+            try:
+                const = float(str(o.get('amp', '0')).split(',')[0])
+            except ValueError:
+                continue
+            lv = []
+            for x in str(o.get('bp0', '')).split(',')[1::2]:
+                try:
+                    lv.append(float(x))
+                except ValueError:
+                    pass
+            env_pk = max(lv[:-1] or lv or [1.0])   # ignore the release pair
+            score = max(score, const * env_pk)
+        if 0 < score < 0.5:
+            f = min(8.0, 0.8 / score)
+            for o in oscs:
+                if 'amp' in o:
+                    p = str(o['amp']).split(',')
+                    p[0] = ('%.3f' % (float(p[0]) * f)).rstrip('0').rstrip('.')
+                    o['amp'] = ','.join(p)
+            boosted += 1
+    print('dedupe: %d duplicate pool entries dropped; %d quiet hits normalized'
+          % (dropped, boosted))
+
     # donor pools for missing roles
     donors = {}
     for role, note, _ in mk.ROLES:
