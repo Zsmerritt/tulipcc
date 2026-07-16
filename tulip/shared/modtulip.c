@@ -45,6 +45,20 @@ STATIC mp_obj_t tulip_ticks_ms(size_t n_args, const mp_obj_t *args) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_ticks_ms_obj, 0, 0, tulip_ticks_ms);
 
+// tulip.flash_fence(1/0): raise/drop AMY's flash fence around filesystem
+// writes. While up, PCM renders whose samples live in memory-mapped flash
+// emit silence (phase held) -- a flash program/erase suspends the cache
+// those fetches go through while the render task keeps running from PSRAM,
+// and one mapped fetch inside the write window hard-crashes the chip.
+// Everything else (computed voices, PSRAM banks) keeps sounding. Callers
+// should wait ~2 render blocks (>=12ms) after raising it before writing so
+// an in-flight block that already passed the check can finish.
+STATIC mp_obj_t tulip_flash_fence(size_t n_args, const mp_obj_t *args) {
+    amy_flash_fence = (uint8_t)mp_obj_get_int(args[0]);
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_obj, 1, 1, tulip_flash_fence);
+
 STATIC mp_obj_t tulip_stderr_write(size_t n_args, const mp_obj_t *args) {
     const char *msg = mp_obj_str_get_str(args[0]);
     fprintf(stderr, "%s\n", msg);
@@ -1785,6 +1799,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_amy_send), MP_ROM_PTR(&tulip_amy_send_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_send_sysex), MP_ROM_PTR(&tulip_amy_send_sysex_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_ticks_ms), MP_ROM_PTR(&tulip_amy_ticks_ms_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence), MP_ROM_PTR(&tulip_flash_fence_obj) },
     { MP_ROM_QSTR(MP_QSTR_pcm_load_file), MP_ROM_PTR(&tulip_pcm_load_file_obj) },
 #endif
 

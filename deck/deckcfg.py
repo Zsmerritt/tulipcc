@@ -229,11 +229,50 @@ def quiet_now(threshold=0.004, hold_ms=1000):
         return True    # host tests / no tulip: just write
 
 
+def fenced_write(fn):
+    """Run fn() (a flash write) safely against AMY's PCM rendering.
+    Firmware with tulip.flash_fence: raise the fence (mapped-flash PCM oscs
+    go silent, everything else keeps sounding), wait two render blocks so an
+    in-flight block that already passed the check drains, write, drop the
+    fence -- total added latency ~12ms. Older firmware: True only when
+    quiet_now() says a write is safe; caller defers otherwise."""
+    try:
+        import tulip
+        fence = getattr(tulip, 'flash_fence', None)
+    except Exception:
+        fence = None
+    if fence is None:
+        if not quiet_now():
+            return False
+        fn()
+        return True
+    fence(1)
+    try:
+        from time import sleep_ms
+        sleep_ms(12)
+        fn()
+    finally:
+        fence(0)
+    return True
+
+
 def _write(cfg, _retry=0):
-    # Defer the save until quiet_now(), retrying from the UI defer queue;
-    # capped (~15s) so config is never lost. Always re-reads the LATEST
-    # cached cfg so coalesced retries can't resurrect stale settings.
-    if _retry < 60 and not quiet_now():
+    # Flash writes race AMY's mapped-PCM rendering (see quiet_now). With the
+    # flash-fence firmware this writes immediately (~12ms fence); without it,
+    # defer until quiet, retrying from the UI defer queue, capped (~15s) so
+    # config is never lost. Always re-reads the LATEST cached cfg so
+    # coalesced retries can't resurrect stale settings.
+    def do():
+        # Drop the legacy `instances` key if an old config still carries it.
+        data = {k: v for k, v in cfg.items() if k != 'instances'}
+        try:
+            with open(PATH, 'w') as f:
+                json.dump(data, f)
+        except OSError as e:
+            print("deckcfg: could not save:", e)
+    if fenced_write(do):
+        return
+    if _retry < 60:
         try:
             import tulip
             tulip.defer(lambda x: _write(_state.get('cfg', cfg), _retry + 1),
@@ -241,13 +280,7 @@ def _write(cfg, _retry=0):
             return
         except Exception:
             pass
-    # Drop the legacy `instances` key if an old config still carries it.
-    data = {k: v for k, v in cfg.items() if k != 'instances'}
-    try:
-        with open(PATH, 'w') as f:
-            json.dump(data, f)
-    except OSError as e:
-        print("deckcfg: could not save:", e)
+    do()    # retry cap reached (or no defer): write anyway, accept the risk
 
 
 def save(cfg):

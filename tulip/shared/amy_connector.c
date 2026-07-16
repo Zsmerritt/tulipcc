@@ -398,6 +398,22 @@ void mp_reboot_hook(uint8_t mode) {
 #endif
 }
 
+#ifdef ESP_PLATFORM
+// Grow AMY's flash-fence window to cover every mmap'd PCM bank: renders from
+// [lo, hi) emit silence while amy_flash_fence is up (tulip.flash_fence), so
+// a flash program/erase can never race a mapped sample fetch -- one such
+// fetch during the cache-suspended write window hard-crashes the chip
+// (dual-core TG1WDT, reproduced live). PSRAM-fallback banks land outside the
+// window and keep sounding through writes.
+static void widen_flash_fence(const void *map, uint32_t size) {
+    if (amy_flash_fence_lo == NULL || map < amy_flash_fence_lo)
+        amy_flash_fence_lo = map;
+    const void *end = (const void *)((const uint8_t *)map + size);
+    if (end > amy_flash_fence_hi)
+        amy_flash_fence_hi = end;
+}
+#endif
+
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
 // Map the `drums` flash partition (raw drums.bin from the amy repo, flashed by
 // fs_create.py) into the data address space and hand it to AMY, which serves
@@ -418,6 +434,7 @@ static void mount_gamma9001_drums(void) {
         fprintf(stderr, "gamma9001: drums partition mmap failed (%d)\n", (int)err);
         return;
     }
+    widen_flash_fence(map, part->size);
     amy_set_gamma9001_pcm((const int16_t *)map);
 }
 #endif
@@ -436,8 +453,10 @@ static const void *map_or_load_partition(const esp_partition_t *part,
     esp_partition_mmap_handle_t handle;  // never unmapped; lives as long as AMY
     esp_err_t err = esp_partition_mmap(part, off, size,
                                        ESP_PARTITION_MMAP_DATA, &map, &handle);
-    if (err == ESP_OK && map != NULL)
+    if (err == ESP_OK && map != NULL) {
+        widen_flash_fence(map, size);
         return map;
+    }
     // The S3's dynamic flash-mmap pool is a hard 16MB (the lower half of the
     // 32MB data space is statically claimed by the PSRAM aperture + the
     // SPIRAM_FETCH_INSTRUCTIONS/RODATA relocations, measured live), and the

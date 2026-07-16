@@ -464,10 +464,14 @@ def fx_send_strings(fx, pfx=None):
 
 
 def fx_reverb_string(fx):
-    """The device's shared-room reverb as a wire string, or None when the
-    user never touched it (leave AMY's default room = off)."""
-    if not (fx and isinstance(fx.get('reverb'), dict) and fx['reverb']):
-        return None
+    """The device's shared-room reverb as a wire string. ALWAYS a concrete
+    value (defaults = room off, overlaid with the user's settings), never
+    None: built-in patch strings can carry baked reverb ('h' params) that
+    lands on the GLOBAL room at load -- and with every bus feeding the room
+    at full send under aux reverb, one such patch used to wet every
+    instrument (and a high baked liveness rang forever). The router asserts
+    this string after every rebuild so the room is exactly what the user
+    chose."""
     merged, _ = _merge_fx(fx, None)
     return _bus_strings(merged)['reverb']
 

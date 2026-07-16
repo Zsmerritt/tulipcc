@@ -567,9 +567,14 @@ def _build_edit(parent, shell):
                 pass
         r = dk.row(right)
         dk.label(r, "Reverb send", color=dk.TEXT)
+        # (dk.slider callbacks receive the LVGL EVENT, not the value --
+        # treating it as a number made every tick throw and the slider dead)
         dk.slider(r, int(instr.get('reverb_send', 1.0) * 100), 0, 100,
-                  w=cw - 260, cb=lambda v: _set_send(v, False),
-                  on_release=lambda v: _set_send(v, True))
+                  w=cw - 260,
+                  cb=lambda e: _set_send(
+                      e.get_target_obj().get_value(), False),
+                  on_release=lambda e: _set_send(
+                      e.get_target_obj().get_value(), True))
 
     # MPE -> sub-panel, only when the global MPE gate is on (C.4). When off,
     # no MPE button shows and the MPE panel is unreachable.

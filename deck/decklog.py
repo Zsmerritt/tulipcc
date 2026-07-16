@@ -31,19 +31,13 @@ def log(msg):
     except Exception:
         pass
     # A flash write while AMY renders PCM from the mmap'd banks crashes the
-    # S3 (see deckcfg.quiet_now). Queue lines while sound may be rendering;
-    # flush the queue on the next quiet log call (the serial copy above
-    # always lands immediately, so nothing is lost for live debugging).
+    # S3 (see deckcfg.fenced_write). With flash-fence firmware every line
+    # lands immediately (~12ms fence); older firmware queues lines while
+    # sound may be rendering and flushes on the next quiet log call (the
+    # serial copy above always lands immediately either way).
     _PENDING.append(line)
-    try:
-        import deckcfg
-        if not deckcfg.quiet_now():
-            if len(_PENDING) > 200:
-                del _PENDING[:-200]
-            return
-    except Exception:
-        pass
-    try:
+
+    def _flush():
         import os
         try:
             if os.stat(_LOGFILE)[6] > _MAX:
@@ -60,6 +54,11 @@ def log(msg):
         with open(_LOGFILE, 'a') as f:
             f.write("\n".join(_PENDING) + "\n")
         del _PENDING[:]
+
+    try:
+        import deckcfg
+        if not deckcfg.fenced_write(_flush) and len(_PENDING) > 200:
+            del _PENDING[:-200]
     except Exception:
         pass
 

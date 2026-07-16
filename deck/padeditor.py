@@ -128,11 +128,19 @@ def _select(note):
         dk.label(r, label, color=dk.TEXT, font=dk.FONT_S)
         cur = ov.get(pkey)
         cur = dflt if cur is None else (cur / scale if scale != 1.0 else cur)
+        # dk.slider callbacks receive the LVGL EVENT, not the value --
+        # treating it as a number made every tick throw and the sliders dead
         dk.slider(r, int(round(cur)), vmin, vmax, w=_s['cw'] - 210,
-                  cb=(lambda v, pk=pkey, sc=scale:
-                      _apply(note, pk, v * sc if sc != 1.0 else v, False)),
-                  on_release=(lambda v, pk=pkey, sc=scale:
-                              _apply(note, pk, v * sc if sc != 1.0 else v, True)))
+                  cb=(lambda e, pk=pkey, sc=scale:
+                      _apply(note, pk,
+                             e.get_target_obj().get_value() * sc
+                             if sc != 1.0 else
+                             e.get_target_obj().get_value(), False)),
+                  on_release=(lambda e, pk=pkey, sc=scale:
+                              _apply(note, pk,
+                                     e.get_target_obj().get_value() * sc
+                                     if sc != 1.0 else
+                                     e.get_target_obj().get_value(), True)))
     b = dk.button(card, "Reset pad", w=170, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
                   cb=lambda e: _reset(_s['note']))
 
