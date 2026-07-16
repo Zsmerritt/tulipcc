@@ -18,6 +18,12 @@ void tulip_amy_sequencer_hook(uint32_t tick_count) {
         sequencer_tick_count = tick_count;
     #endif
     for(uint8_t i=0;i<DEFER_SLOTS;i++) {
+        // No reader-side acquire needed here (review C3): defer_callbacks/args/
+        // sysclock live in internal SRAM, which is hardware cache-coherent
+        // across the S3 cores, and tulip_defer's compiler barrier orders the
+        // arg/deadline stores before the callback-pointer store. Every use of
+        // args/sysclock below is control-dependent on this callbacks[i]!=NULL
+        // load, so a fresh pointer can never be paired with a stale arg.
         if(defer_callbacks[i] != NULL && get_ticks_ms() > defer_sysclock[i]) {
             // Clear the slot ONLY when the scheduler accepted the entry
             // (review F-3): mp_sched_schedule fails when the shared queue

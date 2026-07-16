@@ -211,14 +211,25 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         tulip_midi_activity++;
         // C router first (O-2): board forwarding + the "does Python even
         // need to see this?" decision are table lookups, not Python.
-        if (tulip_midi_route_active && len >= 1
-                && data[0] >= 0x80 && data[0] < 0xF0) {
+        if (len >= 1 && data[0] >= 0x80 && data[0] < 0xF0) {
             tulip_midi_route_t *r = &tulip_midi_routes[(data[0] & 0x0F) + 1];
+            // Forward board bytes BEFORE the route_active gate (review C6):
+            // during the microsecond route-table rewrite route_active is 0,
+            // and Python's _route still sees c_router active so it also skips
+            // boards -- a board-directed message in that window used to be
+            // dropped. board_mask is a single 16-bit store, so reading it
+            // mid-rewrite yields the old or new mask, never a torn value.
+            // Before the first upload board_mask is 0, so this forwards
+            // nothing -- identical to the old skip-the-whole-block behavior.
             uint16_t bm = r->board_mask;
             for (int d = 0; bm; ++d, bm >>= 1) {
                 if (bm & 1) tulip_send_midi_out_device(data, len, d);
             }
-            if (!(r->flags & TULIP_MIDI_ROUTE_PY) && !tulip_midi_notify_all) {
+            // The Python-skip decision still gates on route_active: only once
+            // the table is fully published do we trust flags/notify_all to
+            // drop Python entirely.
+            if (tulip_midi_route_active
+                    && !(r->flags & TULIP_MIDI_ROUTE_PY) && !tulip_midi_notify_all) {
                 return;   // fully handled in C: no queue, no scheduler, no GC
             }
         }

@@ -330,7 +330,13 @@ extern volatile int16_t midi_queue_tail;
 
 STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
 
-    if(midi_queue_head == midi_queue_tail) {
+    // ACQUIRE-load the tail to pair the writer's RELEASE store (review C2):
+    // amy_connector.c publishes tail with __ATOMIC_RELEASE after writing the
+    // payload; a plain volatile read here only half-builds the pair, letting
+    // the payload copy below hoist above the tail check under -O3/LTO. Load
+    // tail once with acquire and use it in BOTH empty-checks.
+    int16_t tail = __atomic_load_n(&midi_queue_tail, __ATOMIC_ACQUIRE);
+    if(midi_queue_head == tail) {
         // Clear-then-RECHECK (review F-6): clearing pending after deciding
         // "empty" raced the writer -- it could enqueue + skip scheduling
         // (pending still 1) in the gap, stranding a message until the NEXT
@@ -338,7 +344,8 @@ STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
         // Any writer that saw pending==1 enqueued before our clear, so the
         // recheck finds its message.
         tulip_midi_py_pending = 0;
-        if (midi_queue_head == midi_queue_tail) {
+        tail = __atomic_load_n(&midi_queue_tail, __ATOMIC_ACQUIRE);
+        if (midi_queue_head == tail) {
             return mp_const_none;
         }
     }
