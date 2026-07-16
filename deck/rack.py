@@ -499,6 +499,42 @@ def _build_edit(parent, shell):
     dk.slider(r, instr.get('num_voices', 10), 1, 32, w=250, cb=_voices_cb,
               color=dk.GREEN, on_release=_voices_done)
 
+    # Reset patch: clear this instrument's sound-design overrides (params,
+    # reverb send, per-pad tweaks) back to what the patch itself defines.
+    def _reset_patch(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        rid = deckcfg.active_instrument()
+        deckcfg.set_instrument(rid, 'params', {}, flush=False)
+        deckcfg.set_instrument(rid, 'reverb_send', 1.0, flush=False)
+        deckcfg.set_instrument(rid, 'hits', {})
+        deckcfg.apply_all()
+        sh2 = _s.get('shell')
+        if sh2 is not None:
+            try:
+                sh2.refresh_chips()
+            except Exception:
+                pass
+
+            def _redraw(_x):   # rebuild the editor with the patch values
+                try:           # (same clean+fill back() uses, off-tick)
+                    h = sh2.stack.top_handle()
+                    b = sh2.stack.top_builder()
+                    if h is not None and b is not None:
+                        h.clean()
+                        sh2._fill(h, b)
+                except Exception:
+                    pass
+            try:
+                tulip.defer(_redraw, 0, 30)
+            except Exception:
+                pass
+    r = dk.row(left, h=76)
+    dk.label(r, "Patch values", color=dk.TEXT)
+    rb = dk.button(r, "Reset patch", w=190, h=52, bg=dk.SURFACE2,
+                   font=dk.FONT_S)
+    rb.add_event_cb(_reset_patch, lv.EVENT.CLICKED, None)
+
     # --- RIGHT column: sound ---
     # Type (engine) -> mode switch. Scopes the patch picker + drives the Sound
     # editor (a synth gets Sound tabs; a drum gets the pad list).
@@ -567,9 +603,23 @@ def _build_edit(parent, shell):
                 pass
         r = dk.row(right)
         dk.label(r, "Reverb send", color=dk.TEXT)
+        # Show the LIVE send (what the router actually told AMY), falling
+        # back to the stored value -- the slider used to show the default
+        # 100% while the bus sat elsewhere.
+        cur_send = None
+        try:
+            import forwarder as _fwd
+            for t in (_fwd._state.get('fx_targets') or ()):
+                if t.get('iid') == iid:
+                    cur_send = t.get('send')
+                    break
+        except Exception:
+            pass
+        if cur_send is None:
+            cur_send = instr.get('reverb_send', 1.0)
         # (dk.slider callbacks receive the LVGL EVENT, not the value --
         # treating it as a number made every tick throw and the slider dead)
-        dk.slider(r, int(instr.get('reverb_send', 1.0) * 100), 0, 100,
+        dk.slider(r, int(cur_send * 100), 0, 100,
                   w=cw - 260,
                   cb=lambda e: _set_send(
                       e.get_target_obj().get_value(), False),

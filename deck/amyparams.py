@@ -164,7 +164,10 @@ FX = {
     'reverb': [
         {'name': 'level', 'label': 'level', 'min': 0, 'max': 1, 'default': 0,
          'arg': 'level', 'unit': '%'},
-        {'name': 'liveness', 'label': 'liveness', 'min': 0, 'max': 1,
+        # liveness caps at 0.95: at ~1.0 the room self-oscillates -- "notes"
+        # that never stop, and (pre-fence firmware) a sound floor that
+        # starved every config save
+        {'name': 'liveness', 'label': 'liveness', 'min': 0, 'max': 0.95,
          'default': 0.85, 'arg': 'liveness', 'unit': '%'},
         {'name': 'damping', 'label': 'damping', 'min': 0, 'max': 1,
          'default': 0.5, 'arg': 'damping', 'unit': '%'},
@@ -435,7 +438,8 @@ def _bus_strings(merged):
     return {
         'chorus': "%s,,%s,%s" % (_fmt(ch['level']), _fmt(ch['freq']),
                                  _fmt(ch['depth'])),
-        'reverb': "%s,%s,%s" % (_fmt(rv['level']), _fmt(rv['liveness']),
+        'reverb': "%s,%s,%s" % (_fmt(rv['level']),
+                                _fmt(min(0.95, rv['liveness'])),
                                 _fmt(rv['damping'])),
         'echo': "%s,%s,,%s" % (_fmt(ec['level']), _fmt(ec['delay_ms']),
                                _fmt(ec['feedback'])),

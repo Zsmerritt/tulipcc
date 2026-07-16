@@ -56,23 +56,30 @@ class SynthKit:
     latency when the kit synth owns the MIDI channel.
 
     hit_overrides: {midi_note: {'tune','decay','level','snap'}} sound-design
-    tweaks applied when each hit synth is built (the pad editor's model)."""
+    tweaks applied when each hit synth is built (the pad editor's model).
+    hit_swaps: {midi_note: hit_key} replaces a pad's hit with ANY corpus hit
+    (the pad editor's alternates picker)."""
 
     def __init__(self, kit_key, channel=None, hit_overrides=None,
-                 slot_base=None):
+                 slot_base=None, hit_swaps=None):
         import synthkits
         self.kit_key = kit_key
         self.slot_base = synthkits.SLOT_KITS if slot_base is None else slot_base
         self.hit_synths = {}       # midi_note -> PatchSynth
         self.hit_slots = {}        # midi_note -> RAM patch slot
+        self.note_hits = {}        # midi_note -> hit key actually loaded
         ov = hit_overrides or {}
+        sw = hit_swaps or {}
         hit_maps = []
         slot = self.slot_base + 1  # base slot holds the kit patch itself
         try:
             from time import sleep_ms as _yield
         except ImportError:
             _yield = lambda ms: None
-        for note, hit_key in sorted(synthkits.kit_notes(kit_key).items()):
+        notes = synthkits.kit_notes(kit_key)
+        for note in sorted(notes):
+            hit_key = sw.get(note) or sw.get(str(note)) or notes[note]
+            self.note_hits[note] = hit_key
             _yield(2)   # ~20 store+create bursts starve the UI task otherwise
             # deterministic slot: store (overwrites on rebuild -- the pool is
             # finite and slots never free), then load by number
@@ -109,11 +116,15 @@ class SynthKit:
     def deferred_init(self):
         pass                       # everything initialized in __init__
 
-    def retweak(self, note, overrides):
-        """Live per-hit sound design: rebuild ONE hit synth's patch."""
+    def retweak(self, note, overrides, hit_key=None):
+        """Live per-hit sound design: rebuild ONE hit synth's patch.
+        hit_key swaps the pad to a different corpus hit (alternates picker)."""
         import synthkits
         hs = self.hit_synths.get(note)
-        hit_key = synthkits.kit_notes(self.kit_key).get(note)
+        if hit_key is not None:
+            self.note_hits[note] = hit_key
+        else:
+            hit_key = self.note_hits.get(note)
         if hs is None or hit_key is None:
             return
         import amy
@@ -152,7 +163,7 @@ class SynthKit:
 
 
 def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None, hit_overrides=None,
-               slot_base=None):
+               slot_base=None, hit_swaps=None):
     """A DrumSynth (sampled kit patch) or SynthKit ('synth:<key>'). GM notes
     then trigger its sounds. channel= binds the AMY synth number to the MIDI
     channel so AMY's C layer plays the notes directly (see forwarder's
@@ -160,5 +171,5 @@ def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None, hit_overrides=None,
     (synthkits.SLOT_KITS + stride per drum instrument)."""
     if isinstance(kit, str) and kit.startswith('synth:'):
         return SynthKit(kit[6:], channel=channel, hit_overrides=hit_overrides,
-                        slot_base=slot_base)
+                        slot_base=slot_base, hit_swaps=hit_swaps)
     return synth.DrumSynth(patch=kit, num_voices=num_voices, channel=channel)

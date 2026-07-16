@@ -128,6 +128,46 @@ def _scale_first(csv, factor):
     return ','.join(vals)
 
 
+# Synth hits are built at design amplitudes <=1.0 while the sampled kits'
+# baked map entries run 3..13 -- measured on device the same kick line
+# peaked 0.906 (sampled '80s Power) vs 0.159 (tr909_d). This closes the gap;
+# the per-hit 'level' override still scales on top of it.
+KIT_GAIN = 4.0
+
+
+def _xform_partials(ps, tune, decay, level):
+    """Apply tune/decay/level to a prebuilt BYO_PARTIALS patch string:
+    children (w9) get their partial freq scaled by tune and bp times by
+    decay; ONLY the parent (w10) amp is scaled by level (children multiply
+    through the parent, scaling both would square the gain)."""
+    out = []
+    for frag in ps.split('Z'):
+        if not frag:
+            continue
+        toks, key, val = [], None, ''
+        for ch in frag:
+            if ch.isalpha() and ch in 'vwpfadPABGFR':
+                if key is not None:
+                    toks.append((key, val))
+                key, val = ch, ''
+            else:
+                val += ch
+        if key is not None:
+            toks.append((key, val))
+        wave = dict(toks).get('w')
+        nf = []
+        for k, v in toks:
+            if k == 'f' and tune != 1.0 and wave == '9':
+                v = _scale_first(v, tune)
+            elif k == 'a' and level != 1.0 and wave == '10':
+                v = _scale_first(v, level)
+            elif k in 'AB' and decay != 1.0:
+                v = _scale_times(v, decay)
+            nf.append(k + v)
+        out.append(''.join(nf))
+    return 'Z'.join(out) + 'Z'
+
+
 def hit_patch_string(hit_key, overrides=None):
     """AMY patch wire string for one hit ('v0...Zv1...Z'), with sound-design
     overrides applied: tune (semitones, +/-24), decay (0.25..4 time scale),
@@ -135,15 +175,14 @@ def hit_patch_string(hit_key, overrides=None):
     hit = _hit(hit_key)
     if hit is None:
         raise KeyError(hit_key)
-    if 'patch_string' in hit:
-        # pre-built patch (partials-resynthesized hits): overrides don't
-        # apply yet -- per-partial transforms are a follow-up
-        return hit['patch_string']
     ov = overrides or {}
     tune = 2.0 ** (max(-24.0, min(24.0, float(ov.get('tune', 0)))) / 12.0)
     decay = max(0.25, min(4.0, float(ov.get('decay', 1.0))))
-    level = max(0.0, min(2.0, float(ov.get('level', 1.0))))
+    level = max(0.0, min(2.0, float(ov.get('level', 1.0)))) * KIT_GAIN
     snap = max(0.0, min(2.0, float(ov.get('snap', 1.0))))
+    if 'patch_string' in hit:
+        # partials-resynthesized hit: transform the prebuilt string in place
+        return _xform_partials(hit['patch_string'], tune, decay, level)
     parts = []
     for i, osc in enumerate(hit['oscs'][:2]):
         o = dict(osc)

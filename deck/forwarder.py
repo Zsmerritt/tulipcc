@@ -360,7 +360,8 @@ def _start_once():
                                                num_voices=instr.get('num_voices', 6),
                                                channel=(ch if c_own else None),
                                                hit_overrides=instr.get('hits'),
-                                               slot_base=kslot)
+                                               slot_base=kslot,
+                                               hit_swaps=instr.get('hit_swaps'))
                 elif instr.get('type') in ('gm', 'gm2'):
                     # A GM instrument plays one program from a SoundFont
                     # bank; its 'patch' slot holds the GM program number.

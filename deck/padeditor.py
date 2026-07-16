@@ -60,6 +60,16 @@ def _live_kit():
     return None
 
 
+def _hit_key_for(note):
+    """The pad's EFFECTIVE hit: the user's swap if set, else the kit's."""
+    sw = _inst().get('hit_swaps') or {}
+    k = sw.get(str(note)) or sw.get(note)
+    if k:
+        return k
+    import synthkits
+    return synthkits.kit_notes(_kit_key() or '').get(note)
+
+
 def _audition(note):
     kit = _live_kit()
     try:
@@ -67,11 +77,31 @@ def _audition(note):
             kit.note_on(note, 1.0)
         else:
             import synthkits
-            key = synthkits.kit_notes(_kit_key()).get(note)
+            key = _hit_key_for(note)
             if key:
                 synthkits.audition(key, _overrides(note))
     except Exception:
         pass
+
+
+def _set_swap(note, key):
+    """Swap a pad to any corpus hit (None = back to the kit's own)."""
+    iid = deckcfg.active_instrument()
+    instr = deckcfg.get_instrument(iid) or {}
+    sw = dict(instr.get('hit_swaps') or {})
+    if key is None:
+        sw.pop(str(note), None)
+        sw.pop(note, None)
+    else:
+        sw[str(note)] = key
+    deckcfg.set_instrument(iid, 'hit_swaps', sw)
+    kit = _live_kit()
+    if kit is not None:
+        try:
+            kit.retweak(note, _overrides(note), hit_key=_hit_key_for(note))
+        except Exception:
+            pass
+    _audition(note)
 
 
 def _apply(note, key, val, commit):
@@ -109,6 +139,102 @@ def _reset(note):
     _audition(note)
 
 
+def _open_swap():
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.push(swap_panel, "Swap hit", key='padswap', slow=True)
+
+
+def swap_panel(parent, shell=None):
+    """Alternates picker: browse the whole hit corpus by pack, tap to
+    audition (with this pad's current overrides), then Use. The pad keeps
+    its Tune/Decay/Level/Snap tweaks across the swap."""
+    import synthkits
+    note = _s.get('note')
+    if note is None:
+        dk.label(parent, "Pick a pad first.", 24, 24, color=dk.MUTED)
+        return
+    w = tulip.screen_size()[0]
+    import homeshell
+    H = tulip.screen_size()[1] - homeshell.BAR_H
+    _s['swap_sel'] = None
+
+    top = dk.row(parent, h=64)
+    dk.label(top, "%s: tap a hit to hear it" % _NOTE_NAMES.get(note, 'Pad'),
+             color=dk.TEXT, font=dk.FONT_S)
+    ub = dk.button(top, "Use selected", w=200, h=52, bg=dk.GREEN,
+                   font=dk.FONT_S)
+    db = dk.button(top, "Kit default", w=180, h=52, bg=dk.SURFACE2,
+                   font=dk.FONT_S)
+
+    body = dk.row(parent, h=H - 96)
+    packs = lv.obj(body)
+    packs.set_size(260, H - 110)
+    dk._flat(packs, bg=dk.BG, scroll=True)
+    hits = lv.obj(body)
+    hits.set_size(w - 320, H - 110)
+    dk._flat(hits, bg=dk.BG, scroll=True)
+
+    def _pick(key, btn):
+        _s['swap_sel'] = key
+        old = _s.get('swap_btn')
+        if old is not None:
+            try:
+                old.set_style_bg_color(dk.c(dk.SURFACE), 0)
+            except Exception:
+                pass
+        _s['swap_btn'] = btn
+        btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
+        try:
+            synthkits.audition(key, _overrides(note))
+        except Exception:
+            pass
+
+    def _show_pack(pack):
+        hits.clean()
+        _s['swap_btn'] = None
+        keys = synthkits.pack_hits(pack)
+        for key in keys[:150]:
+            b = dk.button(hits, synthkits.hit_name(key), w=lv.pct(96), h=52,
+                          bg=dk.SURFACE, font=dk.FONT_S)
+            b.add_event_cb(
+                (lambda k: (lambda e: _pick(k, e.get_target_obj())
+                            if e.get_code() == lv.EVENT.CLICKED else None))(key),
+                lv.EVENT.CLICKED, None)
+        if len(keys) > 150:
+            dk.label(hits, "(+%d more in this pack)" % (len(keys) - 150),
+                     color=dk.MUTED, font=dk.FONT_S)
+
+    all_packs = sorted(synthkits._load().get('packs', {}))
+    for pack in all_packs:
+        b = dk.button(packs, pack.replace('_', ' '), w=lv.pct(96), h=52,
+                      bg=dk.SURFACE, font=dk.FONT_S)
+        b.add_event_cb(
+            (lambda p: (lambda e: _show_pack(p)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(pack),
+            lv.EVENT.CLICKED, None)
+
+    def _use(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        if _s.get('swap_sel'):
+            _set_swap(note, _s['swap_sel'])
+        sh = _s.get('shell')
+        if sh is not None:
+            sh.back()
+
+    def _default(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        _set_swap(note, None)
+        sh = _s.get('shell')
+        if sh is not None:
+            sh.back()
+
+    ub.add_event_cb(_use, lv.EVENT.CLICKED, None)
+    db.add_event_cb(_default, lv.EVENT.CLICKED, None)
+
+
 def _select(note):
     _s['note'] = note
     for b, n in _s.get('pads', []):
@@ -118,10 +244,21 @@ def _select(note):
         return
     card.clean()
     import synthkits
-    key = synthkits.kit_notes(_kit_key() or '').get(note, '')
+    key = _hit_key_for(note) or ''
+    swapped = bool((_inst().get('hit_swaps') or {}).get(str(note)))
     dk.label(card, "%s  (note %d)" % (_NOTE_NAMES.get(note, 'Pad'), note),
              color=dk.WHITE, font=dk.FONT_M)
-    dk.label(card, synthkits.hit_name(key), color=dk.MUTED, font=dk.FONT_S)
+    r = dk.row(card, h=56, bg=dk.SURFACE2)
+    nl = dk.label(r, synthkits.hit_name(key) + (' *' if swapped else ''),
+                  color=dk.MUTED, font=dk.FONT_S, w=_s['cw'] - 220)
+    try:
+        nl.set_long_mode(lv.label.LONG.DOT)
+    except Exception:
+        pass
+    sb = dk.button(r, "Swap  >", w=130, h=44, bg=dk.SURFACE2, font=dk.FONT_S)
+    sb.add_event_cb(lambda e: (_open_swap()
+                               if e.get_code() == lv.EVENT.CLICKED else None),
+                    lv.EVENT.CLICKED, None)
     ov = _overrides(note)
     for pkey, label, vmin, vmax, dflt, scale in _PARAMS:
         r = dk.row(card, h=56, bg=dk.SURFACE2)

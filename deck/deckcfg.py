@@ -256,12 +256,17 @@ def fenced_write(fn):
     return True
 
 
-def _write(cfg, _retry=0):
+def _write(cfg, _retry=0, _chained=False):
     # Flash writes race AMY's mapped-PCM rendering (see quiet_now). With the
     # flash-fence firmware this writes immediately (~12ms fence); without it,
     # defer until quiet, retrying from the UI defer queue, capped (~15s) so
     # config is never lost. Always re-reads the LATEST cached cfg so
-    # coalesced retries can't resurrect stale settings.
+    # coalesced retries can't resurrect stale settings. ONE retry chain at a
+    # time: under sustained sound every save used to spawn its own 250ms
+    # defer chain and the accumulating storm ground the UI to a halt.
+    if _state.get('write_chain') and not _chained:
+        return          # a pending chain will pick up the latest cache
+    _state['write_chain'] = True
     def do():
         # Drop the legacy `instances` key if an old config still carries it.
         data = {k: v for k, v in cfg.items() if k != 'instances'}
@@ -271,16 +276,18 @@ def _write(cfg, _retry=0):
         except OSError as e:
             print("deckcfg: could not save:", e)
     if fenced_write(do):
+        _state['write_chain'] = False
         return
     if _retry < 60:
         try:
             import tulip
-            tulip.defer(lambda x: _write(_state.get('cfg', cfg), _retry + 1),
-                        0, 250)
+            tulip.defer(lambda x: _write(_state.get('cfg', cfg), _retry + 1,
+                                         _chained=True), 0, 250)
             return
         except Exception:
             pass
     do()    # retry cap reached (or no defer): write anyway, accept the risk
+    _state['write_chain'] = False
 
 
 def save(cfg):
