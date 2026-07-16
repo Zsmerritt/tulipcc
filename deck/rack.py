@@ -236,8 +236,9 @@ def _voices_cb(e):
 def _voices_done(e):
     # Finger lifted: save + rebuild the router once with the final voice count.
     v = e.get_target_obj().get_value()
-    deckcfg.set_instrument(deckcfg.active_instrument(), 'num_voices', v)
-    deckcfg.apply_all()
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'num_voices', v)
+    deckcfg.apply_instrument(iid)   # O-5: only this synth rebuilds
 
 
 def _open_patch(e):
@@ -278,7 +279,7 @@ def _set_type(t):
 def _set_kit(kit):
     iid = deckcfg.active_instrument()
     deckcfg.set_instrument(iid, 'kit', kit)
-    deckcfg.apply_all()
+    deckcfg.apply_instrument(iid)   # O-5: same slot window, one kit reload
     sh = _s.get('shell')
     if sh is not None:
         sh.refresh_chips()
@@ -581,7 +582,7 @@ def _build_edit(parent, shell):
         deckcfg.set_instrument(rid, 'params', {}, flush=False)
         deckcfg.set_instrument(rid, 'reverb_send', 0.0, flush=False)
         deckcfg.set_instrument(rid, 'hits', {})
-        deckcfg.apply_all()
+        deckcfg.apply_instrument(rid)   # O-5
         sh2 = _s.get('shell')
         if sh2 is not None:
             try:

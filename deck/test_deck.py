@@ -1330,3 +1330,66 @@ def test_read_paths_do_not_mutate_config(deck):
     forwarder.start()                    # the router is read-only over cfg
     assert deckcfg.load() == before, \
         "a read path mutated the live config dict (E-6 contract)"
+
+
+# ---------------------------------------------------------------------------
+# O-2: C-side MIDI route table upload + Python board-forwarding handoff
+# ---------------------------------------------------------------------------
+
+def test_c_router_upload_and_board_handoff(deck):
+    deckcfg, forwarder = deck
+    tulip = sys.modules['tulip']
+    calls = {}
+    tulip.midi_routes = lambda masks, py_mask, tap: calls.update(
+        masks=list(masks), py=py_mask, tap=tap)
+    tulip.midi_activity = lambda: 0
+    try:
+        deckcfg.add_instrument(device=0, channel=2)             # board ch2
+        deckcfg.add_instrument(device='internal', channel=1)    # layer ch1
+        sent = _install_and_reset_sent()
+        forwarder.start()
+        assert calls['masks'][1] == 1      # ch2 -> board device 0 in C
+        assert calls['py'] & 1             # ch1 layered: Python still routes
+        assert not (calls['py'] & 2)       # ch2 fully C-owned
+        assert calls['tap'] is False
+        # Python must NOT double-forward what C already sent
+        sent.clear()
+        forwarder._route(bytes([0x91, 60, 100]))   # ch2 note on
+        assert sent == []                  # handed off to the C router
+        # tap toggle re-uploads with notify_all
+        forwarder.set_midi_tap(True)
+        assert calls['tap'] is True
+    finally:
+        del tulip.midi_routes
+        del tulip.midi_activity
+        forwarder._state['c_router'] = False
+        forwarder._state['py_tap'] = False
+
+
+# ---------------------------------------------------------------------------
+# O-5: rebuild_one -- one synth rebuilt in place, others untouched
+# ---------------------------------------------------------------------------
+
+def test_rebuild_one_reuses_slot_and_skips_others(deck):
+    deckcfg, forwarder = deck
+    import synthkits
+    iid0 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid0, 'type', 'gm')
+    deckcfg.add_instrument(device='internal', channel=2, type='gm')
+    forwarder.start()
+    other = [i['id'] for i in deckcfg.instruments() if i['id'] != iid0][0]
+    other_syn = forwarder._state['synths'][other]
+    old_syn = forwarder._state['synths'][iid0]
+    slot = forwarder._state['built'][iid0]['slot']
+    assert slot == synthkits.SLOT_MELODIC
+    deckcfg.set_instrument(iid0, 'patch', 12)
+    forwarder.rebuild_one(iid0)
+    assert forwarder._state['synths'][other] is other_syn      # untouched
+    assert not other_syn.released
+    new_syn = forwarder._state['synths'][iid0]
+    assert new_syn is not old_syn and old_syn.released
+    assert new_syn.patch == slot           # recorded slot reused in place
+    # a topology change (channel move) falls back to the full rebuild
+    deckcfg.set_instrument(iid0, 'channel', 5)
+    forwarder.rebuild_one(iid0)
+    assert forwarder._state['synths'][other] is not other_syn  # rebuilt all

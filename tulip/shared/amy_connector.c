@@ -56,6 +56,22 @@ uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
 int16_t midi_queue_head = 0;
 int16_t midi_queue_tail = 0;
 
+// ---- C-side MIDI channel router (review O-2 / boundary sketch 1) ----
+// Python paid ~150-400us + ~3 heap allocs PER MESSAGE for routing that is
+// pure table lookup: which boards get this channel's bytes, and whether
+// any Python-routed (layered) internal instrument listens. deck/forwarder
+// uploads the table after each rebuild (tulip.midi_routes); the input
+// hook then forwards board bytes and drops Python entirely for channels
+// C fully owns. An MPE controller streaming CC/bend at 300 msg/s used to
+// cost 5-12% of the MP core and a GC-pause's worth of allocs per minute.
+#include "midi_router.h"
+tulip_midi_route_t tulip_midi_routes[17];      // index by channel 1..16
+volatile uint8_t tulip_midi_route_active = 0;  // table uploaded at least once
+volatile uint8_t tulip_midi_notify_all = 1;    // schedule Python per message
+                                               // (legacy default; midimon)
+volatile uint8_t tulip_midi_py_pending = 0;    // outstanding scheduler entry
+volatile uint32_t tulip_midi_activity = 0;     // messages seen (meter/UI poll)
+
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c.h"
@@ -165,6 +181,20 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         }
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_true);
     } else {
+        tulip_midi_activity++;
+        // C router first (O-2): board forwarding + the "does Python even
+        // need to see this?" decision are table lookups, not Python.
+        if (tulip_midi_route_active && len >= 1
+                && data[0] >= 0x80 && data[0] < 0xF0) {
+            tulip_midi_route_t *r = &tulip_midi_routes[(data[0] & 0x0F) + 1];
+            uint16_t bm = r->board_mask;
+            for (int d = 0; bm; ++d, bm >>= 1) {
+                if (bm & 1) tulip_send_midi_out_device(data, len, d);
+            }
+            if (!(r->flags & TULIP_MIDI_ROUTE_PY) && !tulip_midi_notify_all) {
+                return;   // fully handled in C: no queue, no scheduler, no GC
+            }
+        }
         // SPSC discipline (E-11): only this writer moves TAIL; only the
         // Python reader moves HEAD. The old wrap handling advanced head
         // from the writer -- mutating the reader's cursor unsynchronized,
@@ -184,8 +214,15 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         }
         // else: queue full, drop this (newest) message
 
-        // We tell Python that a MIDI message has been received
-        if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_false);
+        // Tell Python -- COALESCED: one outstanding scheduler entry serves
+        // the whole backlog (the drain loops until midi_in empties, which
+        // clears the flag). A CC storm used to enqueue one scheduler entry
+        // per message.
+        if (midi_callback != NULL && !tulip_midi_py_pending) {
+            if (mp_sched_schedule(midi_callback, mp_const_false)) {
+                tulip_midi_py_pending = 1;
+            }
+        }
     }
 }
 

@@ -16,6 +16,7 @@
 #include "amy_midi.h"
 #endif
 #include "amy_connector.h"
+#include "midi_router.h"
 #include "tsequencer.h"
 #if !defined(AMYBOARD) && !defined(AMYBOARD_WEB)
 #include "ui.h"
@@ -327,7 +328,10 @@ STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
         midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
         return mp_obj_new_bytes(last_midi[prev_head],
                                 last_midi_len[prev_head]);
-    } 
+    }
+    // Queue drained: allow the input hook to schedule the drain again
+    // (coalesced notification -- see tulip_midi_input_hook).
+    tulip_midi_py_pending = 0;
     return mp_const_none;
 }
 
@@ -373,6 +377,57 @@ STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 2, tulip_midi_out);
+
+// ---- C-side MIDI router upload (see midi_router.h; consumed in
+// amy_connector.c's input hook) ----
+
+// tulip.midi_routes(board_masks, python_mask, notify_all)
+//   board_masks: 16 ints (channels 1..16), bit d = forward to board device d
+//   python_mask: bit (ch-1) = Python routing still needed on that channel
+//                (layered internals)
+//   notify_all:  schedule the Python drain for EVERY message (midimon open
+//                or any Python consumer that wants the full stream)
+// Uploaded by deck/forwarder after each rebuild; channels with no board
+// bits, no python bit and notify_all=0 never touch Python at all.
+STATIC mp_obj_t tulip_midi_routes_fn(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t *items;
+    size_t alen;
+    mp_obj_get_array(args[0], &alen, &items);
+    uint32_t py_mask = mp_obj_get_int(args[1]);
+    for (int ch = 1; ch <= 16; ch++) {
+        uint16_t bm = (ch - 1 < (int)alen) ? (uint16_t)mp_obj_get_int(items[ch - 1]) : 0;
+        tulip_midi_routes[ch].board_mask = bm;
+        tulip_midi_routes[ch].flags = (py_mask >> (ch - 1)) & 1;
+    }
+    tulip_midi_notify_all = (n_args > 2 && mp_obj_is_true(args[2])) ? 1 : 0;
+    tulip_midi_route_active = 1;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_routes_obj, 2, 3, tulip_midi_routes_fn);
+
+// tulip.midi_activity() -- monotonic count of MIDI messages seen by the C
+// layer; the 10 Hz meter/chips poll this instead of importing forwarder
+// and reading Python state (migration map #4).
+STATIC mp_obj_t tulip_midi_activity_fn(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(tulip_midi_activity);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_activity_obj, 0, 0, tulip_midi_activity_fn);
+
+#ifndef __EMSCRIPTEN__
+// tulip.piano_partials(n) -- cap the interp-partials (piano) engine at
+// harmonic n (8..40). Each held piano note renders ~24 partial oscs at
+// full detail (~14% of a core); the deck's "partial detail" param trades
+// top-end air for polyphony headroom (OPT-8). Apply while no piano notes
+// are held (the router applies it on rebuild).
+STATIC mp_obj_t tulip_piano_partials(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 8) n = 8;
+    if (n > 40) n = 40;
+    amy_partials_harmonic_limit = (uint8_t)n;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_obj, 1, 1, tulip_piano_partials);
+#endif
 
 // tulip.num_midi_devices() -- count of connected USB-MIDI OUT devices (fleet size,
 // primary + extras). 1 on platforms without the USB host.
@@ -470,6 +525,34 @@ STATIC mp_obj_t tulip_amy_send(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_obj, 1, 1, tulip_amy_send);
+
+// tulip.amy_send_batch("msg1\nmsg2\n...") -> count. One MP call + one string
+// object instead of N of each: instrument switches / kit loads / FX
+// re-baselines emit dozens of wire messages back-to-back, and each
+// tulip.amy_send() round-trip costs an MP call + arg marshal (boundary
+// sketch 2). Splits on '\n' in place on a stack copy per line.
+STATIC mp_obj_t tulip_amy_send_batch(size_t n_args, const mp_obj_t *args) {
+    size_t len;
+    const char *s = mp_obj_str_get_data(args[0], &len);
+    int count = 0;
+    char line[MAX_MESSAGE_LEN];
+    size_t li = 0;
+    for (size_t i = 0; i <= len; i++) {
+        char c = (i < len) ? s[i] : '\n';
+        if (c == '\n') {
+            if (li > 0) {
+                line[li] = '\0';
+                amy_add_message(line);
+                count++;
+            }
+            li = 0;
+        } else if (li < sizeof(line) - 1) {
+            line[li++] = c;
+        }
+    }
+    return mp_obj_new_int(count);
+}
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_batch_obj, 1, 1, tulip_amy_send_batch);
 
 STATIC mp_obj_t tulip_amy_send_sysex(size_t n_args, const mp_obj_t *args) {
 #if SYSEX_COPY_SLOTS > 0
@@ -1804,6 +1887,11 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_seq_ticks), MP_ROM_PTR(&tulip_seq_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_routes), MP_ROM_PTR(&tulip_midi_routes_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_activity), MP_ROM_PTR(&tulip_midi_activity_obj) },
+#ifndef __EMSCRIPTEN__
+    { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
+#endif
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
@@ -1819,6 +1907,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
 
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_amy_send), MP_ROM_PTR(&tulip_amy_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_send_batch), MP_ROM_PTR(&tulip_amy_send_batch_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_send_sysex), MP_ROM_PTR(&tulip_amy_send_sysex_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_ticks_ms), MP_ROM_PTR(&tulip_amy_ticks_ms_obj) },
 #ifdef ESP_PLATFORM

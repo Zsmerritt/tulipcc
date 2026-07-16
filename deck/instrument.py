@@ -73,7 +73,7 @@ def _nums(favs):
 def _select_patch(patch):
     iid = deckcfg.active_instrument()
     deckcfg.set_instrument(iid, 'patch', patch)
-    deckcfg.apply_all()
+    deckcfg.apply_instrument(iid)   # O-5: patch swap rebuilds one synth
     if _s.get('name') is not None:
         _s['name'].set_text("current: " + _pname(patch))
     try:

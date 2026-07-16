@@ -148,6 +148,15 @@ PARAMS = [
     # amy.send(synth=...) -- synth_send_calls skips it.
     _slider('reverb_send', 'FX', 'reverb send', 0.0, 1.0, 0.0, 'basic',
             {'kind': 'bus_send'}, scale=100, unit='%'),
+
+    # Piano partial detail (OPT-8): a sustained piano voice renders ~24
+    # partial oscillators (~14% of a core per held note). This caps the
+    # harmonic index the interp-partials engine uses -- lower trades subtle
+    # top-end air for real polyphony headroom. Device-global (the C engine
+    # has one limit); forwarder applies kind 'piano_quality' via
+    # tulip.piano_partials(); synth_send_calls skips it.
+    _slider('piano_quality', 'FX', 'partial detail', 8, 40, 40, 'advanced',
+            {'kind': 'piano_quality'}),
 ]
 
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
@@ -344,8 +353,8 @@ def synth_send_calls(params):
     for name, val in merged.items():
         ap = PARAM_BY_NAME[name]['apply']
         kind = ap['kind']
-        if kind == 'bus_send':
-            continue        # bus-directed; the router applies it (not synth=)
+        if kind in ('bus_send', 'piano_quality'):
+            continue        # router-applied kinds, not amy.send(synth=...)
         if kind == 'osc':
             for osc, arg, coef in ap['targets']:
                 if coef is None:

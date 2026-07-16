@@ -610,7 +610,18 @@ def apply_instance(i=None, cfg=None):
 
 
 def apply_instrument(iid=None, cfg=None):
-    apply_all(cfg)
+    """Apply ONE instrument's change (O-5): rebuild_one reuses the recorded
+    slot/bus and touches only that synth (~5-15ms, ~100ms for a kit) instead
+    of the full start() (80-200ms that audibly interrupts every sounding
+    instrument). Topological edits fall back to start() inside."""
+    if iid is None:
+        return apply_all(cfg)
+    try:
+        import forwarder
+        forwarder.rebuild_one(iid)
+    except Exception as e:
+        print("deckcfg: rebuild_one failed:", e)
+        apply_all(cfg)
 
 
 def sync_time():

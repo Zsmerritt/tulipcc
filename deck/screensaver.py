@@ -80,12 +80,25 @@ def _tick(x):
     # from flash every few seconds bought nothing.
     if not _state['on']:
         return
-    if _state.get('midi_seen'):
-        _state['midi_seen'] = False
+    # MIDI wake, two sources: the Python callback flag (layered channels),
+    # and the C layer's message counter -- with the C router active (O-2),
+    # C-owned channels never reach Python, so poll the counter instead.
+    woke = _state.get('midi_seen', False)
+    _state['midi_seen'] = False
+    try:
+        act = tulip.midi_activity()
+        if act != _state.get('last_act'):
+            _state['last_act'] = act
+            woke = True
+    except Exception:
+        pass
+    if woke:
         try:
             lv.display_get_default().trigger_activity()
         except Exception:
             pass
+        if _state['phase'] in ('dim', 'sleep'):
+            _apply_phase('full')
     idle = _idle_ms()
     sa = _state['sleep_after']
     da = _state['dim_after']

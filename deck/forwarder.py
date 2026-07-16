@@ -35,6 +35,9 @@ _state = {
     'err_iids': set(),   # instrument ids whose synth already logged a failure
     'seen': 0,           # messages seen (activity flicker in the top-bar chips)
     'c_channels': set(),  # channels whose notes AMY's C layer plays directly
+    'c_router': False,   # the C route table is live (O-2): boards forwarded
+                         # in C, Python woken only for layered channels/taps
+    'py_tap': False,     # a Python consumer (midimon) wants every message
 }
 
 _EMPTY = ((), ())        # shared empty route (no per-message allocation)
@@ -88,6 +91,8 @@ def _route(m):
         # The forwarder -- like midi.midi_event_cb -- must not also handle it.
         return
     iids, boards = _state['routes'].get(ch, _EMPTY)
+    if _state.get('c_router'):
+        boards = ()      # the C router already forwarded board bytes (O-2)
     if not iids and not boards:
         return
     # Channels with a SINGLE internal instrument are C-OWNED: their synth
@@ -192,6 +197,15 @@ def _apply_params(syn, params):
             refresh_room()
         except Exception:
             pass
+    # piano partial-detail knob (OPT-8): device-global engine limit
+    pq = (params or {}).get('piano_quality')
+    if pq is not None:
+        try:
+            import tulip
+            if hasattr(tulip, 'piano_partials'):
+                tulip.piano_partials(int(pq))
+        except Exception:
+            pass
 
 
 def _apply_device_fx(cfg, targets, prev_buses=()):
@@ -252,6 +266,103 @@ def reapply_params(iid):
         return
     instr = deckcfg.get_instrument(iid) or {}
     _apply_params(syn, instr.get('params', {}))
+
+
+def _sig(instr, c_own):
+    """The topology signature of a built instrument: if any of these change,
+    routing/layering/slots must be recomputed -- full rebuild. Patch, kit,
+    voices, params are NOT topology: rebuild_one handles those in place."""
+    m = instr.get('mpe', {})
+    return (instr.get('channel', 1), instr.get('device'),
+            instr.get('type', 'juno6'), bool(instr.get('enabled', True)),
+            bool(m.get('enabled')), c_own)
+
+
+def rebuild_one(iid):
+    """Rebuild ONE internal instrument's synth in place (O-5): a patch/kit/
+    voices edit used to pay the full start() -- releasing and re-creating
+    EVERY synth, ~80-200ms of wire traffic that audibly interrupted every
+    other sounding instrument. Reuses the slot + FX bus recorded by the
+    last full build; anything topological (channel/device/type/enable/MPE)
+    falls back to start()."""
+    instr = deckcfg.get_instrument(iid)
+    rec = (_state.get('built') or {}).get(iid)
+    old = _state['synths'].get(iid)
+    if (instr is None or rec is None or old is None
+            or _state.get('rebuilding')
+            or instr.get('device') != 'internal'):
+        return start()
+    ch = instr.get('channel', 1)
+    c_own = ch in _state['c_channels']
+    if _sig(instr, c_own) != rec['sig']:
+        return start()                      # topology changed
+    import synth as _synth
+    try:
+        old.release()
+    except Exception:
+        pass
+    try:
+        if instr.get('type') == 'drums':
+            import drums_kit
+            syn = drums_kit.make_synth(instr.get('kit', 384),
+                                       num_voices=instr.get('num_voices', 6),
+                                       channel=(ch if c_own else None),
+                                       hit_overrides=instr.get('hits'),
+                                       slot_base=rec['slot'],
+                                       hit_swaps=instr.get('hit_swaps'))
+        elif instr.get('type') in ('gm', 'gm2'):
+            if instr.get('type') == 'gm2':
+                import gmbig as _gmmod
+            else:
+                import gm as _gmmod
+            import synthkits as _sk
+            _sk.store_patch(rec['slot'],
+                            _gmmod.patch_string(instr.get('patch', 0)))
+            syn = _synth.PatchSynth(patch=rec['slot'],
+                                    num_voices=instr.get('num_voices', 10),
+                                    channel=(ch if c_own else None))
+        else:
+            nv = instr.get('num_voices')
+            nv = min(nv or 4, 4) if instr.get('type') == 'piano' else (nv or 10)
+            syn = _synth.PatchSynth(patch=instr.get('patch', 0),
+                                    num_voices=nv,
+                                    channel=(ch if c_own else None))
+    except Exception as e:
+        _synth_err(iid, e)
+        return start()                      # broken half-state: rebuild all
+    _state['synths'][iid] = syn
+    di = getattr(syn, 'deferred_init', None)
+    if di is not None:
+        try:
+            di()
+        except Exception:
+            pass
+    if c_own:
+        try:
+            import amy as _amy
+            _amy.send(synth=ch, grab_midi_notes=1)
+        except Exception:
+            pass
+    if instr.get('type') != 'drums':
+        _apply_params(syn, instr.get('params', {}))
+    # refresh this instrument's FX-bus target + re-baseline ITS bus only
+    sn = getattr(syn, 'synth', None)
+    if sn is not None and 'bus' in rec:
+        import amyparams as _ap
+        pfx = (_ap.patch_fx(instr.get('patch', 0))
+               if instr.get('type', 'juno6') in ('juno6', 'dx7', 'piano')
+               else {})
+        for t in _state.get('fx_targets') or ():
+            if t.get('iid') == iid:
+                t['synth'] = sn
+                t['pfx'] = pfx
+                _apply_device_fx(deckcfg.load(), [t])
+                break
+    try:
+        import decklog
+        decklog.dbg("router: rebuilt one (%s)" % iid)
+    except Exception:
+        pass
 
 
 def _room_string(fx, targets):
@@ -327,6 +438,8 @@ def _start_once():
     # patch_string sends allocate a fresh slot per rebuild and leak the pool
     _next_melodic_slot = [0]
     _next_kit_slot = [0]
+    _state['built'] = {}    # iid -> {'sig','bus','slot'}: what a later
+                            # rebuild_one(iid) may reuse in place (O-5)
     _state['err_iids'] = set()
     _state['c_channels'] = set()
     _state['has_device_arg'] = None    # re-probe (firmware can't change, but
@@ -451,6 +564,12 @@ def _start_once():
                 _state['synths'][instr['id']] = syn
                 if c_own:
                     _state['c_channels'].add(ch)
+                _state['built'][instr['id']] = {
+                    'sig': _sig(instr, c_own),
+                    'slot': (kslot if instr.get('type') == 'drums' else
+                             mslot if instr.get('type') in ('gm', 'gm2')
+                             else None),
+                }
             except Exception as e:
                 print("forwarder: internal synth failed:", e)
             if syn is not None:
@@ -487,6 +606,9 @@ def _start_once():
                     pfx = (_ap.patch_fx(instr.get('patch', 0))
                            if instr.get('type', 'juno6') in
                            ('juno6', 'dx7', 'piano') else {})
+                    b = _state['built'].get(instr['id'])
+                    if b is not None:
+                        b['bus'] = min(_next_bus, 3)
                     _state['fx_targets'].append(
                         {'bus': min(_next_bus, 3), 'synth': sn, 'pfx': pfx,
                          'iid': instr['id'],
@@ -530,6 +652,7 @@ def _start_once():
                 pass
 
     _apply_device_fx(cfg, _state['fx_targets'], prev_fx_buses)
+    _upload_c_routes()   # C router table matches the routes just built (O-2)
 
     # Re-assert the configured GLOBAL VOLUME: the synth rebuild resets AMY
     # state, so without this every patch switch reverted volume to the default
@@ -616,5 +739,49 @@ def live_voices():
 
 
 def activity():
-    """Monotonic count of MIDI messages routed; delta > 0 = activity."""
-    return _state['seen']
+    """Monotonic count of MIDI messages seen; delta > 0 = activity. Reads
+    the C layer's counter when available (with the C router active, Python
+    never sees C-owned channels' traffic at all -- O-2), else the Python
+    router's own count."""
+    try:
+        import tulip
+        return tulip.midi_activity() + _state['seen']
+    except Exception:
+        return _state['seen']
+
+
+def set_midi_tap(on):
+    """Full-stream Python notification toggle (midimon): with the C router
+    active, C-owned channels never wake Python -- unless a tap asks for
+    every message."""
+    _state['py_tap'] = bool(on)
+    _upload_c_routes()
+
+
+def _upload_c_routes():
+    """Upload the channel route table to the C router (O-2): per-channel
+    board masks + which channels still need Python (layered internals).
+    After this, C-owned channels cost ZERO Python per message: the C layer
+    plays the synth, forwards the boards, bumps the activity counter, and
+    never touches the scheduler. Fails soft on older firmware."""
+    try:
+        import tulip
+        if not hasattr(tulip, 'midi_routes'):
+            return
+        masks = [0] * 16
+        py_mask = 0
+        for ch, (iids, boards) in _state['routes'].items():
+            if not 1 <= ch <= 16:
+                continue
+            for d in boards:
+                if isinstance(d, int) and 0 <= d < 16:
+                    masks[ch - 1] |= 1 << d
+            # layered channels (2+ internals) still route in Python; the
+            # C layer can only own solo/MPE channels (synth number ==
+            # channel)
+            if iids and ch not in _state['c_channels']:
+                py_mask |= 1 << (ch - 1)
+        tulip.midi_routes(masks, py_mask, bool(_state.get('py_tap')))
+        _state['c_router'] = True
+    except Exception:
+        _state['c_router'] = False

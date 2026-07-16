@@ -125,6 +125,11 @@ def _close():
         midi.remove_callback(_cb)
     except Exception:
         pass
+    try:
+        import forwarder
+        forwarder.set_midi_tap(False)   # C-owned channels go quiet again
+    except Exception:
+        pass
 
 
 def _tick(sid):
@@ -216,6 +221,13 @@ def panel(parent, shell=None):
     try:
         import midi
         midi.add_callback(_cb)     # MIDI_CALLBACKS is a set: re-add is a no-op
+    except Exception:
+        pass
+    try:
+        import forwarder
+        # the monitor wants EVERY message; with the C router active,
+        # C-owned channels otherwise never reach Python (O-2)
+        forwarder.set_midi_tap(True)
     except Exception:
         pass
     try:
