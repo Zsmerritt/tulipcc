@@ -15,6 +15,16 @@ if '/user' not in sys.path:
 def _boot():
     import tulip
 
+    # FIRST, before anything slow or interruptible (Wi-Fi join, config apply):
+    # the task-bar/launcher patch is what gives the stock REPL screen its
+    # "Home" button. A boot interrupted by a host serial tool used to strand
+    # the deck in the stock REPL with no touch path back into the deck UI.
+    try:
+        import ui_patch
+        ui_patch.apply()
+    except Exception as e:
+        print("deck: ui_patch failed:", e)
+
     try:
         import decklog
         # Include WHY we booted: a watchdog reset never runs Python again, so
@@ -61,15 +71,9 @@ def _boot():
     except Exception as e:
         print("deck: apply failed:", e)
 
-    # Bigger task-bar buttons + launcher menu with the deck apps. Apply BEFORE
-    # starting any background loop (the screensaver's deferred tick) -- otherwise
-    # that tick can fire mid-import of ui_patch and intermittently leave the patch
-    # uninstalled (Home task bar not stripped).
-    try:
-        import ui_patch
-        ui_patch.apply()
-    except Exception as e:
-        print("deck: ui_patch failed:", e)
+    # (ui_patch.apply() moved to the top of _boot: it must land before any
+    # slow/interruptible step, and it still precedes the screensaver's
+    # deferred tick, which was the original ordering constraint.)
 
     # Idle screensaver: dim then sleep the backlight (thresholds from Settings).
     try:
