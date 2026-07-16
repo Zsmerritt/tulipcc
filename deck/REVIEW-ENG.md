@@ -503,3 +503,59 @@ exactly this kind of hand-regenerated blob are how presets shift by one.
 Revisit only if all four fonts must ever ship at runtime (~4x today's live
 data) — by which point the maps should be listen-verified and stable enough
 to freeze a format around.
+
+---
+
+## 7. Round 2 verification (repo-only re-check of the round-1 findings)
+
+Baseline: `python -m pytest deck/test_deck.py -q` → **91 passed** (88 round-1
+baseline + 2 gmbig round-trip tests added with the fixes + 1 new test added
+this round, below). Tree at `d2aa6f85` + working-tree gmbig/test changes.
+
+| Item | Verdict | Evidence (current tree) |
+|---|---|---|
+| F-1 synth-number leak | **FIXED** | `synth.py:31-58` — base 18, `amy_synth_free` pool popped before minting; `release()` recycles auto numbers (`synth.py:150-160`); `set_channel` retires the old auto number and clears `_auto_number` (`synth.py:162-171`); forwarder rewinds to 18 **and** clears the pool on full rebuild (`forwarder.py:161-162`). |
+| F-2 calibration lost at boot | **FIXED** | `boot.py:118-121` applies `cfg['touch_delta']` with `(1, 1, 0.8)` only as fallback. |
+| F-3 dropped defers | **FIXED** | `tsequencer.c:29-31` clears the slot only inside `if (mp_sched_schedule(...))`; refused slots stay armed and retry next tick. Belt: `deckcfg.py:284-298` reclaims a `write_chain` older than 5 s (`write_chain_since`). |
+| F-4 ch-16 / auto-16 collision | **FIXED** | Auto allocator starts at 18 (`synth.py:31`, `reset()` at `:43`, forwarder rewind at `forwarder.py:161`) — clear of channels 1–16 and the scratch 17. |
+| F-5 defer publish-order race | **FIXED** | `tulip_defer` now stores arg + deadline, compiler barrier (`__asm__ volatile("" ::: "memory")`), then the callback pointer (modtulip.c, tulip_defer body). |
+| F-6 midi_in pending race / ring hygiene | **FIXED** | `tulip_midi_in`: clear-`pending`-then-recheck on empty, and copy-to-stack **before** advancing head; `midi_queue_head/tail` now `volatile` (`amy_connector.c:59-60`); writer publishes tail with `__atomic_store_n(..., __ATOMIC_RELEASE)` (`amy_connector.c:243`) so payload stores can't reorder past it. |
+| F-7 stale param KeyError kills router | **FIXED** | `amyparams.py:351-355` — `PARAM_BY_NAME.get(name)`; unknown stored params are skipped instead of raising at boot. |
+| F-8 audition clobbers ch-15 synth | **FIXED** | `synthkits.py:238` — `audition(..., synth=17)`, the reserved scratch below the auto base. |
+| F-9 CC coalescing reorder/loss | **FIXED** | `ui_patch.py:414` — `_NO_COALESCE = frozenset((0, 32, 64) + range(120,128))`; drain exempts them (`ui_patch.py:453-459`). |
+| F-10 qput unfenced root-dir write | **FIXED** | `qput.py:113-119` — temp at `/user/var/.qput_tmp` with mkdir; payload write wrapped in `flash_fence(1)` + 12 ms settle / `flash_fence(0)` on manual-fence firmware, skipped when `flash_fence_auto` (`qput.py:127-145`). |
+| F-11 dead synthkits.json writer | **FIXED** | `make_synthkits.py` `main()` no longer writes ("DEAD WRITER REMOVED", prints a pointer to assemble2); `assemble2.py:9-10` docstring now says it writes the SPLIT `deck/synthkits_data/` layout. (`OUT` constant remains at `make_synthkits.py:17` as the anchor `assemble2` derives the outdir from — harmless.) |
+| F-12 GM name in home footer | **FIXED** | `home.py:261` — `sound = catalog.sound_label(instr)`. |
+| F-13 reset leaves hit_swaps | **FIXED** | `rack.py:589` clears `hit_swaps` alongside params/reverb_send/hits. |
+| F-14 shellmodel boundary duplication | **FIXED** | `shellmodel.py:17-38` — `patch_short`/`patch_category` now delegate to `catalog.chip_sound`/`engine_label`; no private boundary constants remain. |
+| F-15 bg_bitmap VLA | **FIXED** | modtulip.c `tulip_bg_bitmap` get path uses `malloc_caps(n, MALLOC_CAP_SPIRAM)` + OOM raise + `free_caps`. |
+| F-16 route-table upload atomicity | **FIXED** | `tulip_midi_routes_fn` drops `tulip_midi_route_active` around the rewrite and re-raises it after a compiler barrier (hook falls back to notify-Python for the inconsistent microseconds). |
+| F-17 Files panel stat storm | **FIXED** | `files.py:166` — single `os.ilistdir(path)` pass for type+size; `os.stat` only where ilistdir omits size (`files.py:200`). |
+| F-18 debug clock cadence | **FIXED** | `settings.py:407-410` — debug toggle sets `_clock_running = False` then `_start_clock()`; `ticker.every` same-key re-registration replaces the subscriber at the new cadence (`ticker.py:23-29`). |
+| Opt-1 batched AMY sends | **IMPLEMENTED** | `forwarder.py:417` wraps `_start_once()` in `_AmyBatch` (`forwarder.py:425-461`): collects `amy.override_send` messages, flushes one `tulip.amy_send_batch('\n'.join(...))`, order-preserving, per-message fallback on failure, no-op without the firmware binding. |
+| P-1 gmbig verdict (§6) | **IMPLEMENTED as recommended** | `gmbig.py` rewritten to emu4-only parallel int arrays (~3 heap objects); dead fonts/DRUMS/WAVES moved to `tools/gm_big_bank_tables.py`; two round-trip tests (`_EMU4_REFERENCE` sample incl. the non-monotonic preset rows + program count) guard the transcription. |
+
+**REGRESSED: none found.**
+
+Test coverage addendum: `test_rebuild_one_reuses_slot_and_skips_others`
+(`test_deck.py:1373`) still passes, but it runs against the test **stub**
+PatchSynth, which never modeled numbering — the free-list itself had no
+coverage. Added `test_real_synth_free_list_recycles_auto_numbers`
+(end of `test_deck.py`): loads the real `tulip/shared/py/synth.py` under the
+host mocks and asserts base-18 allocation, release-recycling,
+counter-stability across 10 release/realloc cycles, channel numbers never
+entering the pool, and `set_channel` retiring the auto number exactly once.
+Suite: 91 passed.
+
+Residual notes (not defects, for the backlog):
+* `_AmyBatch` flushes through `tulip_amy_send_batch`, whose line buffer
+  silently truncates any single message ≥ `MAX_MESSAGE_LEN-1` (1023,
+  `amy/src/amy.h:277`). Longest stored patch string today is 860 chars
+  (+`u<slot>` prefix ≈ 866) — ~150 chars of headroom. Worth a length guard
+  in `_AmyBatch.__exit__` (send oversized lines via the plain path) before
+  anyone ships a fatter partials patch.
+* `rebuild_one` is not batch-wrapped: a synth-kit `rebuild_one` still emits
+  ~60 individual sends. Wrapping its body in `_AmyBatch()` is a two-line
+  follow-up (mind the reentrancy: `start()` already holds a batch when it
+  calls nothing that re-enters, and `rebuild_one` falls back to `start()`
+  *before* opening a batch, so a naive wrap is safe today).

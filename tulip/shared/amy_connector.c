@@ -100,7 +100,7 @@ void tulip_recompute_cv_active(void) {
         if (cv_synth_map[i]) { any = 1; break; }
     }
     if (!any && external_map != NULL) {
-        for (uint16_t i = 0; i < amy_config.max_oscs; i++) {
+        for (uint16_t i = 0; i < amy_global.config.max_oscs; i++) {
             if (external_map[i]) { any = 1; break; }
         }
     }

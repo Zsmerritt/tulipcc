@@ -1393,3 +1393,105 @@ def test_rebuild_one_reuses_slot_and_skips_others(deck):
     deckcfg.set_instrument(iid0, 'channel', 5)
     forwarder.rebuild_one(iid0)
     assert forwarder._state['synths'][other] is not other_syn  # rebuilt all
+
+
+def test_real_synth_free_list_recycles_auto_numbers(deck):
+    """F-1 (round 2): the REAL tulip/shared/py/synth.py allocator. The stub
+    PatchSynth above never modeled numbering, so the free-list fix had no
+    coverage: auto numbers must start at 18 (above channels 1-16 + the
+    audition scratch 17, F-4/F-8), release() must recycle them (repeated
+    rebuild_one calls used to walk the counter past AMY's 64-instrument
+    cap), channel-pinned numbers must never enter the pool, and
+    set_channel must retire the old auto number into it."""
+    import importlib.util
+    pydir = os.path.abspath(os.path.join(_HERE, '..', 'tulip', 'shared', 'py'))
+    added = pydir not in sys.path
+    if added:
+        sys.path.insert(0, pydir)      # for `from patches import drumkit` etc.
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'real_synth', os.path.join(pydir, 'synth.py'))
+        rs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rs)
+        PS = rs.PatchSynth
+        PS.amy_synth_allocated = set()
+        PS.amy_synth_next = 18
+        PS.amy_synth_free = []
+        a = PS(patch=0)
+        b = PS(patch=1)
+        assert (a.synth, b.synth) == (18, 19)   # base clears ch 1-16 + scratch 17
+        a.release()
+        assert a.synth is None
+        c = PS(patch=2)
+        assert c.synth == 18                    # recycled, not a fresh 20
+        assert PS.amy_synth_next == 20          # counter did not advance
+        # release/realloc cycles are counter-stable after the first alloc
+        # primes the pool (the F-1 leak shape: +1 per cycle, forever)
+        prime = PS(patch=0)
+        prime.release()
+        before = PS.amy_synth_next
+        for _ in range(10):
+            s = PS(patch=0)
+            s.release()
+        assert PS.amy_synth_next == before
+        # channel-pinned numbers belong to their channel, never the pool
+        d = PS(patch=0, channel=5)
+        d.release()
+        assert 5 not in PS.amy_synth_free
+        # set_channel retires the auto number into the pool exactly once
+        e = PS(patch=0)
+        n = e.synth
+        e.set_channel(7)
+        assert n in PS.amy_synth_free
+        e.release()
+        assert 7 not in PS.amy_synth_free
+    finally:
+        if added:
+            sys.path.remove(pydir)
+        sys.modules.pop('real_synth', None)
+
+
+# ---------------------------------------------------------------------------
+# P-ENG-1: gmbig.py dead-table eviction -- emu4 runtime arrays must still
+# reproduce the old FONTS['emu4'] dict outputs byte-for-byte.
+# ---------------------------------------------------------------------------
+
+# Reference sample taken from the OLD FONTS['emu4'] dict (program, preset,
+# root, nzones), spanning first..last incl. the two non-monotonic-preset rows
+# (program 90->2038 sits above 93->2036). Any transcription slip in the derived
+# arrays changes at least one patch_string / has_program below.
+_EMU4_REFERENCE = [
+    (0, 1903, 74, 2),     # first program
+    (2, 1905, 61, 2),
+    (24, 1936, 58, 2),
+    (46, 1975, 69, 2),
+    (90, 2038, 75, 1),    # preset non-monotonic vs. neighbour
+    (93, 2036, 68, 2),
+    (112, 2053, 40, 1),
+    (119, 2060, 56, 1),   # last program
+]
+
+# Program count of the OLD emu4 table (len(FONTS['emu4']) before the rewrite).
+_EMU4_PROGRAM_COUNT = 92
+
+
+def test_gmbig_api_matches_reference():
+    import gmbig
+    assert gmbig.PRESET_BASE == 1024           # matches GM_BIG_PRESET_BASE
+    assert gmbig.FONT == 'emu4'
+    assert len(gmbig.programs()) == _EMU4_PROGRAM_COUNT
+    assert gmbig.programs() == sorted(gmbig.programs())   # sorted contract
+    for program, preset, root, nzones in _EMU4_REFERENCE:
+        assert gmbig.has_program(program) is True
+        # wire format must be identical to the old FONTS[emu4][program] recipe
+        expected = "v0w7p%db2A5,1,60000,0.85,220,0Z" % preset
+        assert gmbig.patch_string(program) == expected
+
+
+def test_gmbig_missing_program_falls_back_like_old_code():
+    import gmbig
+    # program 1 is not covered by emu4; old code did FONTS['emu4'][1] -> KeyError
+    assert 1 not in gmbig.programs()
+    assert gmbig.has_program(1) is False
+    with pytest.raises(KeyError):
+        gmbig.patch_string(1)

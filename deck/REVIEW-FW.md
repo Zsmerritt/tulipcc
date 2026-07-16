@@ -592,6 +592,49 @@ miss just relocates); the leaf-only list above avoids it.
 
 ---
 
+## Round 2 verification (amy @ 1f83515 + current tulipcc deck-ui tree)
+
+**BUILD BLOCKER — the current tree does not compile.** Three defects introduced by
+the fix round, all trivial:
+1. `amy/src/amy.c:657→658` — the FW-1 clamp `fprintf` string contains a **raw
+   newline byte inside the string literal** (od-verified 0x0A between `clamping` and
+   `"`); missing-terminating-quote error.
+2. `amy/src/amy.c:708→709` — same defect, second clamp message.
+3. `tulip/shared/amy_connector.c:103` — `tulip_recompute_cv_active` references
+   `amy_config.max_oscs`, but `amy_config` is a *local* inside `run_amy`
+   (`:584`); no global exists anywhere (grep-verified) → undeclared identifier.
+   Should be `amy_global.config.max_oscs`.
+None of the fixes below have therefore run on hardware; verdicts are source-level.
+
+| Finding | Verdict | Evidence (one line) |
+|---|---|---|
+| FW-1 bus clamp | **PARTIAL** (logic right, build broken) | Clamps at both ingestion paths (`amy.c:656-660` bus-directed incl. `highest_bus`, `:707-711` osc events) + render belt (`amy.c:1937`); the two diagnostic strings are the compile errors above. |
+| FW-2 PCM family feedback | **FIXED** | `amy.c:1737` now `!AMY_WAVE_IS_PCM(synth[osc]->wave) && wave != CUSTOM`. |
+| FW-3 wavetable fence | **FIXED** | `oscillators.c:883-887` applies the exact `render_pcm` window test to `wavetable_sample_ram`, returns 0 with phase held. |
+| FW-4 patch-load render gate | **FIXED** (2 residuals) | Gate `amy.c:677-686` + silent-block early-out `amy.c:1916-1926` (masks zeroed so fill sees silence). **No deadlock:** loader holds no locks during the wait (`amy_execute_deltas` releases before it), fill/render keep running so `total_blocks` advances, and the 25-tick guard bounds the loader-*is*-fill-task case to 25ms. Residual A: `amy_patch_loading` is a flag, not a counter — two concurrent loaders (MIDI + MP) drop the gate when the *first* finishes; make it depth-counted like `fence_depth`. Residual B: the fill task's FX stage still reads bus FX state the loader mutates (ungated, pre-existing). |
+| FW-5 MIDI priority | **FIXED** | `amy_midi.h:74` = `ESP_TASK_PRIO_MAX - 4`, now below render's MAX−3. |
+| FW-6 render_clock CAS | **FIXED** | `amy.c:1815-1819`: types match (`render_clock` is `uint32_t`, `amy.h:673`), pre-check + `__atomic_compare_exchange_n` (ACQ_REL/ACQUIRE) — exactly one core wins, loser adds nothing; entire body incl. chained/SILENT/terminate stays inside the guarded block. S32C1I exists on S3. (Plain `AMY_UNSET(render_clock)` in `reset_osc_state` can still race the CAS — worst case one redundant render of a resetting osc; benign.) |
+| FW-7 CV early-out / I2C | **PARTIAL** (build broken) | `tulip_any_cv_active` gate `amy_connector.c:129`, recompute `:96-108` called from both setters (`modtulip.c:227,240`), I2C timeout 1 tick (`amy_connector.c:141,155,169`); blocked by the `amy_config` undeclared-identifier error at `:103`. Mailbox task documented deferred — acceptable: the 1-tick timeout caps a wedged bus at ~1ms/osc. |
+| FW-8 esp_flash wrap | **FIXED** | `esp32_common.cmake:423-424` + `flash_fence_wrap.c:170-182`; nested double-fence (partition→flash internally, both wrapped) is safe via `fence_depth` counting; boot skip `b != 0` (`:97`) is right — only theoretical edge is a flash-PCM voice sounding inside the very first 5.8ms block. |
+| FW-9 delta pool | **PARTIAL** (new race) | Prealloc 4 blocks (`amy.c:2408`), OOM-safe alloc (`:2372`), drop-not-abort with rate-limited log (`:2389-2396`), NULL path + correct `delta_qsize` decrement on drop (`:571-581`; single `delta_get` caller, grep-verified). **But** the outside-lock refill (`amy.c:567`) mutates `free_deltas_pool`/`next_delta_block`/`delta_blocks[]` with *no* lock — races both a concurrent adder's refill and locked `delta_get`/`delta_release` on another task (free-list corruption; rare after prealloc, memory-unsafe when hit). Fix: dedicated pool spinlock around `deltas_add_pool_block`, or build the block outside the lock and splice it in under `amy_queue_lock`. |
+| FW-10 MIDI SPSC barrier | **FIXED** | `volatile` head/tail (`amy_connector.c:59-60`), `__atomic_store_n(..., __ATOMIC_RELEASE)` on tail (`:243`), reader volatile (`modtulip.c:328-353`). An acquire load on the reader would be belt-and-braces; adequate on in-order Xtensa. |
+| FW-11 timer create race | **FIXED** | CAS `creating` claim (`flash_fence_wrap.c:121-127`); loser drops fence immediately (loses one batching window, safe); create-failure resets the claim (`:134`). |
+| FW-12 OOM checks | **PARTIAL** (as declared; not blocking) | Done: `new_reverb` (`delay.c:202`), caller (`amy.c:373-375`), `deltas_pool_alloc` (`amy.c:2372`). Not done: chorus `delay_mod` (render `bzero`s it whenever chorus level>0 — finish this one first) and `filters_init`. OOM-only paths → not blocking; carry to round 3. |
+| FW-13 pcm_load loop clamp | **FIXED** | `pcm.c:549-559`: length-0 loopend guard, `loopend >= length` clamp, `loopstart >= loopend → 0`. |
+| FW-14 output >>1 bench | **DEFERRED** (declared) | Hardware bench required; output stage unchanged. |
+| FW-15 config coupling | **FIXED** | `#error` coupling (`flash_fence_wrap.c:44-46`); i-cache 32KB (`sdkconfig.tulip:39`, correct S3 choice symbol) = P-2 step 1 done. |
+| O-4 -O3 amy.c/envelope.c | **FIXED** | `esp32_common.cmake:386-387` join the per-file `-O3;-funroll-loops` set. |
+| O-6 tank lines → internal | **PARTIAL** | `delay.c:252-263`. **Arithmetic checked:** gate requires largest contiguous internal block ≥ `4096×4×4 + 16384` = 81,920B vs actual need ≈ 4×(16,384 + ~28B hdr) ≈ 65.7KB — conservative both in the contiguity assumption (four separate ~16.4KB allocs would suffice) and the 16KB slack (absorbs headers many times over). Correct, safely pessimistic. **Gap:** no per-line fallback — if the gate passes but an alloc still fails (concurrent internal-RAM allocation between check and alloc), `init_stereo_reverb` fails wholesale and reverb is *disabled*, where the old code ran from PSRAM. Retry each failed line with `ram_caps_delay` before giving up. |
+| O-8 CV scan early-out | **PARTIAL** | Implemented via FW-7's gate; blocked by the same compile error. |
+| O-1 / O-2 / O-3 / O-5 / O-7 / P-1 / P-2 step 2 | **DEFERRED** (declared) | Not in the diff (fix commit touches only `amy.c, amy_midi.h, delay.c, oscillators.c, pcm.c` + tulip-side files); gating/measurement plans stand as written above. |
+
+**Round-3 actions, in order:** (1) fix the three compile errors; (2) build for
+TULIP4_R11 — the tree has never compiled these fixes; (3) FW-9 pool-refill lock;
+(4) FW-4 flag→counter; (5) O-6 per-line fallback; (6) finish FW-12 (chorus
+`delay_mod` first); then run the hardware checklist below.
+
+---
+
 ## Round-2 re-verification checklist
 
 1. FW-1: send `y200` via `amy.send` and via sysex AMY message; confirm clamp + no
