@@ -601,21 +601,10 @@ def _build_edit(parent, shell):
                         break
             except Exception:
                 pass
-        r = dk.row(right)
-        dk.label(r, "Reverb send", color=dk.TEXT)
-        # The send only matters while the device ROOM is on -- built-in
-        # patches bake NO reverb (verified: zero 'h' params in patches.h),
-        # so with the room off this slider changes nothing audible. Say so
-        # instead of letting it feel broken.
-        try:
-            import amyparams as _ap
-            _rvfx = deckcfg.device_fx('internal') or {}
-            _lvl = _ap.fx_value(_rvfx, {}, 'reverb', 'level')
-        except Exception:
-            _lvl = 0
-        if not _lvl:
-            dk.label(r, "(room off -- set Reverb in FX)", color=dk.MUTED,
-                     font=dk.FONT_S)
+        # Value-card layout (the MPE pattern): title + live readout on the
+        # top line, a FAT full-width track underneath, inset from the screen
+        # edge -- the old single-row slider was too narrow to grab and its
+        # knob at 100% sat in the touchscreen's edge deadzone.
         # Show the LIVE send (what the router actually told AMY), falling
         # back to the stored value -- the slider used to show the default
         # 100% while the bus sat elsewhere.
@@ -630,14 +619,40 @@ def _build_edit(parent, shell):
             pass
         if cur_send is None:
             cur_send = instr.get('reverb_send', 1.0)
-        # (dk.slider callbacks receive the LVGL EVENT, not the value --
-        # treating it as a number made every tick throw and the slider dead)
-        dk.slider(r, int(cur_send * 100), 0, 100,
-                  w=cw - 260,
-                  cb=lambda e: _set_send(
-                      e.get_target_obj().get_value(), False),
-                  on_release=lambda e: _set_send(
-                      e.get_target_obj().get_value(), True))
+        # The send only matters while the device ROOM is on -- built-in
+        # patches bake NO reverb (verified: zero 'h' params in patches.h),
+        # so with the room off this slider changes nothing audible. Say so
+        # in the readout instead of letting it feel broken.
+        try:
+            import amyparams as _ap
+            _rvfx = deckcfg.device_fx('internal') or {}
+            _room_on = bool(_ap.fx_value(_rvfx, {}, 'reverb', 'level'))
+        except Exception:
+            _room_on = True
+        card = lv.obj(right)
+        card.set_width(lv.pct(100))
+        card.set_height(108)
+        dk._flat(card, bg=dk.SURFACE)
+        tl = dk.label(card, "Reverb send", color=dk.TEXT)
+        tl.align(lv.ALIGN.TOP_LEFT, 16, 12)
+        rd = dk.label(card, ("%d%%" % int(cur_send * 100)) if _room_on
+                      else "room off -- set Reverb in FX",
+                      color=(dk.TEAL if _room_on else dk.MUTED),
+                      font=dk.FONT_S)
+        rd.align(lv.ALIGN.TOP_RIGHT, -16, 14)
+
+        def _send_cb(e, commit):
+            v = e.get_target_obj().get_value()
+            if _room_on:
+                try:
+                    rd.set_text("%d%%" % v)
+                except Exception:
+                    pass
+            _set_send(v, commit)
+        sl = dk.slider(card, int(cur_send * 100), 0, 100, w=lv.pct(90),
+                       h=28, cb=lambda e: _send_cb(e, False),
+                       on_release=lambda e: _send_cb(e, True))
+        sl.align(lv.ALIGN.BOTTOM_MID, 0, -14)
 
     # MPE -> sub-panel, only when the global MPE gate is on (C.4). When off,
     # no MPE button shows and the MPE panel is unreachable.
