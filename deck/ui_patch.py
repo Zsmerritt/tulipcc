@@ -474,6 +474,22 @@ def apply():
     if _installed:
         return
     _installed = True
+    # Boot-time probe (review maintainability note): this module
+    # monkeypatches FROZEN firmware attributes -- a firmware bump that
+    # renames any of them must degrade VISIBLY in the log, not silently
+    # lose Home-as-root / keyboard behavior.
+    for owner, attrs in ((ui, ('UIScreen', 'running_apps', 'repl_screen')),
+                         (ui.UIScreen, ('draw_task_bar',
+                                        'screen_quit_callback'))):
+        for a in attrs:
+            if not hasattr(owner, a):
+                try:
+                    import decklog
+                    decklog.log("ui_patch: firmware drift -- %s lost %r; "
+                                "shell patches will misbehave"
+                                % (getattr(owner, '__name__', owner), a))
+                except Exception:
+                    pass
     _install_keyboard_partial()
     _install_safe_midi_drain()
     _orig_draw = ui.UIScreen.draw_task_bar

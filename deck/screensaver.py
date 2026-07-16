@@ -74,7 +74,7 @@ def note_activity(*a):
         _apply_phase('full')
 
 
-def _tick(x):
+def _tick(x=None):
     # No periodic config re-read here: Settings calls reload() whenever
     # brightness or the dim/sleep thresholds change, so polling the config file
     # from flash every few seconds bought nothing.
@@ -108,10 +108,7 @@ def _tick(x):
         _apply_phase('dim')
     else:
         _apply_phase('full')
-    try:
-        tulip.defer(_tick, 0, TICK_MS)
-    except Exception:
-        _state['on'] = False
+    # (no re-arm: the shared ticker (O-7) drives this at TICK_MS)
 
 
 def start():
@@ -126,7 +123,8 @@ def start():
     except Exception:
         pass
     try:
-        tulip.defer(_tick, 0, TICK_MS)
+        import ticker
+        ticker.every(TICK_MS, _tick, key='screensaver')
     except Exception:
         _state['on'] = False
 

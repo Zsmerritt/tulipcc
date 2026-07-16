@@ -181,8 +181,10 @@ def _apply_params(syn, params):
     for kw in amyparams.synth_send_calls(params):
         try:
             amy.send(synth=sn, **kw)
-        except Exception:
-            pass
+        except Exception as e:
+            # a param send failing is a CODE bug (schema/firmware drift),
+            # not environment -- log it once per instrument (E-15)
+            _synth_err('params@%s' % sn, e)
     # reverb_send is BUS-directed (skipped by synth_send_calls): push it to
     # this instrument's FX bus and refresh the auto-room so editing it in
     # the Sound editor is audible immediately.
@@ -235,8 +237,10 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
             eq = amyparams.fx_eq_string(fx, t['pfx'])
             if eq is not None:                     # None = user never set EQ
                 amy.send(synth=t['synth'], eq=eq)
-        except Exception:
-            pass
+        except Exception as e:
+            # FX apply failing is schema/firmware drift, a CODE bug --
+            # log first failure per target instead of silence (E-15)
+            _synth_err('fx@%s' % t.get('iid'), e)
     # Reverb is the shared per-device ROOM: one master reverb on the mixed
     # output (AMY_MASTER_REVERB), configured once without a bus. Sends
     # default DRY (0 -- built-in patches bake no reverb, so dry matches the

@@ -65,6 +65,7 @@ int16_t midi_queue_tail = 0;
 // C fully owns. An MPE controller streaming CC/bend at 300 msg/s used to
 // cost 5-12% of the MP core and a GC-pause's worth of allocs per minute.
 #include "midi_router.h"
+void tulip_send_midi_out_device(uint8_t* buf, uint16_t len, int device);  // defined below
 tulip_midi_route_t tulip_midi_routes[17];      // index by channel 1..16
 volatile uint8_t tulip_midi_route_active = 0;  // table uploaded at least once
 volatile uint8_t tulip_midi_notify_all = 1;    // schedule Python per message

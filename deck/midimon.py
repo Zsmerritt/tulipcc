@@ -120,6 +120,7 @@ def _close():
     _s['open'] = False
     _s['lbl'] = None
     _s['cntlbl'] = None
+    _cancel()
     try:
         import midi
         midi.remove_callback(_cb)
@@ -132,9 +133,9 @@ def _close():
         pass
 
 
-def _tick(sid):
-    # sid guards against a stale tick chain surviving a panel re-open
-    if not _s['open'] or sid != _s.get('sid'):
+def _tick(sid=None):
+    if not _s['open']:
+        _cancel()
         return
     try:
         if _s['dirty']:
@@ -142,16 +143,19 @@ def _tick(sid):
         else:
             # unconditional liveness probe (E-7): with no MIDI traffic (or
             # paused) 'dirty' never fires, so a closed panel used to leave
-            # this chain AND the per-message _cb running forever
+            # this tick AND the per-message _cb running forever
             _s['lbl'].get_text()
     except Exception:
         # the panel (and our label) was deleted: stop + unregister
         _close()
-        return
+
+
+def _cancel():
     try:
-        tulip.defer(_tick, sid, _TICK_MS)
+        import ticker
+        ticker.cancel('midimon')
     except Exception:
-        _s['open'] = False
+        pass
 
 
 def _toggle_pause(e):
@@ -231,6 +235,7 @@ def panel(parent, shell=None):
     except Exception:
         pass
     try:
-        tulip.defer(_tick, _s['sid'], _TICK_MS)
+        import ticker
+        ticker.every(_TICK_MS, _tick, key='midimon')   # shared tick (O-7)
     except Exception:
         pass

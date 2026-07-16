@@ -31,6 +31,15 @@ def _sym(name, fallback):
     return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
 
 
+def _cancel_tick(key):
+    """Unsubscribe a shared-ticker consumer (O-7); safe no-op without it."""
+    try:
+        import ticker
+        ticker.cancel(key)
+    except Exception:
+        pass
+
+
 def _clock_ms():
     # 30s is plenty for a clock; debug mode repaints every 2s so the RAM
     # readout is actually live.
@@ -541,12 +550,14 @@ class HomeShell:
             return
         self._meter_running = True
 
-        def _tick(x):
+        def _tick(x=None):
             if not self._alive:
                 self._meter_running = False
+                _cancel_tick('shell_meter')
                 return
             if not self._home_presented():
                 self._meter_running = False   # resumed by _on_activate
+                _cancel_tick('shell_meter')
                 return
             frac = self._meter_fraction()
             try:
@@ -576,10 +587,13 @@ class HomeShell:
                         m['flick'] = active
                 except Exception:
                     self._meter_running = False
+                    _cancel_tick('shell_meter')
                     return       # chips rebuilt/deleted; refresh restarts us
-            tulip.defer(_tick, 0, 100)
+        # ONE shared tick source (O-7): the old per-tick tulip.defer re-arm
+        # allocated a closure + burned a defer slot 10x/second
         try:
-            tulip.defer(_tick, 0, 100)
+            import ticker
+            ticker.every(100, _tick, key='shell_meter')
         except Exception:
             self._meter_running = False
 
@@ -588,13 +602,15 @@ class HomeShell:
             return
         self._clock_running = True
 
-        def _tick(x):
+        def _tick(x=None):
             if not self._alive:
                 self._clock_running = False
+                _cancel_tick('shell_clock')
                 return
             if not self._home_presented():
                 # Paused. _on_activate repaints and resumes when Home is back.
                 self._clock_running = False
+                _cancel_tick('shell_clock')
                 return
             try:
                 # full cluster, not just the time: wifi state changes (a
@@ -603,9 +619,10 @@ class HomeShell:
             except Exception:
                 self._alive = False
                 self._clock_running = False
+                _cancel_tick('shell_clock')
                 return
-            tulip.defer(_tick, 0, _clock_ms())
         try:
-            tulip.defer(_tick, 0, _clock_ms())
+            import ticker
+            ticker.every(_clock_ms(), _tick, key='shell_clock')
         except Exception:
             self._clock_running = False
