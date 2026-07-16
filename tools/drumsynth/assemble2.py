@@ -131,8 +131,184 @@ SIMMONS = {  # SDS-V: the 80s hexagons -- huge pitch sweeps + noise crack
                       '0,1,11,0.4,22,0.9,33,0.35,46,0.8,280,0,20,0')],
 }
 
+def _acid(pitch, sweep_oct=2.0, dur=150, res=6):
+    """TB-303-style stab: saw into a resonant lowpass whose cutoff rides EG1
+    down from a sweep -- the acid squelch."""
+    return {'wave': ds2amy.SAW_DOWN, 'freq': '%g,0' % pitch,
+            'bp0': '0,1,%d,0,15,0' % dur, 'amp': '0.9,0,1,1',
+            'filter_type': LPF,
+            'filter_freq': '%g,0,0,0,%g' % (pitch * 3, sweep_oct),
+            'bp1': '0,1,%d,0,1,0' % max(40, dur - 30),
+            'resonance': '%g' % res}
+
+
+TB303 = {   # not a drum machine -- an acid kit: stabs at pad pitches, 606 hats
+    'kick':   [_acid(55, 2.5, 260, 7)],
+    'snare':  [_acid(110, 3.0, 120, 8)],
+    'tomlo':  [_acid(82, 2.0, 200)],
+    'tommid': [_acid(110, 2.0, 180)],
+    'tomhi':  [_acid(147, 2.0, 160)],
+    'congahi': [_acid(220, 1.5, 140)],
+    'congalo': [_acid(165, 1.5, 160)],
+    'perc':   [_acid(330, 2.5, 100, 8)],
+    'chh':    [_noise(35, 0.6, HPF, 8500)],
+    'ohh':    [_noise(0, 0.6, HPF, 8000, None, '0,1,80,0.4,350,0,25,0')],
+}
+
+TR707 = {   # punchy digital-era Roland: hard kick click, crisp everything
+    'kick':   [_tone(58, 1.2, 20, 300, 1.0), _noise(12, 0.6, LPF, 4200)],
+    'snare':  [_tone(210, 0.4, 15, 90, 0.55), _noise(190, 1.0, HPF, 1600)],
+    'rim':    [_tone(2100, 0, 1, 18, 0.7)],
+    'clap':   [_noise(0, 1.0, BPF, 1400, 2.5,
+                      '0,1,10,0.5,20,1,30,0.4,42,0.8,260,0,20,0')],
+    'chh':    [_noise(40, 0.85, HPF, 8800)],
+    'ohh':    [_noise(0, 0.85, HPF, 8200, None, '0,1,100,0.5,430,0,25,0')],
+    'tomlo':  [_tone(100, 0.7, 70, 260, 0.9)],
+    'tommid': [_tone(150, 0.7, 60, 230, 0.9)],
+    'tomhi':  [_tone(200, 0.7, 50, 200, 0.9)],
+    'cowbell': [{'wave': P, 'freq': '560,0', 'duty': '0.5',
+                 'bp0': '0,1,20,0.4,320,0,20,0', 'amp': '0.55,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2800', 'resonance': '2'},
+                {'wave': P, 'freq': '835,0', 'duty': '0.5',
+                 'bp0': '0,1,20,0.4,320,0,20,0', 'amp': '0.45,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2800', 'resonance': '2'}],
+    'crash':  [_noise(0, 0.8, HPF, 5600, None, '0,1,320,0.4,1400,0,40,0')],
+    'ride':   [_noise(0, 0.5, HPF, 8800, None, '0,0.8,220,0.35,1100,0,40,0')],
+}
+
+TR727 = {   # the latin sibling: all tuned percussion
+    'congahi': [_tone(390, 0.35, 22, 160, 0.9)],
+    'congalo': [_tone(230, 0.35, 28, 200, 0.9)],
+    'tomlo':  [_tone(150, 0.5, 40, 220, 0.85)],   # timbale-ish
+    'tommid': [_tone(200, 0.5, 35, 190, 0.85)],
+    'cowbell': [{'wave': P, 'freq': '540,0', 'duty': '0.5',
+                 'bp0': '0,1,22,0.4,300,0,20,0', 'amp': '0.55,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2640', 'resonance': '2'}],
+    'claves': [_tone(2600, 0, 1, 28, 0.8)],
+    'shaker': [_noise(0, 0.6, HPF, 9200, None, '0,0.4,14,1,75,0,15,0')],
+    'guiro':  [_noise(0, 0.55, BPF, 2600, 3, '0,0.3,30,1,60,0.3,90,1,140,0,20,0')],
+    'tamb':   [_noise(0, 0.6, HPF, 8200, None, '0,1,55,0.3,150,0,20,0')],
+    'kick':   [_tone(75, 0.6, 30, 200, 0.8)],     # low conga as kick stand-in
+    'snare':  [_tone(240, 0.4, 20, 120, 0.6), _noise(120, 0.7, HPF, 2400)],
+    'chh':    [_noise(35, 0.6, HPF, 9000)],
+}
+
+LM1 = {     # Linn LM-1 character: warm, fat, famously cymbal-less
+    'kick':   [_tone(52, 0.9, 30, 330, 1.0), _noise(15, 0.35, LPF, 3000)],
+    'snare':  [_tone(190, 0.5, 25, 130, 0.7), _noise(200, 0.85, LPF, 5200)],
+    'rim':    [_tone(1500, 0, 1, 22, 0.65)],
+    'clap':   [_noise(0, 0.95, BPF, 1100, 2,
+                      '0,1,12,0.5,24,1,38,0.4,52,0.8,300,0,20,0')],
+    'chh':    [_noise(45, 0.7, HPF, 7400)],
+    'ohh':    [_noise(0, 0.7, HPF, 7000, None, '0,1,110,0.45,430,0,25,0')],
+    'tomlo':  [_tone(90, 0.7, 80, 300, 0.9)],
+    'tommid': [_tone(130, 0.7, 70, 270, 0.9)],
+    'tomhi':  [_tone(175, 0.7, 60, 240, 0.9)],
+    'congahi': [_tone(360, 0.3, 25, 170, 0.85)],
+    'congalo': [_tone(215, 0.3, 30, 200, 0.85)],
+    'shaker': [_noise(0, 0.55, HPF, 8800, None, '0,0.4,15,1,85,0,15,0')],
+    'tamb':   [_noise(0, 0.6, HPF, 7800, None, '0,1,60,0.3,160,0,20,0')],
+}
+
+DMX = {     # Oberheim DMX: tight, cracking, hip-hop backbone
+    'kick':   [_tone(60, 1.0, 22, 260, 1.0), _noise(10, 0.5, LPF, 3800)],
+    'snare':  [_tone(220, 0.6, 20, 100, 0.6), _noise(170, 1.0, BPF, 1700, 1.5)],
+    'rim':    [_tone(1800, 0, 1, 20, 0.7)],
+    'clap':   [_noise(0, 1.0, BPF, 1250, 2,
+                      '0,1,11,0.5,22,1,34,0.4,48,0.8,270,0,20,0')],
+    'chh':    [_noise(38, 0.8, HPF, 8300)],
+    'ohh':    [_noise(0, 0.8, HPF, 7800, None, '0,1,95,0.45,400,0,25,0')],
+    'tomlo':  [_tone(95, 0.9, 75, 280, 0.95)],
+    'tommid': [_tone(140, 0.9, 65, 250, 0.95)],
+    'tomhi':  [_tone(190, 0.9, 55, 220, 0.95)],
+    'crash':  [_noise(0, 0.8, HPF, 5400, None, '0,1,330,0.4,1500,0,40,0')],
+    'ride':   [_noise(0, 0.5, HPF, 8600, None, '0,0.8,240,0.35,1150,0,40,0')],
+    'shaker': [_noise(0, 0.55, HPF, 9000, None, '0,0.4,15,1,80,0,15,0')],
+}
+
+TR505 = {   # budget digital: thin, clicky, charming
+    'kick':   [_tone(68, 1.0, 18, 200, 0.95)],
+    'snare':  [_tone(230, 0.4, 15, 80, 0.5), _noise(140, 0.9, HPF, 2100)],
+    'rim':    [_tone(2000, 0, 1, 16, 0.65)],
+    'clap':   [_noise(0, 0.9, BPF, 1350, 2,
+                      '0,1,10,0.5,20,0.9,32,0.4,44,0.75,230,0,20,0')],
+    'chh':    [_noise(32, 0.75, HPF, 9200)],
+    'ohh':    [_noise(0, 0.75, HPF, 8600, None, '0,1,85,0.4,340,0,25,0')],
+    'tomlo':  [_tone(105, 0.6, 60, 220, 0.85)],
+    'tomhi':  [_tone(185, 0.6, 45, 180, 0.85)],
+    'cowbell': [{'wave': P, 'freq': '555,0', 'duty': '0.5',
+                 'bp0': '0,1,18,0.4,280,0,20,0', 'amp': '0.5,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2700', 'resonance': '2'}],
+    'congahi': [_tone(370, 0.3, 20, 150, 0.8)],
+    'congalo': [_tone(225, 0.3, 25, 180, 0.8)],
+    'crash':  [_noise(0, 0.7, HPF, 6000, None, '0,1,280,0.4,1250,0,40,0')],
+}
+
+KR55 = {    # Korg preset box: soft, polite, ticky
+    'kick':   [_tone(64, 0.7, 35, 240, 0.9)],
+    'snare':  [_tone(200, 0.4, 22, 110, 0.5), _noise(160, 0.7, HPF, 2600)],
+    'chh':    [_noise(28, 0.6, HPF, 9400)],
+    'ohh':    [_noise(0, 0.6, HPF, 8800, None, '0,1,75,0.4,320,0,25,0')],
+    'tomlo':  [_tone(98, 0.5, 55, 230, 0.8)],
+    'tomhi':  [_tone(170, 0.5, 45, 190, 0.8)],
+    'cowbell': [{'wave': P, 'freq': '530,0', 'duty': '0.5',
+                 'bp0': '0,1,20,0.35,260,0,20,0', 'amp': '0.45,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2500', 'resonance': '2'}],
+    'claves': [_tone(2450, 0, 1, 26, 0.7)],
+    'crash':  [_noise(0, 0.6, HPF, 6200, None, '0,1,240,0.4,1100,0,40,0')],
+}
+
+DR110 = {   # Boss Dr. Rhythm: the tssss machine
+    'kick':   [_tone(66, 1.1, 20, 220, 0.95)],
+    'snare':  [_tone(215, 0.5, 16, 85, 0.5), _noise(150, 0.95, HPF, 2300)],
+    'clap':   [_noise(0, 0.9, BPF, 1300, 2,
+                      '0,1,10,0.5,20,0.9,30,0.4,42,0.75,240,0,20,0')],
+    'chh':    [_noise(30, 0.8, HPF, 9600)],
+    'ohh':    [_noise(0, 0.8, HPF, 9000, None, '0,1,90,0.45,380,0,25,0')],
+    'crash':  [_noise(0, 0.75, HPF, 5800, None, '0,1,300,0.4,1350,0,40,0')],
+}
+
+RZ1 = {     # Casio RZ-1: crunchy lo-fi digital
+    'kick':   [_tone(62, 1.3, 16, 210, 1.0), _noise(8, 0.55, LPF, 4500)],
+    'snare':  [_tone(235, 0.5, 14, 75, 0.55), _noise(130, 1.0, HPF, 1900)],
+    'rim':    [_tone(2200, 0, 1, 14, 0.7)],
+    'clap':   [_noise(0, 1.0, BPF, 1450, 2.5,
+                      '0,1,9,0.5,18,1,28,0.4,40,0.8,220,0,20,0')],
+    'chh':    [_noise(26, 0.85, HPF, 9800)],
+    'ohh':    [_noise(0, 0.85, HPF, 9200, None, '0,1,80,0.4,330,0,25,0')],
+    'tomlo':  [_tone(100, 0.8, 55, 230, 0.9)],
+    'tomhi':  [_tone(180, 0.8, 42, 185, 0.9)],
+    'cowbell': [{'wave': P, 'freq': '575,0', 'duty': '0.5',
+                 'bp0': '0,1,16,0.4,260,0,20,0', 'amp': '0.5,0,1,1',
+                 'filter_type': BPF, 'filter_freq': '2900', 'resonance': '2'}],
+    'crash':  [_noise(0, 0.75, HPF, 5500, None, '0,1,290,0.4,1300,0,40,0')],
+}
+
+TR626 = {   # brighter 505 successor with more voices
+    'kick':   [_tone(64, 1.1, 20, 240, 1.0)],
+    'snare':  [_tone(225, 0.4, 16, 90, 0.55), _noise(160, 0.95, HPF, 2000)],
+    'rim':    [_tone(2050, 0, 1, 18, 0.65)],
+    'clap':   [_noise(0, 0.95, BPF, 1380, 2,
+                      '0,1,10,0.5,20,0.95,31,0.4,44,0.8,250,0,20,0')],
+    'chh':    [_noise(34, 0.8, HPF, 9000)],
+    'ohh':    [_noise(0, 0.8, HPF, 8400, None, '0,1,90,0.4,360,0,25,0')],
+    'tomlo':  [_tone(100, 0.7, 62, 240, 0.88)],
+    'tommid': [_tone(145, 0.7, 55, 215, 0.88)],
+    'tomhi':  [_tone(195, 0.7, 48, 190, 0.88)],
+    'ride':   [_noise(0, 0.5, HPF, 8800, None, '0,0.8,230,0.35,1100,0,40,0')],
+    'crash':  [_noise(0, 0.75, HPF, 5700, None, '0,1,310,0.4,1400,0,40,0')],
+    'shaker': [_noise(0, 0.55, HPF, 9200, None, '0,0.4,14,1,78,0,15,0')],
+    'congahi': [_tone(375, 0.3, 22, 155, 0.82)],
+    'congalo': [_tone(228, 0.3, 26, 185, 0.82)],
+}
+
 RECIPES = [('tr808syn', 'TR-808', mk.TR808), ('tr909syn', 'TR-909', TR909),
-           ('tr606syn', 'TR-606', TR606), ('simmons', 'SDS-V', SIMMONS)]
+           ('tr606syn', 'TR-606', TR606), ('simmons', 'SDS-V', SIMMONS),
+           ('tb303', 'TB-303 Acid', TB303), ('tr707', 'TR-707', TR707),
+           ('tr727', 'TR-727', TR727), ('lm1', 'LinnDrum LM-1', LM1),
+           ('dmx', 'Oberheim DMX', DMX), ('tr505', 'TR-505', TR505),
+           ('kr55', 'KR-55', KR55), ('dr110', 'DR-110', DR110),
+           ('rz1', 'RZ-1', RZ1), ('tr626', 'TR-626', TR626)]
 
 KIT_NAMES = {'cr78': 'CR-78', 'cr8000': 'CR-8000', 'tr606': 'TR-606 mda',
              'tr77': 'TR-77', 'tr808': 'TR-808 mda', 'tr909': 'TR-909 mda',
@@ -140,7 +316,11 @@ KIT_NAMES = {'cr78': 'CR-78', 'cr8000': 'CR-8000', 'tr606': 'TR-606 mda',
              'acoustic': 'Acoustic', 'electro': 'Electro', 'hats': 'Hats',
              'misc_hats': 'Hats B', 'r_n_b': 'R&B', 'rnb': 'R&B 2',
              'tr808syn': 'TR-808 recipe', 'tr909syn': 'TR-909 recipe',
-             'tr606syn': 'TR-606 recipe', 'simmons': 'Simmons SDS-V', 'partials808': 'TR-808 partials'}
+             'tr606syn': 'TR-606 recipe', 'simmons': 'Simmons SDS-V',
+             'partials808': 'TR-808 partials', 'tb303': 'TB-303 Acid',
+             'tr707': 'TR-707', 'tr727': 'TR-727', 'lm1': 'LinnDrum LM-1',
+             'dmx': 'Oberheim DMX', 'tr505': 'TR-505', 'kr55': 'KR-55',
+             'dr110': 'DR-110', 'rz1': 'RZ-1', 'tr626': 'TR-626'}
 
 
 def main():
@@ -215,9 +395,14 @@ def main():
             continue
         disp = KIT_NAMES.get(pack, pack.replace('_', ' '))
         kits[pack] = {'name': disp, 'notes': nm}
-        if all(len(roles.get(r, ())) >= 2 for r in CORE):
-            nm2, _ = build_kit(roles, variant=1)
-            kits[pack + '_b'] = {'name': disp + ' B', 'notes': nm2}
+        # variant fan-out: as many kits as the shallowest CORE pool supports
+        # (capped at 4) -- each variant indexes one deeper into every pool
+        depth = min(4, min(len(roles.get(r, ())) for r in CORE))
+        for v in range(1, depth):
+            nmv, _ = build_kit(roles, variant=v)
+            if nmv != nm:
+                kits['%s_%c' % (pack, 97 + v)] = {
+                    'name': '%s %c' % (disp, 65 + v), 'notes': nmv}
 
     # community kits: deal complete kits from the combined misc pools
     pool = {}
@@ -225,12 +410,28 @@ def main():
         for role, keys in packs.get(pack, {}).items():
             if role != '_all':
                 pool.setdefault(role, []).extend(keys)
-    n_com = min(6, min((len(pool.get(r, ())) for r in CORE), default=0))
+    n_com = min(16, min((len(pool.get(r, ())) for r in CORE), default=0))
     for i in range(n_com):
         nm, own = build_kit(pool, variant=i)
         if own >= 4:
             kits['community_%c' % (97 + i)] = {
                 'name': 'Community %c' % (65 + i), 'notes': nm}
+
+    # hybrid kits: deal from EVERYTHING at once (named packs + community);
+    # unequal pool lengths make each variant offset land on a fresh cross-
+    # pack combination
+    hybrid = {}
+    for pack, roles in packs.items():
+        if pack in NON_DRUM:
+            continue
+        for role, keys in roles.items():
+            if role != '_all':
+                hybrid.setdefault(role, []).extend(keys)
+    for i in range(10):
+        nm, own = build_kit(hybrid, variant=i * 7 + 3)   # stride past the
+        if own >= 6:                                     # community deals
+            kits['hybrid_%c' % (97 + i)] = {
+                'name': 'Hybrid %c' % (65 + i), 'notes': nm}
 
     # SPLIT OUTPUT: a single 279KB on-device JSON parse starved the UI task
     # (watchdog reset during kit builds). index.json stays small; each pack's
