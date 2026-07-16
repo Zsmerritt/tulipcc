@@ -101,6 +101,13 @@ no-change-needed, and three misses that were re-fixed the same night:
   stripped name get numbered "(2)"; Delete no longer arms (renders
   disabled, not red) for protected system modules.
 
+**Round-3 (targeted, v3_* shots): all five re-fixes verified FIXED on
+device.** Final ledger: 12 fixed, 1 correct-as-is, F-12 deferred,
+F-14/F-16 out of scope. The one residual the reviewer spotted (faint
+khaki tint on disabled buttons — theme color-filter again) got the same
+one-line filter-zero as the sliders, pushed and live; mechanism verified
+twice already, not re-screenshotted.
+
 ### Generalist engineer (deck/ENGINEERING-REVIEW.md, E-1…E-16, O-1…O-11)
 | Item | Decision | Note |
 |---|---|---|
@@ -168,6 +175,7 @@ keyboard UAF + OTA modal → `e4746381` reverb semantics + reset split →
 transport → `f6d8e411` UX-9 fixes → `3ef47da8` Settings tabs →
 `da0dae26` review purge → `a9def998` serial protocol → `cd113543`
 GC-root + fresh-eyes round → `c99ef9c6` soundfont removal → `40966d04`
-C-4/5/7.
+C-4/5/7 → `17b4a134` round-2 verify fixes + qput → (final) round-3
+artifacts + disabled-button tint.
 amy: `65cd842` fence → `4b33ce5` priorities → `df24325` reverb guard +
 profiler → `311d825` output precision + pcm hoist.

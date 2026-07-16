@@ -285,6 +285,12 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     _flat(b, radius=radius, bg=bg)
     pressable(b)
     b.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)  # NEW-3
+    # zero the theme's DISABLED color-filter (khaki tint on RGB332) --
+    # same treatment the sliders got for fresh-eyes F-4
+    try:
+        b.set_style_color_filter_opa(0, lv.PART.MAIN | lv.STATE.DISABLED)
+    except Exception:
+        pass
     lb = lv.label(b)
     lb.set_text(text)
     lb.set_style_text_color(c(fg), 0)

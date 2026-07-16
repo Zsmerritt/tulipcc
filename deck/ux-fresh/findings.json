@@ -31,9 +31,11 @@
     "evidence": ["shots/11_sound_editor_juno.png", "shots/13_fx_editor.png", "shots/14_settings_network.png", "shots/16_settings_system.png"],
     "location": {"file": "deck/parameditor.py", "symbol": "_style_tabview / _paint_active_tab (lines 224-289)"},
     "suggested_fix": "The CHECKED-state bg is not rendering; set the active tab's background explicitly. Cheapest robust approach: on the tabview VALUE_CHANGED, recolor the ~4 tab buttons (active = ACCENT + white text, others = SURFACE2 + placeholder text) directly rather than relying on the STATE.CHECKED style. Cost: tab switches already repaint the whole content page; recoloring ~4 small button objects is negligible.",
-    "status": "REGRESSED",
+    "status": "FIXED",
     "v2_evidence": ["shots/v2_03_settings_network.png", "shots/v2_04_settings_system.png", "shots/v2_07_sound_tabs.png"],
-    "v2_note": "The active tab is now distinguishable but renders MAROON with teal text (the LVGL default theme's CHECKED-state style), not accent-blue with white text -- an off-palette alarm hue, on initial open AND after switching. Root cause: _paint_active_tab sets local styles at the DEFAULT state selector (0); LVGL style resolution prefers the theme's exact CHECKED-state match over a local default-state property, so the theme maroon wins. Fix: also set the local colors at the CHECKED selector (btn.set_style_bg_color(dk.c(dk.ACCENT), lv.STATE.CHECKED); same for text), or zero the theme's checked style via a color-filter opa 0 at CHECKED (the files.py X-4 pattern), keeping the existing VALUE_CHANGED repaint."
+    "v2_note": "Round 2: REGRESSED -- active tab rendered the LVGL default-theme MAROON with teal text because _paint_active_tab set local colors only at the default state selector (0), which the theme's exact CHECKED-state match outranked.",
+    "v3_evidence": ["shots/v3_01_settings_network.png", "shots/v3_02_settings_system.png", "shots/v3_03_sound_tabs.png"],
+    "v3_note": "Round 3: FIXED -- palette now also pinned at lv.STATE.CHECKED. Active tab is accent-blue with white text on Settings (Network on open, System after switching) and the Sound editor (VCF after switching); inactive tabs lavender with lighter text. No maroon anywhere."
   },
   {
     "id": "F-4",
@@ -43,9 +45,11 @@
     "evidence": ["shots/18_mpe_panel.png", "shots/19_mpe_enabled.png"],
     "location": {"file": "deck/mpe.py", "symbol": "_apply_dep_state (set_style_opa 102)"},
     "suggested_fix": "Give the deck slider style explicit flat DISABLED colors at full opacity (muted track + muted knob) -- the files.py X-4 note already established that alpha-dimming quantizes to olive on RGB332, so use flat colors, not opacity. Alternatively dim only the card container's opacity and leave the slider themed. Cost: static style setup once; zero per-frame cost.",
-    "status": "NOT-FIXED",
+    "status": "FIXED",
     "v2_evidence": ["shots/v2_08_mpe_disabled.png"],
-    "v2_note": "Visually unchanged: olive tracks + black knobs persist. The deckui.py slider DISABLED-state styles + zeroed color filter ARE deployed (verified on-device), but they do not help because mpe.py _apply_dep_state still dims the whole dependent card with set_style_opa(255/102) -- the 40% opacity blend over RGB332 is what produces the olive/black, independent of any disabled-state colors. Fix in mpe.py: drop the opacity dim and instead recolor the card's labels to MUTED and rely on the (now-styled) DISABLED widget states."
+    "v2_note": "Round 2: NOT-FIXED -- the deckui DISABLED slider styles were deployed but mpe.py still dimmed the dependent cards with set_style_opa(102); the 40% blend on RGB332 was the true olive/black source.",
+    "v3_evidence": ["shots/v3_04_mpe_disabled.png"],
+    "v3_note": "Round 3: FIXED -- mpe.py no longer opacity-dims dep rows; with the gate on and per-instrument MPE off, both sliders render flat muted lavender tracks + muted knobs (no olive, no black). Residual nit: the disabled '-'/'+' stepper buttons and the 'Edit >' button still carry a faint khaki tint (the button widget's theme DISABLED color-filter isn't zeroed the way the slider's is) -- same one-line color-filter-opa-0 treatment on dk.button would finish it."
   },
   {
     "id": "F-5",
@@ -93,7 +97,9 @@
     "suggested_fix": "Strip a trailing '_' + hex/digit suffix in hit_name() for display (keep the raw key for lookup). Cost: one string op per visible row at build; negligible.",
     "status": "FIXED",
     "v2_evidence": ["shots/v2_12_swap_pack.png"],
-    "v2_note": "Suffixes gone ('jazzkick', 'brush1'). On-device: synthkits.hit_name('acoustic/jazzkick_24e847') -> 'jazzkick'. Residual nit: former dedup pairs now render as two identical rows ('brush1' twice, 'jazzkick' twice) distinguishable only by audition -- consider ' (2)' disambiguation."
+    "v2_note": "Suffixes gone ('jazzkick', 'brush1'). On-device: synthkits.hit_name('acoustic/jazzkick_24e847') -> 'jazzkick'. Residual nit: former dedup pairs rendered as two identical rows.",
+    "v3_evidence": ["shots/v3_06_swap_dupes.png"],
+    "v3_note": "Round 3: duplicate-name nit also fixed -- repeated stripped names are numbered ('brush1' / 'brush1 (2)', 'jazzkick' / 'jazzkick (2)')."
   },
   {
     "id": "F-9",
@@ -115,9 +121,11 @@
     "evidence": ["shots/19_mpe_enabled.png"],
     "location": {"file": "deck/mpe.py", "symbol": "_members_str (lines 28-42); _render_strip zone message"},
     "suggested_fix": "Clamp the member span to available channels (hi = min(16, master + n)) and surface the existing overflow/overlap warning when the requested members exceed 16 - master. Cost: pure logic; none.",
-    "status": "PARTIAL",
+    "status": "FIXED",
     "v2_evidence": ["shots/v2_09_mpe_clamp.png"],
-    "v2_note": "Status string now clamps: 'master ch 2, member channels 3-16 (14 of 15 fit)' -- and the router genuinely allocates members 3-16 only. Residual: the channel-map footer still reads 'Zone fits: master ch2 + 15 members', contradicting the '(14 of 15 fit)' line above it; it should say '+ 14 members' (or note the clamp)."
+    "v2_note": "Round 2: PARTIAL -- status string clamped ('3-16 (14 of 15 fit)') but the channel-map footer still said 'Zone fits: master ch2 + 15 members'.",
+    "v3_evidence": ["shots/v3_05_mpe_clamp.png"],
+    "v3_note": "Round 3: FIXED -- footer now uses the same clamp: 'Zone fits: master ch2 + 14 members', consistent with the status line and the router's actual member allocation (3-16)."
   },
   {
     "id": "F-11",
@@ -129,7 +137,9 @@
     "suggested_fix": "Either filter known deck modules out of the default listing (the home._discover_user deck_modules set already enumerates them), or route deletion of system .py files through the stronger dk.confirm modal with an explicit warning. Cost: one set-membership check per entry at build; negligible.",
     "status": "FIXED",
     "v2_evidence": ["shots/v2_11_files_boot_guard.png"],
-    "v2_note": "Exercised live: selected boot.py, fired Delete TWICE -- _is_system_module blocks before the confirm ever arms (confirm stayed False, boot.py intact) and toasts 'System module -- the deck needs this to run'. Nit: Delete still renders enabled-red for protected files; disabling it when a protected file is selected would communicate the rule before the tap."
+    "v2_note": "Exercised live: selected boot.py, fired Delete TWICE -- _is_system_module blocks before the confirm ever arms (confirm stayed False, boot.py intact) and toasts 'System module -- the deck needs this to run'. Nit: Delete still rendered enabled-red for protected files.",
+    "v3_evidence": ["shots/v3_07_files_boot_disabled.png"],
+    "v3_note": "Round 3: the enabled-red nit is also fixed -- selecting boot.py now renders Delete DISABLED (neutral SURFACE2, lv.STATE.DISABLED confirmed programmatically) while Run/Edit stay enabled; the rule is communicated before the tap."
   },
   {
     "id": "F-12",
