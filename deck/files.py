@@ -51,15 +51,27 @@ def _toast(msg, color=None):
             pass
 
 
+_BTN_ON_BG = {}     # button key -> its enabled bg color, captured on first use
+
+
 def _set_btn(k, on):
     b = _s.get(k)
     if b is None:
         return
     try:
-        b.set_style_opa(255 if on else 102, 0)
+        # X-4: alpha-dimming (opa 40%) quantizes GREEN/ACCENT to a muddy
+        # olive on the RGB332 panel. Disabled = explicit FLAT colors at
+        # full opacity instead: neutral surface + muted text.
+        if k not in _BTN_ON_BG:
+            _BTN_ON_BG[k] = b.get_style_bg_color(0)
+        b.set_style_opa(255, 0)
         if on:
+            b.set_style_bg_color(_BTN_ON_BG[k], 0)
+            b.set_style_text_color(dk.c(dk.WHITE), 0)
             b.remove_state(lv.STATE.DISABLED)
         else:
+            b.set_style_bg_color(dk.c(dk.SURFACE2), 0)
+            b.set_style_text_color(dk.c(dk.MUTED), 0)
             b.add_state(lv.STATE.DISABLED)
     except Exception:
         pass

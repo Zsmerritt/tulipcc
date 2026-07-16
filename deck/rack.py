@@ -287,7 +287,10 @@ def _set_kit(kit):
         forwarder.preview(iid, note=36)     # audition: a kick
     except Exception:
         pass
-    for b, k in _s.get('kitbtns', []):
+    for entry in _s.get('kitbtns', []):
+        b, k = entry[0], entry[1]
+        if k is None:
+            continue                      # section header, not a kit row
         b.set_style_bg_color(dk.c(dk.ACCENT if k == kit else dk.SURFACE), 0)
 
 
@@ -296,20 +299,56 @@ def kit_panel(parent, shell=None):
     import drums_kit
     w = tulip.screen_size()[0]
     cur = (_active() or {}).get('kit', 384)
-    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
-    body.set_pos(24, 8)
-    dk.label(body, "Drum kit: swaps all the sounds at once.", color=dk.MUTED,
-             font=dk.FONT_S)
+    # search on top (X-3: 76 kits was ~11 screens of scrolling with no way
+    # to jump); filtering HIDES non-matching rows -- no rebuild per keystroke
+    sr = dk.row(parent, h=64)
+    sr.set_pos(24, 4)
+    sr.set_width(w - 48)
+    tf = dk.text_field(sr, placeholder="Search kits", w=w - 120, h=48)
+
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 84)
+    body.set_pos(24, 74)
     _s['kitbtns'] = []
-    # sampled kits first, then the synthesized ones (drums_kit.synth_kits) --
-    # same list, same tap; the kit id encodes which engine plays it
-    for kit, name in list(drums_kit.KITS) + drums_kit.synth_kits():
+    # sampled kits first, then a SECTION HEADER, then the synthesized ones
+    # (the header carries the meaning; the per-row '(synth)' suffix is gone)
+    rows = [(k, n, False) for k, n in drums_kit.KITS]
+    rows.append((None, "Synthesized", None))
+    for k, n in drums_kit.synth_kits():
+        n = n[:-8] if n.endswith(' (synth)') else n
+        rows.append((k, n, True))
+    for kit, name, _synth in rows:
+        if kit is None:
+            h = dk.label(body, name, color=dk.MUTED, font=dk.FONT_S)
+            _s['kitbtns'].append((h, None, ''))
+            continue
         b = dk.button(body, name, w=lv.pct(100), h=64, font=dk.FONT_M,
                       bg=(dk.ACCENT if kit == cur else dk.SURFACE))
         b.add_event_cb((lambda k: (lambda e: _set_kit(k)
                         if e.get_code() == lv.EVENT.CLICKED else None))(kit),
                        lv.EVENT.CLICKED, None)
-        _s['kitbtns'].append((b, kit))
+        _s['kitbtns'].append((b, kit, name.lower()))
+
+    def _filter(e):
+        try:
+            q = tf.ta.get_text().strip().lower()
+        except Exception:
+            return
+        for widget, kit, lname in _s.get('kitbtns', []):
+            try:
+                if kit is None:
+                    show = not q          # headers only when unfiltered
+                else:
+                    show = (not q) or (q in lname)
+                if show:
+                    widget.remove_flag(lv.obj.FLAG.HIDDEN)
+                else:
+                    widget.add_flag(lv.obj.FLAG.HIDDEN)
+            except Exception:
+                pass
+    try:
+        tf.ta.add_event_cb(_filter, lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
 
 
 def type_panel(parent, shell=None):
@@ -541,7 +580,7 @@ def _build_edit(parent, shell):
     r = dk.row(right)
     dk.label(r, "Type", color=dk.TEXT)
     nav = dk.button(r, _TYPE_NAMES.get(instr.get('type', 'juno6'), 'Juno-6')
-                    + "  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+                    + " >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_type, lv.EVENT.CLICKED, None)
 
     # Patch (or Kit for drums) -> picker sub-panel
@@ -562,7 +601,7 @@ def _build_edit(parent, shell):
         pl.set_long_mode(lv.label.LONG.DOT)   # long patch names ellipsize
     except Exception:
         pass
-    nav = dk.button(r, "Browse  >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    nav = dk.button(r, "Browse >", w=180, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_patch, lv.EVENT.CLICKED, None)
 
     # Sound (per-instrument params) -> ParamEditor sub-panel. Sampled drums
@@ -570,18 +609,18 @@ def _build_edit(parent, shell):
     if not is_drum:
         r = dk.row(right)
         dk.label(r, "Sound", color=dk.TEXT)
-        nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+        nav = dk.button(r, "Edit >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
         nav.add_event_cb(_open_sound, lv.EVENT.CLICKED, None)
     elif isinstance(instr.get('kit'), str) and instr['kit'].startswith('synth:'):
         r = dk.row(right)
         dk.label(r, "Pads", color=dk.TEXT)
-        nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+        nav = dk.button(r, "Edit >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
         nav.add_event_cb(_open_pads, lv.EVENT.CLICKED, None)
 
     # FX -> the OWNING DEVICE's FX bus (shared by all instruments on it)
     r = dk.row(right)
     dk.label(r, "FX (device)", color=dk.TEXT)
-    nav = dk.button(r, "Edit  >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    nav = dk.button(r, "Edit >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_fx_row, lv.EVENT.CLICKED, None)
 
     # (Reverb send moved into the Sound editor's FX group: it's a
@@ -595,7 +634,7 @@ def _build_edit(parent, shell):
         r = dk.row(right)
         dk.label(r, "MPE", color=dk.TEXT)
         on = instr.get('mpe', {}).get('enabled')
-        nav = dk.button(r, ("On" if on else "Off") + "  >", w=150, h=52,
+        nav = dk.button(r, ("On" if on else "Off") + " >", w=150, h=52,
                         bg=(dk.GREEN if on else dk.SURFACE2), font=dk.FONT_S)
         nav.add_event_cb(_open_mpe, lv.EVENT.CLICKED, None)
 

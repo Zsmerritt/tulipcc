@@ -16,17 +16,19 @@ def _big_card(parent, x, y, title, sub, color, cb):
     b.set_pos(x, y)
     dk._flat(b, radius=18, bg=color)
     dk.pressable(b)   # these cards ARE tappable -- give them press feedback
+    # title + subtitle grouped together (X-10: pinned to opposite edges,
+    # the card middle read as empty)
     t = lv.label(b)
     t.set_text(title)
     t.set_style_text_color(dk.c(dk.WHITE), 0)
     t.set_style_text_font(dk.FONT_L, 0)
-    t.align(lv.ALIGN.TOP_LEFT, 4, 6)
+    t.align(lv.ALIGN.TOP_LEFT, 4, 24)
     s = lv.label(b)
     s.set_text(sub)
     s.set_width(270)
     s.set_style_text_color(dk.c(dk.WHITE), 0)
     s.set_style_text_font(dk.FONT_S, 0)
-    s.align(lv.ALIGN.BOTTOM_LEFT, 4, -8)
+    s.align(lv.ALIGN.TOP_LEFT, 4, 68)
     b.add_event_cb(cb, lv.EVENT.CLICKED, None)
     return b
 

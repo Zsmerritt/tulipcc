@@ -159,7 +159,12 @@ def swap_panel(parent, shell=None):
     H = tulip.screen_size()[1] - homeshell.BAR_H
     _s['swap_sel'] = None
 
+    # The pushed panel has NO flex layout -- rows added straight to it all
+    # land at (0,0) and the opaque body occluded the action row entirely
+    # (X-1: the picker could audition but never COMMIT a swap). Explicit
+    # positions: action row on top, browser below it.
     top = dk.row(parent, h=64)
+    top.set_pos(0, 0)
     dk.label(top, "%s: tap a hit to hear it" % _NOTE_NAMES.get(note, 'Pad'),
              color=dk.TEXT, font=dk.FONT_S)
     ub = dk.button(top, "Use selected", w=200, h=52, bg=dk.GREEN,
@@ -168,6 +173,7 @@ def swap_panel(parent, shell=None):
                    font=dk.FONT_S)
 
     body = dk.row(parent, h=H - 96)
+    body.set_pos(0, 72)
     packs = lv.obj(body)
     packs.set_size(260, H - 110)
     dk._flat(packs, bg=dk.BG, scroll=True)
@@ -255,7 +261,7 @@ def _select(note):
         nl.set_long_mode(lv.label.LONG.DOT)
     except Exception:
         pass
-    sb = dk.button(r, "Swap  >", w=130, h=44, bg=dk.SURFACE2, font=dk.FONT_S)
+    sb = dk.button(r, "Swap >", w=130, h=44, bg=dk.ACCENT, font=dk.FONT_S)
     sb.add_event_cb(lambda e: (_open_swap()
                                if e.get_code() == lv.EVENT.CLICKED else None),
                     lv.EVENT.CLICKED, None)
@@ -265,19 +271,27 @@ def _select(note):
         dk.label(r, label, color=dk.TEXT, font=dk.FONT_S)
         cur = ov.get(pkey)
         cur = dflt if cur is None else (cur / scale if scale != 1.0 else cur)
+        # live numeric readout (X-2): every other slider in the app shows
+        # its value; these four were tune-by-ear-only
+        unit = '' if pkey == 'tune' else '%'
+        vl = dk.label(r, "%d%s" % (int(round(cur)), unit), color=dk.TEAL,
+                      font=dk.FONT_S)
+
         # dk.slider callbacks receive the LVGL EVENT, not the value --
         # treating it as a number made every tick throw and the sliders dead
-        dk.slider(r, int(round(cur)), vmin, vmax, w=_s['cw'] - 210,
-                  cb=(lambda e, pk=pkey, sc=scale:
-                      _apply(note, pk,
-                             e.get_target_obj().get_value() * sc
-                             if sc != 1.0 else
-                             e.get_target_obj().get_value(), False)),
-                  on_release=(lambda e, pk=pkey, sc=scale:
-                              _apply(note, pk,
-                                     e.get_target_obj().get_value() * sc
-                                     if sc != 1.0 else
-                                     e.get_target_obj().get_value(), True)))
+        def _mk(pk, sc, lbl, un):
+            def _cb(e, commit):
+                v = e.get_target_obj().get_value()
+                try:
+                    lbl.set_text("%d%s" % (v, un))
+                except Exception:
+                    pass
+                _apply(note, pk, v * sc if sc != 1.0 else v, commit)
+            return _cb
+        cbf = _mk(pkey, scale, vl, unit)
+        dk.slider(r, int(round(cur)), vmin, vmax, w=_s['cw'] - 260,
+                  cb=(lambda e, f=cbf: f(e, False)),
+                  on_release=(lambda e, f=cbf: f(e, True)))
     b = dk.button(card, "Reset pad", w=170, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
                   cb=lambda e: _reset(_s['note']))
 

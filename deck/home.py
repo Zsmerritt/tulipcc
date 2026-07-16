@@ -130,7 +130,7 @@ def _open_submenu(shell, title, key, items):
 
 _APPS = [
     (lv.SYMBOL.EDIT,     "Editor",      "call", tulip.edit,     dk.GREEN),
-    (lv.SYMBOL.FILE,     "Wordpad",     "run",  "wordpad",      dk.GREEN),
+    (lv.SYMBOL.FILE,     "Wordpad",     "run",  "wordpad",      dk.TEAL),
     (lv.SYMBOL.GPS,      "Tulip World", "run",  "worldui",      dk.PURPLE),
     (lv.SYMBOL.KEYBOARD, "Keyboard",    "call", tulip.keyboard, dk.GRAY),
     (lv.SYMBOL.AUDIO, "Drums (legacy)", "run", "drums", dk.GRAY),
@@ -145,7 +145,7 @@ def _open_system(shell):
     # breadcrumb as everything else, and a crash shows the shell's panel-error
     # label instead of silently bouncing (the way Settings died in C1).
     items = [
-        (lv.SYMBOL.DIRECTORY, "Files",        "panel", _open_files,    dk.GREEN),
+        (lv.SYMBOL.DIRECTORY, "Files",        "panel", _open_files,    dk.TEAL),
         (lv.SYMBOL.LIST,      "Apps",         "panel", _open_apps,     dk.PURPLE),
         (lv.SYMBOL.SETTINGS,  "Settings",     "panel", _open_settings, dk.GREEN),
         (lv.SYMBOL.EYE_OPEN,  "MIDI monitor", "panel", _open_midimon,  dk.TEAL),

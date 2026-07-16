@@ -356,7 +356,9 @@ def _build(body, right, cw, screen):
         cb=lambda e: (deckcfg.sync_time(), dk.toast(screen, "Time set")) if tulip.ip() else dk.toast(screen, "Need Wi-Fi", dk.RED))
     dk.button(g, "Calibrate", w=104, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: tulip.run('calib'))
-    dk.button(g, "Upgrade", w=96, h=48, bg=dk.PURPLE, font=dk.FONT_S,
+    # (was bright PURPLE -- the rarest, riskiest action shouldn't be the
+    # loudest element in Settings; X-5)
+    dk.button(g, "Upgrade", w=96, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
         cb=lambda e: _upgrade(screen))
     # Two clearly-separated actions (they used to share one ambiguous
     # "Reset" button):
@@ -383,6 +385,7 @@ def _build(body, right, cw, screen):
         if not _frstate['armed']:
             _frstate['armed'] = True
             btn.set_style_bg_color(dk.c(dk.RED), 0)
+            btn.set_style_text_color(dk.c(dk.WHITE), 0)   # (fg rests RED now)
             dk.toast(screen, "Tap again: ERASES all settings + reboots",
                      dk.RED)
             return
@@ -396,8 +399,15 @@ def _build(body, right, cw, screen):
             machine.reset()
         except Exception:
             pass
+    # Destructive signal at rest (X-5): red text + red border distinguish it
+    # from the benign Restart; the two-tap arm still turns it solid red.
     frbtn = dk.button(g2, "Factory reset", w=190, h=48, bg=dk.SURFACE2,
-                      font=dk.FONT_S)
+                      fg=dk.RED, font=dk.FONT_S)
+    try:
+        frbtn.set_style_border_width(2, 0)
+        frbtn.set_style_border_color(dk.c(dk.RED), 0)
+    except Exception:
+        pass
     frbtn.add_event_cb(
         (lambda b: (lambda e: _freset(e, b)
                     if e.get_code() == lv.EVENT.CLICKED else None))(frbtn),

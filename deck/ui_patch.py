@@ -87,8 +87,10 @@ def _sym(name, fallback):
 
 
 def _should_hide_quit(name):
-    """The root app has no quit/power button -- you don't close the root."""
-    return name == ROOT_APP
+    """The root app has no quit/power button -- you don't close the root.
+    Welcome (first-boot onboarding) has nowhere to go Back to either: its
+    only exits are its own step cards / Get started (X-9)."""
+    return name == ROOT_APP or name == 'welcome'
 
 
 def _quit_target(name, running):

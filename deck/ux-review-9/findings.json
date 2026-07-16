@@ -1,0 +1,119 @@
+[
+  {
+    "id": "X-1",
+    "severity": "high",
+    "title": "Swap-hit picker: action row (Use selected / Kit default) hidden behind the browser; swapping a hit is impossible",
+    "summary": "swap_panel adds two dk.row()s directly to the pushed panel, which has no flex-column layout, so both rows position at (0,0) and overlap. On-device child dump: child0 (top action row) 1024x64 @ (0,0) and child1 (packs+hits body) 1024x448 @ (0,0); the opaque body is drawn last and fully occludes the top row. The 'tap a hit to hear it' instruction and the 'Use selected' and 'Kit default' buttons are therefore invisible AND unclickable (taps land on the body underneath). A user can browse packs and audition hits but has no way to commit the swap or reset to the kit default — only Back (cancel) works, so the Swap-hit feature is non-functional.",
+    "evidence": ["s15_swap_hit_picker.png"],
+    "location": {"file": "deck/padeditor.py", "symbol": "swap_panel (lines ~148-176)"},
+    "suggested_fix": "Give swap_panel's parent a vertical layout before adding rows: either set parent.set_flex_flow(lv.FLEX_FLOW.COLUMN)+pad_row (like the other panels that build on a dk.scroll_col), or set explicit positions (top row y=0 h=64; body y=72, h=H-80). Mirror the pattern sound_panel/kit_panel already use. Verify against a screenshot that 'Use selected' and 'Kit default' are visible and tappable."
+  },
+  {
+    "id": "X-2",
+    "severity": "medium",
+    "title": "Pad editor sliders (Tune/Decay/Level/Snap) have no numeric readouts",
+    "summary": "In the per-pad sound editor the four sliders show only a left-side label and the knob position — no current value or unit. This is inconsistent with the Sound editor and FX editor, whose sliders all show a live value readout (e.g. '90 %', '28 %'). You cannot tell the current Tune (semitones), Decay/Level/Snap %, or set a precise value; you are tuning blind.",
+    "evidence": ["s14_pads_editor.png", "s04_sound_juno6_vca_reverb.png"],
+    "location": {"file": "deck/padeditor.py", "symbol": "_select (lines ~262-280)"},
+    "suggested_fix": "Add a value label per slider (right-aligned, updated in the VALUE_CHANGED cb) formatted per param, matching the curated/FX sliders' readout style (green mono value + unit). Cheap: one label per row, updated in the existing cb."
+  },
+  {
+    "id": "X-3",
+    "severity": "medium",
+    "title": "Kit picker (76 kits) has no search and no sampled/synth grouping; every synth kit carries a repetitive '(synth)' suffix",
+    "summary": "The Kit picker is a flat list of full-width 64px rows — only ~7 of 76 kits fit per screen (~11 screens of scrolling). Unlike the Patch picker, it has NO search field. There is no divider at the 7-sampled → 69-synth boundary (Percussion is immediately followed by 'Acoustic (synth)'), and every synth kit is suffixed '(synth)' with heavy variant fan-out ('Acoustic', 'Acoustic B/C/D', ...), so 69 near-identical names are hard to scan or differentiate.",
+    "evidence": ["s11_kit_picker.png", "s12_kit_synth_transition.png"],
+    "location": {"file": "deck/rack.py", "symbol": "kit_panel (lines ~294-312); deck/drums_kit.py synth_kits"},
+    "suggested_fix": "Add a search field mirroring the Patch picker (instrument.py already has the pattern). Insert a section header/divider row before the synth kits ('Synthesized') and drop the per-row '(synth)' suffix (the section conveys it), which also frees horizontal space. Optionally a 2-column grid to ~halve scroll. Keep repaint cost down by windowing like the patch list ('Show more')."
+  },
+  {
+    "id": "X-4",
+    "severity": "medium",
+    "title": "Disabled controls and favorite stars render muddy olive/khaki in RGB332 (review-8 R-1 still present)",
+    "summary": "Two off-palette color problems from the 8-bit (RGB332) display: (1) Files' Run/Edit/Delete + the whole action bar read olive/khaki when nothing is selected — they are dimmed with set_style_opa(102) (40%) over the surface, and GREEN/ACCENT at 40% quantize to a muddy olive. (2) Favorite stars use on_color ORANGE=(228,132,44), which quantizes to a muddy olive on the display and sits near-isoluminant with the empty MUTED star on the SURFACE2 button — you can't tell a starred patch from an unstarred one. This is the same disabled/recolor class flagged in review-8 R-1 and never fully resolved.",
+    "evidence": ["s23_files.png", "s05_patch_juno6.png", "s22_keyboard_collapsed.png"],
+    "location": {"file": "deck/files.py", "symbol": "_set_btn (opa dim); deck/deckui.py star()/star_set() ORANGE/MUTED"},
+    "suggested_fix": "Stop dimming disabled controls with alpha; set explicit flat disabled colors at full opacity (a defined dim grey) so RGB332 renders a clean neutral. For stars, pick an on_color that survives RGB332 (e.g. pure yellow ~ (255,224,0)) and a clearly darker off_color (dark grey / BG), and/or put the star on a darker (BG) button. Verify against a screenshot, not the source values."
+  },
+  {
+    "id": "X-5",
+    "severity": "medium",
+    "title": "Factory reset is styled identically to Restart (neutral grey) despite being the most destructive action",
+    "summary": "In Settings > Power, 'Restart' and 'Factory reset' are the same SURFACE2 grey button. Factory reset wipes the device (including Wi-Fi credentials) yet carries zero visual warning weight; the by-far most prominent button in Settings is instead the bright-purple 'Upgrade'. Restart is benign, Factory reset is catastrophic — they should not look the same. (The home Reset tile is correctly red.)",
+    "evidence": ["s20_settings.png"],
+    "location": {"file": "deck/settings.py", "symbol": "Power row (Restart / Factory reset buttons)"},
+    "suggested_fix": "Give Factory reset a destructive treatment (RED text/border, or RED bg) distinct from Restart. Consider toning down the 'Upgrade' button's magenta so a rare/risky action isn't the visual focus of Settings. (Confirm dialog already gates the action; this is purely the resting visual signal.)"
+  },
+  {
+    "id": "X-6",
+    "severity": "low",
+    "title": "Center device chip reads as a progress bar, not a tappable device selector",
+    "summary": "The top-bar center chip ('Tulip 10/32') is the brightest element in the whole chrome (saturated periwinkle SURFACE2) and carries a dark, near-full-width inset track along its bottom. At idle the always-visible dark track over the bright chip reads as a progress/loading bar stuck near 100%, not as a status+nav chip you can tap to open Devices. It pulls the eye to the top-center on every screen for a mostly-static element.",
+    "evidence": ["s01_home.png", "s29_home_final.png", "s02_edit_juno6.png"],
+    "location": {"file": "deck/homeshell.py", "symbol": "_make_device_chip (chip bg + meter track, lines ~226-267)"},
+    "suggested_fix": "Reduce the contrast between chip and track: use a subtler chip background and make the meter a thin bar on a low-contrast track (or hide the track until level>0 and instead show a small dot). Goal: the chip reads as a chip, and the meter as a slim VU accent, not a full progress bar."
+  },
+  {
+    "id": "X-7",
+    "severity": "low",
+    "title": "Pad editor 'Swap >' button has no contrast against its own row",
+    "summary": "In the per-pad card the hit-name row is SURFACE2 and the 'Swap >' button on it is also SURFACE2, so the button barely reads as a button — low affordance for the entry point into the (currently broken, see X-1) swap picker.",
+    "evidence": ["s14_pads_editor.png"],
+    "location": {"file": "deck/padeditor.py", "symbol": "_select (Swap button, line ~258)"},
+    "suggested_fix": "Give the Swap button an ACCENT background (or a visible border) so it stands off the SURFACE2 row, consistent with other nav buttons."
+  },
+  {
+    "id": "X-8",
+    "severity": "nit",
+    "title": "Slider accent colors are inconsistent with no semantic system",
+    "summary": "Across the app sliders use different fills with no consistent meaning: Volume=green, Brightness=orange (Settings); Member channels=blue, Pitch bend=orange (MPE); Sound/FX sliders=teal; pad sliders=blue; Voices=green. Orange elsewhere signals 'hot/warning' (the chip meter turns orange at >=70% load), so using it for ordinary values (brightness, pitch-bend range) is a semantic smell.",
+    "evidence": ["s20_settings.png", "s19_mpe_on.png", "s04_sound_juno6_vca_reverb.png", "s14_pads_editor.png"],
+    "location": {"file": "deck/deckui.py", "symbol": "slider() default color + per-call color args"},
+    "suggested_fix": "Standardize normal-value sliders on one accent (teal or green). Reserve orange/red for warning or over-threshold states only."
+  },
+  {
+    "id": "X-9",
+    "severity": "nit",
+    "title": "Welcome onboarding shows an orphaned '< Back' button",
+    "summary": "The first-boot Welcome screen renders a '< Back' button top-left. On a genuine first boot there is nowhere to go back to (Back likely drops to the REPL or does nothing useful), which is confusing on an onboarding screen. NOTE: this may partly be an artifact of how I launched it (tulip.run('welcome')) vs boot.py's presentation — confirm on a real first boot before fixing.",
+    "evidence": ["s27_welcome.png"],
+    "location": {"file": "deck/welcome.py", "symbol": "run(); deck/ui_patch.py standalone Back button"},
+    "suggested_fix": "Suppress the standalone Back button on the Welcome screen (as it is stripped on Home), since it has no valid destination during first-run onboarding."
+  },
+  {
+    "id": "X-10",
+    "severity": "nit",
+    "title": "Welcome step cards have title at the top and subtitle at the bottom with an empty middle",
+    "summary": "Each 300x150 step card pins the number/title to the top edge and the subtitle to the bottom edge, leaving a large empty middle so the cards read as sparse. Minor polish.",
+    "evidence": ["s27_welcome.png"],
+    "location": {"file": "deck/welcome.py", "symbol": "_big_card (lines ~13-31)"},
+    "suggested_fix": "Group title+subtitle together (e.g. both near the top, or vertically centered) and/or reduce card height so the content doesn't float to the edges."
+  },
+  {
+    "id": "X-11",
+    "severity": "nit",
+    "title": "Double-space artifacts in copy",
+    "summary": "Several strings carry doubled spaces: the home/rack instrument subtitle 'ch1  A11 Brass Set 1', the DX7 patch name 'BRASS  1', and the right-column nav buttons use '  >' (two spaces before the chevron). Small typography cleanup.",
+    "evidence": ["s01_home.png", "s06_edit_dx7.png", "s02_edit_juno6.png"],
+    "location": {"file": "deck/shellmodel.py instrument_summary; patch name tables; deck/rack.py nav button labels"},
+    "suggested_fix": "Collapse to single spaces; use a single space before the '>' chevron on nav buttons."
+  },
+  {
+    "id": "X-12",
+    "severity": "nit",
+    "title": "Submenu tile colors don't differentiate items (two greens adjacent)",
+    "summary": "In System, Files and Settings are both green; in Apps, Editor and Wordpad are both green. Color isn't used to distinguish, so it adds little scanning value where it could. Low impact.",
+    "evidence": ["s25_system.png", "s26_apps.png"],
+    "location": {"file": "deck/home.py", "symbol": "_open_system items / _APPS colors"},
+    "suggested_fix": "Either give each tile a distinct hue or drop color-coding and rely on icon+label. Keep red reserved for Reset."
+  },
+  {
+    "id": "X-13",
+    "severity": "low",
+    "title": "Recurring littlefs 'Corrupted dir pair' console error during /user operations",
+    "summary": "During the crawl the device console repeatedly emitted 'lib/littlefs/lfs2.c:1346:error: Corrupted dir pair at {0x1, 0x0}' when reading/writing /user (screenshots, directory listing in Apps/Files). It was non-fatal — screenshots and config reads kept working and no watchdog reset occurred (reset_cause stayed 2) — but a recurring filesystem corruption warning on the user partition is a robustness flag worth investigating. This is firmware/FS, not deck UI.",
+    "evidence": ["(console logs during s07, s16, s21, s26 captures)"],
+    "location": {"file": "firmware littlefs / /user partition", "symbol": "n/a (not deck code)"},
+    "suggested_fix": "Investigate /user littlefs health (fsck/reformat-and-restore on a spare unit); confirm it isn't progressive corruption. Out of scope for the deck UI fix agent — route to firmware."
+  }
+]

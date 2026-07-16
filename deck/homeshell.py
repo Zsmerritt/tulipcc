@@ -249,16 +249,19 @@ class HomeShell:
             # 4px bar was invisible until something played). Driven by AMY's
             # real output level on firmware with tulip.amy_level(), else by
             # voices-in-use (forwarder.live_voices). _start_meter ticks it.
-            dot.align(lv.ALIGN.LEFT_MID, 8, -5)
-            lb.align(lv.ALIGN.LEFT_MID, 24, -5)
+            dot.align(lv.ALIGN.LEFT_MID, 8, -4)
+            lb.align(lv.ALIGN.LEFT_MID, 24, -4)
+            # slim VU accent, LOW-contrast track (X-6: the old 8px near-black
+            # track over the bright chip read as a progress bar stuck at
+            # ~100% and pulled the eye top-center on every screen)
             track = lv.obj(b)
-            track.set_size(cw - 14, 8)
-            dk._flat(track, radius=4, bg=dk.BG)
+            track.set_size(cw - 14, 3)
+            dk._flat(track, radius=2, bg=dk.SURFACE)
             track.remove_flag(lv.obj.FLAG.SCROLLABLE)
             track.align(lv.ALIGN.BOTTOM_MID, 0, -3)
             bar = lv.obj(track)
-            bar.set_size(1, 8)
-            dk._flat(bar, radius=4, bg=dk.GREEN)
+            bar.set_size(1, 3)
+            dk._flat(bar, radius=2, bg=dk.GREEN)
             bar.remove_flag(lv.obj.FLAG.SCROLLABLE)
             bar.align(lv.ALIGN.LEFT_MID, 0, 0)
             self._chip_live.append(

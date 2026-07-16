@@ -242,7 +242,15 @@ def star_src(size=28):
     return dsc
 
 
-def star(parent, filled, size=28, on_color=ORANGE, off_color=MUTED):
+# Favorite-star colors chosen FOR RGB332: ORANGE (228,132,44) quantized to a
+# muddy olive nearly isoluminant with the MUTED empty star (X-4) -- you
+# couldn't tell starred from unstarred. Pure bright yellow survives the 8-bit
+# palette; the empty star drops to a dark grey for real contrast.
+STAR_ON = tulip.color(255, 224, 0)
+STAR_OFF = tulip.color(72, 74, 92)
+
+
+def star(parent, filled, size=28, on_color=STAR_ON, off_color=STAR_OFF):
     """A star lv.image; use star_set(img, filled) to flip its state."""
     img = lv.image(parent)
     img.set_src(star_src(size))
@@ -251,7 +259,7 @@ def star(parent, filled, size=28, on_color=ORANGE, off_color=MUTED):
     return img
 
 
-def star_set(img, filled, on_color=ORANGE, off_color=MUTED):
+def star_set(img, filled, on_color=STAR_ON, off_color=STAR_OFF):
     img.set_style_image_recolor(c(on_color if filled else off_color), 0)
 
 
