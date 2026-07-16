@@ -342,8 +342,17 @@ def start():
                         num_voices=instr.get('num_voices', 10),
                         channel=(ch if c_own else None))
                 else:
+                    # the piano engine claims ~25 oscs per voice internally
+                    # (interp_partials) -- 10 voices would want 250 of AMY's
+                    # 120 oscs, and the failed allocations played as SKIPPED
+                    # NOTES. 4 voices is the engine's practical ceiling.
+                    nv = instr.get('num_voices')
+                    if instr.get('type') == 'piano':
+                        nv = min(nv or 4, 4)
+                    else:
+                        nv = nv or 10
                     syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                            num_voices=instr.get('num_voices', 10),
+                                            num_voices=nv,
                                             channel=(ch if c_own else None))
                 _state['synths'][instr['id']] = syn
                 if c_own:

@@ -68,7 +68,12 @@ class SynthKit:
         ov = hit_overrides or {}
         io_frags = []
         slot = self.slot_base + 1  # base slot holds the kit patch itself
+        try:
+            from time import sleep_ms as _yield
+        except ImportError:
+            _yield = lambda ms: None
         for note, hit_key in sorted(synthkits.kit_notes(kit_key).items()):
+            _yield(2)   # ~20 store+create bursts starve the UI task otherwise
             # deterministic slot: store (overwrites on rebuild -- the pool is
             # finite and slots never free), then load by number
             synthkits.store_patch(slot, synthkits.hit_patch_string(
@@ -117,6 +122,14 @@ class SynthKit:
         pass                       # drum one-shots self-terminate
 
     def release(self):
+        # Clear the kit synth's note maps FIRST: mappings outlive the synth
+        # (they key on the synth number), so without this the next instrument
+        # on the same channel kept playing the drums. 255 = clear-all.
+        try:
+            import amy
+            amy.send(synth=self.kit_synth.synth, midi_note_cmd='255')
+        except Exception:
+            pass
         for hs in self.hit_synths.values():
             try:
                 hs.release()

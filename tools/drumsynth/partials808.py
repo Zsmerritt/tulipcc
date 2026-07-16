@@ -122,7 +122,7 @@ def env_to_bp(pts, max_pts=6):
 
 def hit_patch_string(tracks):
     """v0 = BYO_PARTIALS parent (num_partials via p), v1..vK = PARTIAL oscs."""
-    parts = ['v0w10p%da1,0,1Z' % len(tracks)]
+    parts = ['v0w10p%da1,0,1,1Z' % len(tracks)]
     for i, (f, pts) in enumerate(tracks):
         parts.append('v%dw9f%dA%sZ' % (i + 1, round(f), env_to_bp(pts)))
     return ''.join(parts)

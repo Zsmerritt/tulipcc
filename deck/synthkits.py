@@ -12,8 +12,13 @@
 
 import json
 
-_JSON_PATHS = ('/user/synthkits.json', 'synthkits.json')
-_state = {'data': None}
+# Split data layout (v2): synthkits_data/index.json (NOT 'synthkits/'
+# -- a directory of that name shadows this module in MicroPython's import) = kits + pack listings + hit
+# names (small, parsed once); synthkits/<pack>.json = that pack's hit params,
+# loaded on demand. The old single 279KB file starved the UI task on-device
+# (watchdog reset) while parsing.
+_DIRS = ('/user/synthkits_data', 'synthkits_data')
+_state = {'index': None, 'dir': None, 'packs': {}}
 
 # Deck-wide RAM-patch SLOT MAP (user patches 1024+). AMY stores every
 # patch_string into a RAM slot and slots are never freed -- sending raw
@@ -42,17 +47,32 @@ _WIRE = (('wave', 'w'), ('freq', 'f'), ('duty', 'd'), ('phase', 'P'),
 
 
 def _load():
-    if _state['data'] is None:
-        for p in _JSON_PATHS:
+    if _state['index'] is None:
+        for d in _DIRS:
             try:
-                with open(p) as f:
-                    _state['data'] = json.load(f)
+                with open(d + '/index.json') as f:
+                    _state['index'] = json.load(f)
+                _state['dir'] = d
                 break
             except (OSError, ValueError):
                 continue
-        if _state['data'] is None:
-            _state['data'] = {'hits': {}, 'kits': {}, 'packs': {}}
-    return _state['data']
+        if _state['index'] is None:
+            _state['index'] = {'kits': {}, 'packs': {}, 'names': {}}
+    return _state['index']
+
+
+def _hit(hit_key):
+    pack = hit_key.split('/', 1)[0]
+    ph = _state['packs'].get(pack)
+    if ph is None:
+        _load()
+        try:
+            with open('%s/%s.json' % (_state['dir'], pack)) as f:
+                ph = json.load(f)
+        except (OSError, ValueError, TypeError):
+            ph = {}
+        _state['packs'][pack] = ph
+    return ph.get(hit_key)
 
 
 def kits():
@@ -67,8 +87,7 @@ def kit_notes(kit_key):
 
 
 def hit_name(hit_key):
-    h = _load()['hits'].get(hit_key)
-    return h['name'] if h else hit_key
+    return _load()['names'].get(hit_key, hit_key)
 
 
 def pack_hits(pack):
@@ -113,7 +132,7 @@ def hit_patch_string(hit_key, overrides=None):
     """AMY patch wire string for one hit ('v0...Zv1...Z'), with sound-design
     overrides applied: tune (semitones, +/-24), decay (0.25..4 time scale),
     level (0..2 gain), snap (0..2 gain on the noise/transient osc)."""
-    hit = _load()['hits'].get(hit_key)
+    hit = _hit(hit_key)
     if hit is None:
         raise KeyError(hit_key)
     if 'patch_string' in hit:

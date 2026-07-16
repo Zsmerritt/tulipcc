@@ -97,8 +97,10 @@ def _fmt(x):
 
 
 def _amp_string(level):
-    """Amp coefs: const = component level, velocity coef 1."""
-    return '%s,0,1' % _fmt(level)
+    """Amp coefs: const = component level, velocity 1, EG0 1 -- the EG0 slot
+    is what ties amplitude to the bp0 envelope; without it the hit sustains
+    forever at velocity level (heard live as 'notes, not drums')."""
+    return '%s,0,1,1' % _fmt(level)
 
 
 def convert(sections, name=''):
