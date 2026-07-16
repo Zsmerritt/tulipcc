@@ -97,10 +97,56 @@ if fwprogress:
 
 
 def sh(port, args, timeout=300):
-    cp = subprocess.run(
-        [sys.executable, '-m', 'mpremote', 'connect', port, 'resume'] + args,
-        capture_output=True, text=True, timeout=timeout)
-    return (cp.stdout or '') + (cp.stderr or '')
+    """Run `exec <code>` on the device WITHOUT resetting it.
+
+    mpremote's port-open pulses DTR/RTS, which power-cycles CH340-wired
+    Tulips -- the IP query then raced the reboot it had itself caused and
+    reported 'not on Wi-Fi' on a connected device. Opens with DTR/RTS held
+    low (no pulse), raw-REPL, exec, close. Only 'exec' is used here."""
+    assert args and args[0] == 'exec'
+    code = args[1]
+    try:
+        import serial
+    except ImportError:
+        cp = subprocess.run(
+            [sys.executable, '-m', 'mpremote', 'connect', port, 'resume'] + args,
+            capture_output=True, text=True, timeout=timeout)
+        return (cp.stdout or '') + (cp.stderr or '')
+    s = serial.Serial()
+    s.port = port
+    s.baudrate = 115200
+    s.timeout = 0.5
+    s.dtr = False
+    s.rts = False
+    s.open()
+    s.dtr = False
+    s.rts = False
+    try:
+        s.write(b'\r\x03')
+        time.sleep(0.15)
+        s.reset_input_buffer()
+        s.write(b'\x01')
+        time.sleep(0.25)
+        s.reset_input_buffer()
+        data = code.encode()
+        for i in range(0, len(data), 256):
+            s.write(data[i:i + 256])
+            time.sleep(0.01)
+        s.write(b'\x04')
+        out = b''
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            chunk = s.read(4096)
+            if chunk:
+                out += chunk
+            if out.endswith(b'\x04>'):
+                break
+        s.write(b'\x02')
+    finally:
+        s.close()
+    if b'OK' in out[:10]:
+        out = out.split(b'OK', 1)[1]
+    return out.replace(b'\x04', b'\n').decode('utf-8', 'replace')
 
 
 def tagged(out, tag):
