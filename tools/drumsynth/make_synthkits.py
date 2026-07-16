@@ -164,6 +164,19 @@ TR808 = {
 
 def main():
     hits, packs, bad = harvest_hits()
+    # partials-resynthesized 808 metallic hits (partials808.py): stored as
+    # ready patch strings, not osc dicts -- synthkits passes them through
+    try:
+        pj = json.load(open(os.path.join(HERE, 'partials808.json')))
+        packs['partials808'] = {}
+        for role, h in pj.items():
+            key = 'partials808/%s' % role
+            hits[key] = {'name': h['name'], 'pack': 'partials808',
+                         'patch_string': h['patch_string']}
+            packs['partials808'][role] = [key]
+            packs['partials808'].setdefault('_all', []).append(key)
+    except (OSError, ValueError):
+        pass
     # baseline kit: its hits join the corpus under the 'tr808syn' pack
     packs['tr808syn'] = {}
     for role, oscs in TR808.items():

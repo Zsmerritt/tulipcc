@@ -116,6 +116,10 @@ def hit_patch_string(hit_key, overrides=None):
     hit = _load()['hits'].get(hit_key)
     if hit is None:
         raise KeyError(hit_key)
+    if 'patch_string' in hit:
+        # pre-built patch (partials-resynthesized hits): overrides don't
+        # apply yet -- per-partial transforms are a follow-up
+        return hit['patch_string']
     ov = overrides or {}
     tune = 2.0 ** (max(-24.0, min(24.0, float(ov.get('tune', 0)))) / 12.0)
     decay = max(0.25, min(4.0, float(ov.get('decay', 1.0))))
