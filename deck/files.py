@@ -64,6 +64,15 @@ def _set_btn(k, on):
         # full opacity instead: neutral surface + muted text.
         if k not in _BTN_ON_BG:
             _BTN_ON_BG[k] = b.get_style_bg_color(0)
+            # the THEME's disabled state applies a color FILTER on top of
+            # any flat colors we set -- that filter is what quantized to
+            # olive in RGB332 (review-9 X-4 residual). Zero it so the flat
+            # disabled colors below are what actually renders.
+            for part in (lv.PART.MAIN,):
+                try:
+                    b.set_style_color_filter_opa(0, part | lv.STATE.DISABLED)
+                except Exception:
+                    pass
         b.set_style_opa(255, 0)
         if on:
             b.set_style_bg_color(_BTN_ON_BG[k], 0)
