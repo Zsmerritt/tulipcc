@@ -46,15 +46,8 @@ _INSTRUMENT_KEYS = ('id', 'name', 'device', 'channel', 'patch', 'num_voices',
 
 def type_of_patch(patch):
     """Infer an engine type from a patch number (migration + default)."""
-    try:
-        p = int(patch)
-    except (TypeError, ValueError):
-        p = 0
-    if p < 128:
-        return 'juno6'
-    if p < 256:
-        return 'dx7'
-    return 'piano'
+    import catalog
+    return catalog.engine_of(patch)   # E-8: catalog owns the boundaries
 _MPE_KEYS = ('enabled', 'members', 'bend', 'expression')
 
 

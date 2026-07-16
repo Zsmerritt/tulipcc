@@ -13,7 +13,11 @@ import lvgl as lv
 
 # The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
 # patches -- so we build a small list, not all 257. Drums use the pad editor.
-_TYPE_RANGE = {'juno6': (0, 128), 'dx7': (128, 256), 'piano': (256, 257),
+# ranges derive from catalog's boundaries (E-8: one owner)
+import catalog as _catalog
+_TYPE_RANGE = {'juno6': (0, _catalog.JUNO_END),
+               'dx7': (_catalog.JUNO_END, _catalog.DX_END),
+               'piano': (_catalog.DX_END, _catalog.DX_END + 1),
                'gm': (0, 128), 'gm2': (0, 128)}
 _TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano',
               'drums': 'Drums', 'gm': 'GM Bank', 'gm2': 'E-mu GM'}

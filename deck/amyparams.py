@@ -167,11 +167,8 @@ PARAM_BY_NAME = {d['name']: d for d in PARAMS}
 def engine_of(patch):
     if patch is None:
         return 'generic'
-    if patch < 128:
-        return 'juno6'
-    if patch < 256:
-        return 'dx7'
-    return 'piano'
+    import catalog
+    return catalog.engine_of(patch)   # E-8: catalog owns the boundaries
 
 
 # --- FX schema (per-DEVICE bus): bus -> list of {name,label,min,max,default,arg}

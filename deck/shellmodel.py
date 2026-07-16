@@ -71,8 +71,9 @@ def chip_label(instr):
     # NOTE: separator is a plain ASCII space -- the montserrat font compiled into
     # the firmware has no U+00B7 middot (it renders as tofu), so keep chip text
     # to ASCII + lv.SYMBOL.* glyphs.
+    import catalog
     return "%s %s" % (name_short(instr.get('name', '?')),
-                      patch_short(instr.get('patch', 0)))
+                      catalog.chip_sound(instr))
 
 
 def chip_specs(instruments, active_id):
@@ -85,25 +86,13 @@ def chip_specs(instruments, active_id):
     return specs
 
 
-_KIT_NAMES = {384: 'TR-808', 385: 'TR-909', 386: 'Linn 9000', 387: 'MR-12',
-              388: 'Tokyo Synthetics', 389: '80s Power', 390: 'Percussion'}
-
-
 def instrument_sound(instr):
-    """The sound label for an instrument: its kit (drums) or patch name (synth)."""
-    if instr.get('type') == 'drums':
-        kit = instr.get('kit', 384)
-        if isinstance(kit, str):
-            # synth kits are string keys ('synth:tr909_d') -- the int-keyed
-            # table always missed and every synth kit read "TR-808 kit" on
-            # the Home row (fresh-eyes F-1)
-            try:
-                import drums_kit
-                return drums_kit.kit_name(kit) + " kit"
-            except Exception:
-                return kit + " kit"
-        return _KIT_NAMES.get(kit, 'TR-808') + " kit"
-    return patch_name(instr.get('patch', 0))
+    """The sound label for an instrument, TYPE-aware (kit name for drums,
+    GM program name for gm/gm2, patch name for built-ins). catalog.py owns
+    the dispatch (E-8: this module's private kit table and patch lookup
+    had drifted -- GM instruments showed the Juno patch-N name)."""
+    import catalog
+    return catalog.sound_label(instr)
 
 
 def instrument_summary(instr):

@@ -22,8 +22,11 @@ _TYPE_LIST = [('juno6', 'Juno-6'), ('dx7', 'DX7'), ('piano', 'Piano'),
               ('gm', 'GM Bank'), ('gm2', 'E-mu GM'), ('drums', 'Drums')]
 _TYPE_NAMES = dict(_TYPE_LIST)
 # For 'gm'/'gm2' the patch slot holds a GM program number (0 = Grand Piano).
-_TYPE_FIRST_PATCH = {'juno6': 0, 'dx7': 128, 'piano': 256, 'gm': 0, 'gm2': 0,
-                     'drums': 0}
+# catalog.py owns the table (E-8); drums keeps a 0 here (kit id lives in
+# 'kit', the patch slot is unused but must stay an int for older code).
+import catalog as _catalog
+_TYPE_FIRST_PATCH = {t: (v if v is not None else 0)
+                     for t, v in _catalog.TYPE_FIRST_PATCH.items()}
 
 
 def _panel_h():
