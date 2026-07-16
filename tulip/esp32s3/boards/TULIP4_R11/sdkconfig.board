@@ -2,3 +2,10 @@
 
 
 
+
+# AUTO-SUSPEND PROTOTYPE (review 4c step 2): a cache miss into mapped
+# flash during a program/erase STALLS (~50-100us) instead of faulting --
+# if it proves out on this octal part, the whole fence stack becomes
+# belt-and-braces. EXPERIMENTAL per IDF; test with the write-during-
+# render repro before trusting it.
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y
