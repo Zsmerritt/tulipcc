@@ -7,7 +7,10 @@
 #define DISPLAY_TASK_PRIORITY (ESP_TASK_PRIO_MIN)
 #define USB_TASK_PRIORITY (ESP_TASK_PRIO_MIN + 1)
 #define TOUCHSCREEN_TASK_PRIORITY (ESP_TASK_PRIO_MIN + 1)
-#define SEQUENCER_TASK_PRIORITY (ESP_TASK_PRIO_MAX - 1) // Can be low because it sets its own timers?
+// SEQUENCER_TASK_PRIORITY at (ESP_TASK_PRIO_MAX - 1) tied the flash-guard
+// IPC task -- the exact priority bug class fixed in amy's render tasks.
+// No task is created with it anymore; kept two below max in case one is.
+#define SEQUENCER_TASK_PRIORITY (ESP_TASK_PRIO_MAX - 3)
 #define TULIP_MP_TASK_PRIORITY (ESP_TASK_PRIO_MIN + 1)
 
 // Since display is on core0, things on core0 will be slower than things on core1
