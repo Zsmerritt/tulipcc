@@ -189,7 +189,7 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'catalog', 'ticker', 'patchfx', 'patchparams', 'fwprogress',
                  'flashmode',
                  'flashlib', 'flash_fw', 'flash_ota', 'flash_stream',
-                 'flash_pingpong', 'mem_probe', 'presets')
+                 'flash_pingpong', 'mem_probe', 'presets', 'samplepresets')
 
 
 def deck_modules_set():

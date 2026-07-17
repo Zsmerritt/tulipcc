@@ -12,6 +12,7 @@
 # Device-only (imports synth); not host-tested.
 
 import synth
+import samplepresets      # pure helpers (typed sample swaps + PCM one-shots)
 
 # (DrumSynth patch number, display name). 384 = the default TR-808.
 KITS = [
@@ -78,7 +79,7 @@ class SynthKit:
             _yield = lambda ms: None
         notes = synthkits.kit_notes(kit_key)
         for note in sorted(notes):
-            hit_key = sw.get(note) or sw.get(str(note)) or notes[note]
+            raw = sw.get(note) or sw.get(str(note))
             _yield(2)   # ~20 store+create bursts starve the UI task otherwise
             # Per-hit guard (KITS-1): an unresolvable hit key (partial qput
             # deploy, index/pack drift) used to raise KeyError out of the whole
@@ -88,11 +89,26 @@ class SynthKit:
             # and unmapped), the rest of the kit stays audible, and any synth
             # created before a mid-build failure is released so it can't leak.
             hs = None
+            eff = None                 # the pad's effective hit identity
             try:
-                # deterministic slot: store (overwrites on rebuild -- the pool
-                # is finite and slots never free), then load by number
-                synthkits.store_patch(slot, synthkits.hit_patch_string(
-                    hit_key, ov.get(note) or ov.get(str(note))))
+                if samplepresets.is_sample_swap(raw):
+                    # SAMPLE pad (Phase 2): load the WAV into its resident PCM
+                    # preset, then arm a one-shot patch pointing at it. The
+                    # synth is created AFTER the load, so it has no live voice
+                    # yet -- no quiesce needed at BUILD time (unlike retweak).
+                    preset = samplepresets.swap_preset(raw)
+                    samplepresets.load_sample_into(
+                        preset, samplepresets.swap_path(raw))
+                    synthkits.store_patch(
+                        slot, samplepresets.one_shot_patch_string(preset))
+                    eff = raw
+                else:
+                    hit_key = raw or notes[note]
+                    # deterministic slot: store (overwrites on rebuild -- the
+                    # pool is finite and slots never free), then load by number
+                    synthkits.store_patch(slot, synthkits.hit_patch_string(
+                        hit_key, ov.get(note) or ov.get(str(note))))
+                    eff = hit_key
                 hs = synth.PatchSynth(num_voices=1, patch=slot)
                 hs.deferred_init()
             except Exception:
@@ -102,7 +118,7 @@ class SynthKit:
                     except Exception:
                         pass
                 continue               # skip this pad; slot is reused next note
-            self.note_hits[note] = hit_key
+            self.note_hits[note] = eff
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1
@@ -146,9 +162,11 @@ class SynthKit:
 
     def retweak(self, note, overrides, hit_key=None):
         """Live per-hit sound design: rebuild ONE hit synth's patch.
-        hit_key swaps the pad to a different corpus hit (alternates picker)."""
+        hit_key swaps the pad to a different corpus hit OR a typed sample swap
+        (alternates picker). A non-None hit_key means the pad was re-pointed."""
         import synthkits
         hs = self.hit_synths.get(note)
+        swap_changed = hit_key is not None
         if hit_key is not None:
             self.note_hits[note] = hit_key
         else:
@@ -157,6 +175,23 @@ class SynthKit:
             return
         import amy
         slot = self.hit_slots[note]
+        if samplepresets.is_sample_swap(hit_key):
+            # SAMPLE pad. Only (re)load on an actual swap change; override-only
+            # ticks (slider drags) do nothing here -- tune/decay/level/snap are
+            # not yet applied to sample pads (see samplepresets validation #3).
+            # CONCURRENCY: quiesce THIS synth (num_voices=0) before the load,
+            # because load_sample unloads+frees the preset the audio core may
+            # be rendering (samplepresets #1). load_sample_into does the
+            # num_voices=0 for us via quiesce_synth.
+            if swap_changed:
+                samplepresets.load_sample_into(
+                    samplepresets.swap_preset(hit_key),
+                    samplepresets.swap_path(hit_key), quiesce_synth=hs.synth)
+                synthkits.store_patch(
+                    slot, samplepresets.one_shot_patch_string(
+                        samplepresets.swap_preset(hit_key)))
+                amy.send(synth=hs.synth, num_voices=1, patch=slot)
+            return
         synthkits.store_patch(slot, synthkits.hit_patch_string(hit_key, overrides))
         amy.send(synth=hs.synth, num_voices=0)
         amy.send(synth=hs.synth, num_voices=1, patch=slot)

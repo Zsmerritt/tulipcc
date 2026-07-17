@@ -3162,3 +3162,109 @@ def test_missing_library_dir_is_empty_not_an_error(presets):
     assert P.list_presets() == []
     assert P.load('nope') is None
     assert P.exists('nope') is False
+
+
+# --- Phase 2: user SAMPLE presets (samplepresets.py; pure logic only) --------
+# The load/unload paths are DEVICE-ONLY (they call amy + must be quiesce-timed
+# on hardware); only the pure helpers are exercised here. See the on-device
+# validation banner in samplepresets.py.
+def _wav_bytes(channels=1, bits=16, rate=44100, frames=100, fmt=1,
+               extra_chunk=False):
+    """Minimal RIFF/WAVE bytes for header tests."""
+    data = b'\x00\x00' * frames * channels * (bits // 16 or 1)
+    fmt_body = (fmt.to_bytes(2, 'little') + channels.to_bytes(2, 'little')
+                + rate.to_bytes(4, 'little')
+                + (rate * channels * bits // 8).to_bytes(4, 'little')
+                + (channels * bits // 8).to_bytes(2, 'little')
+                + bits.to_bytes(2, 'little'))
+    chunks = b'fmt ' + len(fmt_body).to_bytes(4, 'little') + fmt_body
+    if extra_chunk:                       # a LIST chunk between fmt and data
+        chunks += b'LIST' + (4).to_bytes(4, 'little') + b'INFO'
+    chunks += b'data' + len(data).to_bytes(4, 'little') + data
+    return b'RIFF' + (len(chunks) + 4).to_bytes(4, 'little') + b'WAVE' + chunks
+
+
+def test_wav_header_accepts_16bit_mono_pcm():
+    import samplepresets as SP
+    info = SP.parse_wav_header(_wav_bytes(frames=50, rate=22050))
+    assert info['channels'] == 1 and info['bits'] == 16
+    assert info['rate'] == 22050
+    assert info['frames'] == 50           # 100 data bytes / 2
+    # a chunk between fmt and data must not confuse the walker
+    info2 = SP.parse_wav_header(_wav_bytes(frames=50, extra_chunk=True))
+    assert info2['frames'] == 50
+
+
+def test_wav_header_rejects_wrong_formats():
+    import samplepresets as SP
+    import pytest as _pt
+    for bad in (_wav_bytes(channels=2),          # stereo
+                _wav_bytes(bits=8),              # 8-bit
+                _wav_bytes(fmt=3),               # IEEE float, not PCM
+                b'NOPE' + b'\x00' * 40):         # not RIFF
+        with _pt.raises(ValueError):
+            SP.parse_wav_header(bad)
+
+
+def test_validate_enforces_path_len_and_length(tmp_path):
+    import samplepresets as SP
+    good = tmp_path / 'kick.wav'
+    good.write_bytes(_wav_bytes(frames=100))
+    ok, info = SP.validate(str(good))
+    assert ok is True and info['frames'] == 100
+    # path over MAX_FILENAME_LEN is rejected before any read
+    ok, why = SP.validate('/sd/' + 'x' * 200 + '.wav')
+    assert ok is False and 'path too long' in why
+    # over the (placeholder) frame cap is rejected
+    big = tmp_path / 'big.wav'
+    big.write_bytes(_wav_bytes(frames=SP.MAX_SAMPLE_FRAMES + 1))
+    ok, why = SP.validate(str(big))
+    assert ok is False and 'too long' in why
+
+
+def test_one_shot_patch_string_is_pcm_no_loop():
+    import samplepresets as SP
+    ps = SP.one_shot_patch_string(701)
+    assert ps.startswith('v0w%d' % SP.PCM_WAVE)   # PCM oscillator
+    assert 'p701' in ps                            # the preset
+    assert 'b0' in ps                              # feedback 0 -> NO loop
+    assert ps.endswith('Z')
+
+
+def test_typed_sample_swap_shape():
+    import samplepresets as SP
+    sw = SP.make_sample_swap('/sd/kick.wav', 701)
+    assert SP.is_sample_swap(sw) is True
+    assert SP.swap_path(sw) == '/sd/kick.wav' and SP.swap_preset(sw) == 701
+    # a bare corpus key (today's swap value) is NOT a sample swap
+    assert SP.is_sample_swap('pack/hit') is False
+    assert SP.swap_path('pack/hit') is None
+
+
+def test_preset_allocation_clears_baked_banks_and_reuses():
+    import samplepresets as SP
+    # the user window starts clear of gamma9001 (256-391) and GM (512-671)
+    assert SP.USER_PRESET_BASE >= 700
+    assert SP.alloc_preset(set()) == SP.USER_PRESET_BASE
+    assert SP.alloc_preset({SP.USER_PRESET_BASE}) == SP.USER_PRESET_BASE + 1
+    # used_presets scans every instrument's sample swaps
+    instruments = [
+        {'hit_swaps': {'36': SP.make_sample_swap('/sd/a.wav', 700),
+                       '38': 'corpus/key'}},          # bare key ignored
+        {'hit_swaps': {'40': SP.make_sample_swap('/sd/b.wav', 701)}},
+    ]
+    assert SP.used_presets(instruments) == {700, 701}
+    assert SP.alloc_preset(SP.used_presets(instruments)) == 702
+    # preset_for REUSES a pad's existing sample preset (no leak on re-pick)...
+    existing = SP.make_sample_swap('/sd/a.wav', 700)
+    assert SP.preset_for(instruments, existing) == 700
+    # ...but allocates a fresh, collision-free one for a new pad
+    assert SP.preset_for(instruments, None) == 702
+
+
+def test_preset_window_exhaustion_raises():
+    import samplepresets as SP
+    import pytest as _pt
+    full = set(range(SP.USER_PRESET_BASE, SP.USER_PRESET_LIMIT + 1))
+    with _pt.raises(ValueError):
+        SP.alloc_preset(full)
