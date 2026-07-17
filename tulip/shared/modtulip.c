@@ -164,6 +164,73 @@ STATIC mp_obj_t tulip_flash_freq(void) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_flash_freq_obj, tulip_flash_freq);
 
 
+// tulip.render_cyc([reset]): OPT-9 core-split probe readout (amy branch
+// core-split-probe, counters defined in amy/src/i2s.c).  AMY splits each
+// 256-sample block statically at AMY_OSCS/2 across the two cores; voices
+// allocate from LOW osc numbers, so core 0 (which also runs the display)
+// loads up first while core 1 may idle.  The amy branch keeps, per core, the
+// worst (max) and most recent CCOUNT delta around that core's amy_render().
+//
+// tulip.render_cyc()      -> (core0_worst, core1_worst, core0_last, core1_last)
+// tulip.render_cyc(1)     -> same snapshot, then zeroes BOTH worst counters
+//                            (read-and-reset; last-block values are left alone,
+//                            they refresh every ~5.8ms block anyway)
+//
+// Block budget is ~1.39M cycles/core (256 samples / 44100Hz at 240MHz).  ESP
+// only; on desktop/web builds the amy symbols don't exist / aren't linkable
+// from here, so degrade to returning None like flash_freq does.
+#ifdef ESP_PLATFORM
+extern volatile uint32_t amy_render_worst_cyc[2];  // defined in amy/src/i2s.c
+extern volatile uint32_t amy_render_last_cyc[2];
+#endif
+STATIC mp_obj_t tulip_render_cyc(size_t n_args, const mp_obj_t *args) {
+#ifdef ESP_PLATFORM
+    mp_obj_t items[4] = {
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[1]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[1]),
+    };
+    if (n_args == 1 && mp_obj_is_true(args[0])) {
+        amy_render_worst_cyc[0] = 0;
+        amy_render_worst_cyc[1] = 0;
+    }
+    return mp_obj_new_tuple(4, items);
+#else
+    (void)n_args; (void)args;
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_render_cyc_obj, 0, 1, tulip_render_cyc);
+
+
+// tulip.eq_silent_skip([0|1]): live A/B switch for AMY's EQ silent-bus skip
+// (amy eq-silent-skip-toggle branch: volatile uint8_t amy_eq_silent_skip,
+// default 1). With no arg, returns the current value. With an int arg, sets
+// it: 1 = skip enabled (a silent bus's EQ stops after its tail countdown,
+// biquad state frozen at the zero-input fixed point); 0 = pre-skip behavior
+// (non-unity EQ keeps filtering zero blocks forever). Host-proven: flipping
+// mid-run switches behavior at the next block, bit-exact to the respective
+// build, no click. Not linked on the web build -- AMY lives in a separate
+// module there (see the amy externs above), so mirror flash_freq and degrade
+// to returning None.
+#ifndef __EMSCRIPTEN__
+extern volatile uint8_t amy_eq_silent_skip;   // defined in amy/src/amy.c
+#endif
+STATIC mp_obj_t tulip_eq_silent_skip(size_t n_args, const mp_obj_t *args) {
+#ifndef __EMSCRIPTEN__
+    if (n_args == 1) {
+        amy_eq_silent_skip = mp_obj_get_int(args[0]) ? 1 : 0;
+    }
+    return mp_obj_new_int(amy_eq_silent_skip);
+#else
+    (void)n_args; (void)args;
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_eq_silent_skip_obj, 0, 1, tulip_eq_silent_skip);
+
+
 // GC-rooted callback stores (see tsequencer.h aliases): as plain C globals
 // the collector couldn't see them, so a lambda whose only reference was a
 // defer/sequencer/midi slot got COLLECTED and its reused heap block was
@@ -2140,6 +2207,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_mem_stats), MP_ROM_PTR(&tulip_mem_stats_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
     { MP_ROM_QSTR(MP_QSTR_flash_freq), MP_ROM_PTR(&tulip_flash_freq_obj) },
+    { MP_ROM_QSTR(MP_QSTR_render_cyc), MP_ROM_PTR(&tulip_render_cyc_obj) },
+    { MP_ROM_QSTR(MP_QSTR_eq_silent_skip), MP_ROM_PTR(&tulip_eq_silent_skip_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
 #if !defined(__EMSCRIPTEN__) && !defined(AMYBOARD)
     //{ MP_ROM_QSTR(MP_QSTR_multicast_start), MP_ROM_PTR(&tulip_multicast_start_obj) },

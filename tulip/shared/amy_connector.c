@@ -540,14 +540,24 @@ static void mount_gamma9001_drums(void) {
         fprintf(stderr, "gamma9001: no drums partition, bank presets unavailable\n");
         return;
     }
+    // Map the real blob (AMY_GAMMA9001_PCM_BYTES, amy.h, compile-checked
+    // against pcm_gamma9001.h), not the partition slice: the S3 has only 256
+    // 64KB data-mmap pages total, and every page a slice rounds up past its
+    // blob is a page another bank can't map (see mount_gm_fonts*).
+    const uint32_t size = AMY_GAMMA9001_PCM_BYTES;
+    if (size > part->size) {
+        fprintf(stderr, "gamma9001: drums blob (%u) overruns partition (%u); bank unavailable\n",
+                (unsigned)size, (unsigned)part->size);
+        return;
+    }
     const void *map = NULL;
     esp_partition_mmap_handle_t handle;  // never unmapped; the samples live as long as AMY
-    esp_err_t err = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &handle);
+    esp_err_t err = esp_partition_mmap(part, 0, size, ESP_PARTITION_MMAP_DATA, &map, &handle);
     if (err != ESP_OK || map == NULL) {
         fprintf(stderr, "gamma9001: drums partition mmap failed (%d)\n", (int)err);
         return;
     }
-    widen_flash_fence(map, part->size);
+    widen_flash_fence(map, size);
     amy_set_gamma9001_pcm((const int16_t *)map);
 }
 #endif
@@ -556,13 +566,24 @@ static void mount_gamma9001_drums(void) {
 // GM SoundFont banks: the `fonts` partition holds the GeneralUser bank at 0
 // and the big multi-font bank at 0x4B0000 (fs_create.py assembles them),
 // mapped separately (a single 12.5MB map needs contiguous vaddr the S3
-// doesn't have). Whatever doesn't fit the 16MB dynamic mmap pool falls back
-// to a PSRAM copy inside map_or_load_partition.
+// doesn't have).
 // Must match GM_BIG_OFFSET in tulip/fs_create.py and the `fonts` partition
 // geometry in boards/N32R8/tulip-partitions-32MB.csv. The GeneralUser bank
 // grew past the old 0x300000 when its capped presets were rebaked with their
 // real length + loops (tools/gm/README.md); a stale value here reads the big
 // bank from the wrong offset and plays garbage.
+//
+// vaddr budget (the S3's dynamic flash-mmap pool is a hard 256 x 64KB pages;
+// the lower half of the 32MB data space is statically claimed by the PSRAM
+// aperture + the SPIRAM_FETCH_INSTRUCTIONS/RODATA relocations, measured
+// live). We map real blob sizes -- and for the big bank only the emu4
+// window, the single slice the deck reads (deck/gmbig.py) -- instead of the
+// partition slices, which needed 317 pages (184 + 58 + 75) and spilled the
+// GeneralUser bank into a 4.9MB PSRAM copy:
+//   GeneralUser  3,617,870 B @ part+0         -> 56 pages
+//   drums        3,735,788 B @ drums part+0   -> 58 pages
+//   big/emu4     1,295,010 B @ part+0xC61810  -> 20 pages (6,160 B page phase)
+// = 134 of 256 pages, everything zero-copy, 122 pages spare.
 #define GM_BIG_BYTE_OFFSET 0x4B0000
 static const void *map_or_load_partition(const esp_partition_t *part,
                                      uint32_t off, uint32_t size,
@@ -575,11 +596,11 @@ static const void *map_or_load_partition(const esp_partition_t *part,
         widen_flash_fence(map, size);
         return map;
     }
-    // The S3's dynamic flash-mmap pool is a hard 16MB (the lower half of the
-    // 32MB data space is statically claimed by the PSRAM aperture + the
-    // SPIRAM_FETCH_INSTRUCTIONS/RODATA relocations, measured live), and the
-    // three PCM banks total 16.02MB -- whichever bank loses the packing race
-    // gets COPIED into PSRAM instead (~9.8MB free; AMY just reads a pointer).
+    // Should-not-happen safety net: the three maps above total 134 of the
+    // S3's 256 pages, so the mmap only fails if something else ate the pool.
+    // Fall back to a PSRAM copy of the same byte range -- for the big bank's
+    // emu4 window the copy stands in 1:1 for the map, so the window
+    // registration below stays correct either way.
     void *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (buf == NULL) {
         fprintf(stderr, "gm: %s mmap failed (%d) and PSRAM alloc of %u failed; bank unavailable\n",
@@ -603,22 +624,46 @@ static void mount_gm_fonts(void) {
         fprintf(stderr, "gm: no fonts partition, GM presets unavailable\n");
         return;
     }
-    // Largest map first: the free vaddr pool is only ~128KB bigger than the
-    // big bank's 9.5MB, so it must grab its contiguous block before the
-    // smaller maps fragment the space (observed live: big-bank mmap short by
-    // exactly two MMU pages when mounted after the others).
-    const void *big = map_or_load_partition(part, GM_BIG_BYTE_OFFSET,
-                                        part->size - GM_BIG_BYTE_OFFSET, "big bank");
-    if (big != NULL)
-        amy_set_gm_big_pcm((const int16_t *)big);
+    // Map ONLY the emu4 window of the big bank: the deck reads no other slice
+    // of it (deck/gmbig.py presets 1903..2060), and the full blob (152 pages)
+    // plus the other banks does not fit the 256-page pool. The window is
+    // published by amy.h in blob SAMPLES [FIRST, END); bytes are 2x that,
+    // offset from the bank's own base at GM_BIG_BYTE_OFFSET.
+    // esp_partition_mmap returns a pointer to byte `off` exactly (it maps the
+    // page-aligned covering range and adds the phase back in), so `emu4`
+    // points at blob sample AMY_GM_BIG_EMU4_FIRST_SAMPLE -- which is exactly
+    // what amy_set_gm_big_pcm_window declares. AMY resolves preset offsets
+    // relative to the window and silently refuses presets outside it.
+    const uint32_t off = GM_BIG_BYTE_OFFSET + AMY_GM_BIG_EMU4_FIRST_SAMPLE * 2u;
+    const uint32_t size =
+        (AMY_GM_BIG_EMU4_END_SAMPLE - AMY_GM_BIG_EMU4_FIRST_SAMPLE) * 2u;
+    if (off + size > part->size) {
+        fprintf(stderr, "gm: emu4 window (0x%x+%u) overruns fonts partition (%u); big bank unavailable\n",
+                (unsigned)off, (unsigned)size, (unsigned)part->size);
+        return;
+    }
+    const void *emu4 = map_or_load_partition(part, off, size, "big bank emu4 window");
+    if (emu4 != NULL)
+        amy_set_gm_big_pcm_window((const int16_t *)emu4,
+                                  AMY_GM_BIG_EMU4_FIRST_SAMPLE,
+                                  AMY_GM_BIG_EMU4_END_SAMPLE - AMY_GM_BIG_EMU4_FIRST_SAMPLE);
 }
+
+// The GeneralUser blob must live below the big bank's slice of the partition
+// image (fs_create.py packs it at 0 and errors past GM_BIG_OFFSET; mirror
+// that here so a bank rebake can't silently map overlapping ranges).
+#if AMY_GM_PCM_BYTES > GM_BIG_BYTE_OFFSET
+#error "GeneralUser blob overruns GM_BIG_BYTE_OFFSET; regrow the layout in fs_create.py + partitions csv first"
+#endif
 
 static void mount_gm_fonts_small(void) {
     const esp_partition_t *part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
     if (part == NULL)
         return;
-    const void *small = map_or_load_partition(part, 0, GM_BIG_BYTE_OFFSET, "GeneralUser bank");
+    // Real blob size (amy.h, compile-checked against pcm_gm.h), not the
+    // 0x4B0000 partition slice: the slice needed 75 pages, the blob 56.
+    const void *small = map_or_load_partition(part, 0, AMY_GM_PCM_BYTES, "GeneralUser bank");
     if (small != NULL)
         amy_set_gm_pcm((const int16_t *)small);
 }
@@ -666,9 +711,10 @@ void run_amy(uint8_t midi_out_pin) {
 #ifndef AMYBOARD
     amy_config.features.startup_bleep = 1;
 #endif
-// Mount order = size order (big bank, drums, GeneralUser): the pool is
-// tight enough that the largest map must allocate first, and if something
-// has to lose, it must not be the Kits (drums) the deck already ships.
+// The three maps (emu4 window 20 + drums 58 + GeneralUser 56 pages) total
+// 134 of the S3's 256, so mount order no longer decides who fits -- kept
+// as-is anyway; if the pool ever shrinks, the PSRAM fallback in
+// map_or_load_partition catches the loser instead of losing the bank.
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
     mount_gm_fonts();
 #endif
