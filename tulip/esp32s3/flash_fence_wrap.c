@@ -14,6 +14,30 @@
 // through esp_partition_write/write_raw/erase_range, so no caller can
 // forget the fence again -- including code that hasn't been written yet.
 //
+// WHY NOT CONFIG_SPI_FLASH_AUTO_SUSPEND INSTEAD? (investigated 2026-07-17;
+// do not re-propose without re-checking these two facts.) It is the obvious
+// hardware answer -- a cache miss during a program/erase would STALL ~50-100us
+// instead of faulting, making this whole file belt-and-braces -- and the S3
+// does support it (soc_caps: SOC_SPI_MEM_SUPPORT_AUTO_SUSPEND=1), so Kconfig
+// will happily accept the option. It still must NOT be enabled here:
+//
+//   1. Our flash is Macronix octal (mfr 0xC2, OPI, 32MB) => driven by IDF's
+//      spi_flash_chip_mxic_opi.c, whose get_caps() advertises only
+//      CAP_32MB_SUPPORT and says verbatim: "flash-suspend is not supported
+//      yet. // IDF-3852". Espressif has not done the work for this part.
+//   2. Enabling it anyway is not a no-op. esp_flash_api.c's suspend setup only
+//      WARNS when CAP_SUSPEND is absent ("Suspend and resume may not supported
+//      for this flash model yet.") and then calls sus_setup() regardless -- and
+//      mxic_opi wires sus_setup to the GENERIC suspend command config. So the
+//      option would start issuing unvalidated suspend/resume opcodes to this
+//      part during program/erase. On a chip already running 120MHz octal DDR
+//      -- which IDF's own Kconfig help says "will crash randomly" after a ~20C
+//      swing -- that is the last place to send unvalidated opcodes.
+//
+// Re-evaluate only if IDF-3852 closes and mxic_opi_get_caps starts returning
+// SPI_FLASH_CHIP_CAP_SUSPEND. Until then this fence is load-bearing, not
+// belt-and-braces.
+//
 // HANDSHAKE, not a timed guess: render_pcm samples the fence once per
 // block, so after raising it we wait until amy_global.total_blocks has
 // advanced by 2 -- every render that started before the fence was visible
