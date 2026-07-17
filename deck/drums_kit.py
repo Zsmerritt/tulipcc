@@ -70,7 +70,7 @@ class SynthKit:
         self.note_hits = {}        # midi_note -> hit key actually loaded
         ov = hit_overrides or {}
         sw = hit_swaps or {}
-        hit_maps = []
+        self.note_alias = {}       # every GM note 35-81 -> the pad that owns it
         slot = self.slot_base + 1  # base slot holds the kit patch itself
         try:
             from time import sleep_ms as _yield
@@ -106,7 +106,14 @@ class SynthKit:
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1
-            hit_maps.append((note, hs.synth))
+        # Dense GM mapping: alias every unmapped note 35-81 to the nearest pad
+        # that ACTUALLY built (skipped pads must not be alias targets). Hit
+        # patches have a 0 note-coefficient on freq, so an alias fires the
+        # identical sound -- intended: any key plays something, like the
+        # sampled kits. Built from hit_synths, not kit_notes, so a skipped pad
+        # never becomes an alias target.
+        fill = synthkits.gm_fill(self.hit_synths.keys())
+        self.note_alias = fill
         # silent placeholder osc; flags 3 = route notes via the note maps +
         # ignore note-offs (one-shots self-terminate)
         synthkits.store_patch(self.slot_base, 'v0w0a0,0,0Z')
@@ -125,9 +132,14 @@ class SynthKit:
         # note,is_log,min,max,offset,<template>; the template fires the hit
         # synth's fixed root note with the played velocity.
         import amy
-        for note, hsn in hit_maps:
+        n = 0
+        for note in sorted(fill):
+            hsn = self.hit_synths[fill[note]].synth
             amy.send(synth=self.kit_synth.synth,
                      midi_note_cmd='%d,0,0,1,0,i%dn60l%%v' % (note, hsn))
+            n += 1
+            if n % 8 == 0:
+                _yield(1)   # ~47 sends in a row starve the UI task
 
     def deferred_init(self):
         pass                       # everything initialized in __init__
@@ -150,7 +162,10 @@ class SynthKit:
         amy.send(synth=hs.synth, num_voices=1, patch=slot)
 
     def note_on(self, note, vel, **kw):
-        hs = self.hit_synths.get(note)
+        # Python-routed path (kit not C-owned): resolve through the same alias
+        # map the C note maps use, so off-pad keys sound here too.
+        base = self.note_alias.get(note, note)
+        hs = self.hit_synths.get(base)
         if hs is not None:
             hs.note_on(60, vel)
 

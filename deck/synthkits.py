@@ -89,9 +89,43 @@ def kits():
 
 
 def kit_notes(kit_key):
-    """{midi_note(int): hit_key} for a kit."""
-    k = _load()['kits'].get(kit_key)
+    """{midi_note(int): hit_key} for a kit -- the kit's REAL pads."""
+    kits_ = _load()['kits']
+    k = kits_.get(kit_key)
+    if k is None and len(kit_key) > 2 and kit_key[-2] == '_' \
+            and 'a' <= kit_key[-1] <= 'z':
+        # Variant kits ('tr909_d') come and go across data regenerations (the
+        # generator dedupes near-identical kits away), but saved configs keep
+        # referencing them -- an unknown key returned {} and the instrument went
+        # SILENTLY dead. Fall back to the variant's base kit.
+        k = kits_.get(kit_key[:-2])
     return {int(n): h for n, h in k['notes'].items()} if k else {}
+
+
+# The sampled kits (AMY patches 384-390) bake note-map entries across nearly
+# the whole GM percussion range, so any key plays something. Synth kits map
+# only their 5-20 real pads -- one hit every ~5 keys, dead outside. gm_fill
+# closes that gap by ALIASING every unmapped note to its nearest real pad.
+GM_LO, GM_HI = 35, 81   # GM percussion range the sampled kits cover
+
+
+def gm_fill(notes):
+    """{gm_note: base_note} covering GM_LO..GM_HI: mapped notes map to
+    themselves, unmapped notes alias the NEAREST mapped note (tie -> lower).
+    notes: iterable of int mapped notes. Empty input -> {}."""
+    mapped = sorted(notes)
+    if not mapped:
+        return {}
+    out = {}
+    for n in range(GM_LO, GM_HI + 1):
+        best = mapped[0]
+        bd = abs(n - best)
+        for m in mapped[1:]:            # ascending -> ties keep the LOWER note
+            d = abs(n - m)
+            if d < bd:
+                best, bd = m, d
+        out[n] = best
+    return out
 
 
 def hit_name(hit_key):

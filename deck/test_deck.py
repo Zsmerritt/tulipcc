@@ -1983,3 +1983,83 @@ def test_build_ota_code_pingpong_targets_play_by_label():
     assert "title='Safe update (80MHz)'" in code
     # the proven write-verify-retry loop is intact in the shared copy
     assert 'def wr(blk, w):' in code and "print('OTA:BOOTSET')" in code
+
+
+# ---------------------------------------------------------------------------
+# KITS-4: synth kits map the whole GM percussion range (nearest-pad aliases)
+# ---------------------------------------------------------------------------
+
+def _fresh_synthkits():
+    """synthkits reloaded against the REPO's data dir (the module's relative
+    'synthkits_data' entry only resolves when cwd happens to be deck/)."""
+    sys.modules.pop('synthkits', None)
+    synthkits = importlib.import_module('synthkits')
+    synthkits._DIRS = (os.path.join(_HERE, 'synthkits_data'),)
+    synthkits._state.update({'index': None, 'dir': None, 'packs': {}})
+    return synthkits
+
+
+def test_gm_fill_covers_full_percussion_range():
+    synthkits = _fresh_synthkits()
+    kits = synthkits.kits()
+    assert kits                                   # repo data actually loaded
+    for key in kits:
+        notes = synthkits.kit_notes(key)
+        fill = synthkits.gm_fill(notes)
+        # every GM percussion key plays something (the sampled kits' contract)
+        assert set(fill) == set(range(35, 82)), key
+        for n, base in fill.items():
+            assert base in notes, (key, n)        # alias targets are real pads
+        for n in notes:
+            assert fill[n] == n, (key, n)         # real pads keep themselves
+
+
+def test_gm_fill_nearest_and_ties():
+    synthkits = _fresh_synthkits()
+    fill = synthkits.gm_fill({36, 38, 39, 42, 46})   # the real tr909 layout
+    assert fill[35] == 36
+    assert fill[37] == 36        # tie 36/38 -> lower
+    assert fill[40] == 39        # 1 away from 39, 2 from 38/42
+    assert fill[44] == 42        # tie 42/46 -> lower
+    assert fill[45] == 46
+    assert fill[81] == 46        # top of range falls back to the last pad
+    assert synthkits.gm_fill([]) == {}
+
+
+def test_every_kit_has_core_pads():
+    synthkits = _fresh_synthkits()
+    # kick/snare/closed-hat/open-hat at canonical GM slots -- aliasing spreads
+    # the kit over the range, but only if these anchors exist (guards future
+    # data regenerations)
+    for key in synthkits.kits():
+        assert {36, 38, 42, 46} <= set(synthkits.kit_notes(key)), key
+
+
+def test_kit_notes_variant_fallback():
+    synthkits = _fresh_synthkits()
+    # 'tr909_d' is in saved configs but was deduped out of the data
+    base = synthkits.kit_notes('tr909')
+    assert base
+    assert synthkits.kit_notes('tr909_d') == base
+    assert synthkits.kit_notes('nokit_z') == {}
+    assert synthkits.kit_notes('garbage') == {}
+
+
+def test_synthkit_registers_dense_note_maps():
+    _install_hw_mocks()
+    _fresh_synthkits()
+    sys.modules.pop('drums_kit', None)
+    import drums_kit
+    amy = sys.modules['amy']
+    amy._sends.clear()
+    kit = drums_kit.SynthKit('tr909')
+    assert set(kit.hit_synths) == {36, 38, 39, 42, 46}
+    maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
+    assert len(maps) == 47                        # notes 35..81, none missing
+    assert sorted(int(m.split(',', 1)[0]) for m in maps) == list(range(35, 82))
+    hsns = set(hs.synth for hs in kit.hit_synths.values())
+    for m in maps:                                # every template fires a BUILT hit
+        assert int(m.split(',i')[1].split('n')[0]) in hsns
+    # the Python-routed path aliases too: 43 -> nearest pad 42
+    kit.note_on(43, 1.0)
+    assert kit.hit_synths[42].on == [60]
