@@ -62,10 +62,17 @@ default (`120m`) so an unknown/garbled marker can never trap the deck in flash
 mode:
 
 1. **Compiled binding `tulip.flash_freq()`** — **this is now the mechanism.** It
-   returns the actual `CONFIG_ESPTOOLPY_FLASHFREQ` the running image was built
-   with, so build identity comes straight from the build itself: nothing to
-   stamp, nothing to keep in sync, and the two artifacts differ *only* by their
-   board config.
+   returns the compile-time frequency **choice**
+   (`CONFIG_ESPTOOLPY_FLASHFREQ_120M` ⇒ `'120m'`, `_80M` ⇒ `'80m'`), so build
+   identity comes straight from the build itself: nothing to stamp, nothing to
+   keep in sync, and the two artifacts differ *only* by their board config.
+   **It must NOT read the `CONFIG_ESPTOOLPY_FLASHFREQ` string** — that is the
+   image-header *boot* frequency, which the IDF caps at `"80m"` even for 120MHz
+   builds (`esptool_py/Kconfig.projbuild`: `default '80m' if
+   ESPTOOLPY_FLASHFREQ_120M`; the runtime clock is raised to 120MHz by MSPI
+   timing tuning after boot). The first version of the binding read the string
+   and therefore reported `'80m'` on **both** images — falsified on hardware
+   and in the resolved `build/sdkconfig`, 2026-07-16.
 2. **Build-stamped constant `flashbuild.FLASH_FREQ`** — a frozen one-liner
    (`FLASH_FREQ = "80m"`). **Superseded by (1) and NOT produced by CI.** The
    lookup is kept in `flashmode.py` purely as a fail-soft escape hatch (e.g. an
@@ -75,12 +82,14 @@ mode:
 ### The C binding (shipped)
 
 `tulip/shared/modtulip.c` defines `tulip_flash_freq` next to `tulip_board`, and
-registers `flash_freq` in `tulip_module_globals_table`. It is guarded on
-`CONFIG_ESPTOOLPY_FLASHFREQ` (`sdkconfig.h` is included only under
-`ESP_PLATFORM`), so on desktop/web — where the define does not exist — it
-compiles fine and returns `None`; `flashmode.flash_freq()` then falls through to
-the `120m` default, i.e. off-device is always "play". `tulip.py` does
-`from _tulip import *`, so no Python-side plumbing was needed.
+registers `flash_freq` in `tulip_module_globals_table`. It reports from the
+frequency-choice symbols (`CONFIG_ESPTOOLPY_FLASHFREQ_120M` / `_80M`), with the
+header string only as a fallback for unusual frequencies; on desktop/web —
+where none of the defines exist (`sdkconfig.h` is included only under
+`ESP_PLATFORM`) — it compiles fine and returns `None`;
+`flashmode.flash_freq()` then falls through to the `120m` default, i.e.
+off-device is always "play". `tulip.py` does `from _tulip import *`, so no
+Python-side plumbing was needed.
 
 So on the two firmware artifacts:
 

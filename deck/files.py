@@ -349,6 +349,9 @@ def _build(base, w, h, top, screen):
     _s['edit'] = dk.button(g, "Edit", w=110, h=44, bg=dk.ACCENT, font=dk.FONT_S, cb=_edit_cb)
     _s['delbtn'] = dk.button(g, "Delete", w=120, h=44, bg=dk.SURFACE2, font=dk.FONT_S, cb=_delete_cb)
 
+    # fresh buttons every build: a stale cache skips the snapshot + the
+    # DISABLED color-filter zeroing, so reopening brought back the X-4 olive
+    _BTN_ON_BG.clear()
     _set_actions(False)     # nothing selected yet
     _update_up()            # hide Up at the /user root
     _refresh()

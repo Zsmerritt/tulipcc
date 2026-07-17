@@ -364,7 +364,12 @@ def _install_keyboard_partial():
     (the deck's mode) LVGL's own keyboard handler already inserts the
     character, but ui.py's callback STILL tulip.key_send()s it -- phantom
     keystrokes into the REPL/console under the UI on every press. Only the
-    close (keyboard-symbol) key keeps its original behavior."""
+    close key keeps its original behavior -- and it is spelled with TWO
+    different glyphs depending on the mode: LVGL's lowercase/special/number
+    keymaps label it SYMBOL.KEYBOARD but the uppercase (and Arabic) keymap
+    labels it SYMBOL.CLOSE. Match both, exactly as lv_keyboard.c's own
+    lv_keyboard_def_event_cb does, or the key is dead in those modes and the
+    user is stuck in a keyboard they cannot dismiss."""
     try:
         import ui
         _orig_kb = ui.keyboard
@@ -377,7 +382,7 @@ def _install_keyboard_partial():
                 text = kb.get_button_text(btn)
             except Exception:
                 return _orig_cb(e)
-            if text and text[0] == lv.SYMBOL.KEYBOARD:
+            if text and text in (lv.SYMBOL.KEYBOARD, lv.SYMBOL.CLOSE):
                 return _orig_cb(e)          # close key: original teardown
             try:
                 ta = kb.get_textarea()
@@ -474,8 +479,12 @@ def _install_safe_midi_drain():
                     latest[key] = len(batch)
                 batch.append(m)
                 m = tulip.midi_in()
+            # snapshot the callback set ONCE per drain: the tuple() was inside
+            # the message loop, allocating one tuple per MIDI message on the
+            # note path (MicroPython GC pressure)
+            cbs = tuple(_midi.MIDI_CALLBACKS)
             for msg in batch:
-                for c in tuple(_midi.MIDI_CALLBACKS):
+                for c in cbs:
                     try:
                         c(msg)
                     except Exception as e:

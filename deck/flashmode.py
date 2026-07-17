@@ -59,10 +59,12 @@ def flash_freq():
     Mechanism (chosen for lowest risk; see deck/PINGPONG.md "is_flasher_build"):
 
     1. If the firmware exposes a compiled binding `tulip.flash_freq()` (the
-       CLEANEST single source of truth -- it returns the actual
-       CONFIG_ESPTOOLPY_FLASHFREQ the image was built with), use it. No such
-       binding exists yet; adding one is a tiny, guarded C change documented in
-       PINGPONG.md, and this code picks it up automatically if it appears.
+       CLEANEST single source of truth), use it. The binding reports the
+       compile-time frequency CHOICE (CONFIG_ESPTOOLPY_FLASHFREQ_120M/_80M),
+       NOT the CONFIG_ESPTOOLPY_FLASHFREQ string -- that string is the boot
+       header frequency, which the IDF caps at '80m' even for 120MHz builds,
+       so it reads '80m' on BOTH images and must never be used for identity
+       (verified on hardware + resolved sdkconfig, 2026-07-16).
     2. Otherwise read a build-stamped Python constant from a frozen module
        `flashbuild.FLASH_FREQ`, which CI writes per artifact ('80m' for the
        flasher build, '120m'/absent for play). This needs no C change.

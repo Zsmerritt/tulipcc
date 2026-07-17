@@ -39,9 +39,12 @@ _state = {}
 # limits.
 DEVICE_CAPACITY = 32
 
-# canonical instrument fields
+# canonical instrument fields. 'hits'/'hit_swaps'/'reverb_send' were missing:
+# the pad editor saved them fine but _merge_instrument dropped them on the next
+# load(), so every per-pad drum edit vanished on reboot.
 _INSTRUMENT_KEYS = ('id', 'name', 'device', 'channel', 'patch', 'num_voices',
-                    'enabled', 'params', 'type', 'pads', 'kit')
+                    'enabled', 'params', 'type', 'pads', 'kit',
+                    'hits', 'hit_swaps', 'reverb_send')
 
 
 def type_of_patch(patch):
@@ -507,7 +510,14 @@ def set_instrument_mpe(iid, subkey, val):
 
 def get_instrument_param(iid, name, default=None):
     """A stored per-synth param value, else the caller default, else the
-    amyparams schema default."""
+    amyparams schema default.
+
+    NOT for editor display: it cannot tell "the user set this" from "nobody
+    set it, here is a schema default", so an ADSR editor built on it reported
+    invented numbers as the patch's own envelope. Use
+    amyparams.param_value_source(), which layers user > patch > default and
+    says which it returned. Currently unused -- kept as a public accessor.
+    """
     instr = get_instrument(iid)
     if instr is not None:
         val = instr.get('params', {}).get(name)

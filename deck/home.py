@@ -183,7 +183,12 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  # these were MISSING, so Apps read them in full every open
                  'test_deck', 'midimon', 'amyparams', 'curated',
                  'parameditor', 'decklog', 'drums_kit', 'channels', 'gm',
-                 'gmbig', 'padeditor', 'synthkits')
+                 'gmbig', 'padeditor', 'synthkits',
+                 # drifted again: Apps re-read ~75KB per scan and the Files
+                 # delete guard let these be deleted out from under the deck
+                 'catalog', 'ticker', 'patchfx', 'fwprogress', 'flashmode',
+                 'flashlib', 'flash_fw', 'flash_ota', 'flash_stream',
+                 'flash_pingpong', 'mem_probe')
 
 
 def deck_modules_set():

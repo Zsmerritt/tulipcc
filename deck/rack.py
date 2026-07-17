@@ -312,6 +312,14 @@ def kit_panel(parent, shell=None):
 
     body = dk.scroll_col(parent, w - 48, _panel_h() - 84)
     body.set_pos(24, 74)
+    # E-1: kitgen was only bumped on the NEXT open, so a teardown mid-chain
+    # left deferred chunks building rows into a FREED body (LVGL hard-crashes
+    # on that; try/except can't catch it). Bump the generation on DELETE.
+    try:
+        body.add_event_cb(lambda e: _s.update(kitgen=_s.get('kitgen', 0) + 1),
+                          lv.EVENT.DELETE, None)
+    except Exception:
+        pass
     _s['kitbtns'] = []
     # sampled kits first, then a SECTION HEADER, then the synthesized ones
     # (the header carries the meaning; the per-row '(synth)' suffix is gone)

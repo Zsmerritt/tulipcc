@@ -162,6 +162,186 @@ PARAMS = [
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
 
 
+def _env_defaults(which):
+    out = {}
+    for d in PARAMS:
+        ap = d['apply']
+        if ap['kind'] == 'env' and ap['env'] == which:
+            out[ap['slot']] = d['default']
+    return out
+
+
+# Per-envelope schema defaults, DERIVED from the table above rather than
+# re-typed in _adsr_string -- the two had already drifted: bp1's sustain
+# slider defaults to 0 but the hardcoded string default was 1, so an untouched
+# filter sustain was sent as 1 while the editor showed 0.
+ENV_DEFAULTS = {'amp': _env_defaults('amp'), 'filter': _env_defaults('filter')}
+
+
+# --- reading the envelope a patch ACTUALLY bakes -----------------------------
+#
+# The editor used to seed its ADSR sliders from the schema defaults above
+# (attack 0 / decay 100 / sustain 1 / release 100) for EVERY instrument. On the
+# 0..2000 and 0..8000 ms ranges 100 ms renders a hair off the left stop, so a
+# GM patch whose real envelope is `A5,1,60000,0.85,220,0` (attack 5 ms, a 60 s
+# settle to 0.85, 220 ms release) displayed as "attack 0, decay 0, sustain
+# full, release 0" -- values that patch never had. It cost a debugging session:
+# the numbers looked authoritative and pointed away from the real cause.
+#
+# These helpers read the truth back off the patch string instead. Same
+# principle as the FX layering below (_merge_fx): the PATCH is the baseline,
+# the user's edits layer on top, and what we cannot read we do not invent.
+
+def parse_bp(bp):
+    """Parse an AMY breakpoint string in the ADSR shape `_adsr_string` emits --
+    'A,1,D,S,R,0', optionally still carrying its wire letter ("A5,1,...") --
+    into {'attack','decay','sustain','release'} (ms, ms, 0..1, ms).
+
+    Returns {} for ANY other shape: absent, malformed, or a breakpoint set our
+    four sliders cannot represent (a bare AD pair like '0,1.0,300,0.0', or a
+    peak/end other than 1/0). {} means UNKNOWN and the editor labels it as
+    such -- an envelope we cannot read must never be reported as numbers we
+    made up. Strict by design: a wrong reading is worse than no reading.
+    """
+    if not bp:
+        return {}
+    s = str(bp).strip()
+    if s and (('a' <= s[0] <= 'z') or ('A' <= s[0] <= 'Z')):
+        s = s[1:]                       # drop the wire letter (bp0 'A'/bp1 'B')
+    parts = s.split(',')
+    if len(parts) != 6:
+        return {}
+    try:
+        v = [float(p) for p in parts]
+    except ValueError:
+        return {}
+    if v[1] != 1 or v[5] != 0:
+        return {}                       # not the ADSR encoding we round-trip
+    return {'attack': v[0], 'decay': v[2], 'sustain': v[3], 'release': v[4]}
+
+
+def _wire_bp(patch_string, letter):
+    """The osc-0 value of wire field `letter` in an AMY patch string, else None.
+
+    A patch string is letter-prefixed numeric fields grouped into 'v<n>' osc
+    blocks ("v0w7p512b2A5,1,60000,0.85,220,0Z"). The deck's envelope sliders
+    write bp0/bp1 on OSC_CTL, so only that osc's block is relevant.
+    """
+    s = str(patch_string or '')
+    osc = None
+    found = None
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if ('a' <= c <= 'z') or ('A' <= c <= 'Z'):
+            j = i + 1
+            while j < n and (s[j].isdigit() or s[j] in '.,-+'):
+                j += 1
+            val = s[i + 1:j]
+            if c == 'v':
+                try:
+                    osc = int(val)
+                except ValueError:
+                    osc = None
+            elif c == letter and osc == OSC_CTL:
+                found = val
+            i = j
+        else:
+            i += 1
+    return found
+
+
+def patch_env_from_string(patch_string):
+    """{'amp': {...}, 'filter': {...}} for the envelopes readable off an AMY
+    patch string. A key is present ONLY when that envelope parsed."""
+    if not patch_string:
+        return {}
+    out = {}
+    for which, letter in (('amp', 'A'), ('filter', 'B')):
+        e = parse_bp(_wire_bp(patch_string, letter))
+        if e:
+            out[which] = e
+    return out
+
+
+def _patch_string(instr):
+    """The AMY patch string the deck loads for an instrument, or None when the
+    deck does not build one (so cannot know it)."""
+    if not instr:
+        return None
+    t = instr.get('type')
+    try:
+        if t == 'gm':
+            import gm
+            return gm.patch_string(int(instr.get('patch', 0)))
+        if t == 'gm2':
+            import gmbig
+            return gmbig.patch_string(int(instr.get('patch', 0)))
+    except Exception:
+        return None        # e.g. a program the gm2 font does not cover
+    return None
+
+
+def patch_env(instr):
+    """The envelopes an instrument's baked patch ACTUALLY applies, or {}.
+
+    KNOWN for the GM types ('gm'/'gm2'), whose patch strings the DECK itself
+    builds (gm.patch_string / gmbig.patch_string) -- so the real bp0 is right
+    there to read.
+
+    UNKNOWN ({}) for juno6/dx7/piano: those patches live in AMY's own
+    patches.h and reach the device as a patch NUMBER, never as a string the
+    deck can inspect. Rather than fall back to invented numbers, the editor
+    renders the unknown case as "patch default". (patchfx.py solves the same
+    problem for FX with a table generated from patches.h; an envelope table
+    could close this gap the same way -- see the report.)
+    """
+    return patch_env_from_string(_patch_string(instr))
+
+
+def _env_slot(name):
+    """(env, slot) for an envelope param ('amp','decay'), else (None, None)."""
+    d = PARAM_BY_NAME.get(name)
+    if d is None:
+        return None, None
+    ap = d.get('apply') or {}
+    if ap.get('kind') != 'env':
+        return None, None
+    return ap['env'], ap['slot']
+
+
+def is_env_param(name):
+    return _env_slot(name)[0] is not None
+
+
+def param_value_source(params, penv, name, default=None):
+    """(value, source) for one editor control, layered user > patch > schema,
+    where source is 'user' | 'patch' | 'default'.
+
+    'default' on an ENVELOPE param means the patch's envelope is unknown: the
+    value is a schema fallback the patch never promised, and the editor must
+    label it rather than draw it as fact.
+    """
+    v = (params or {}).get(name)
+    if v is not None:
+        return v, 'user'
+    which, slot = _env_slot(name)
+    if which is not None:
+        pe = (penv or {}).get(which) or {}
+        if slot in pe:
+            return pe[slot], 'patch'
+    if default is None:
+        d = PARAM_BY_NAME.get(name)
+        default = d['default'] if d else None
+    return default, 'default'
+
+
+def param_value(params, penv, name, default=None):
+    """The effective value one editor control should show (user > patch >
+    schema default)."""
+    return param_value_source(params, penv, name, default)[0]
+
+
 # Patch-number ranges -> synth engine (mirrors instrument.CATS). Used to pick a
 # curated editor view (curated.py); 'generic' falls back to the full grouped set.
 def engine_of(patch):
@@ -321,15 +501,25 @@ def _fmt(v):
     return str(v)
 
 
-def _adsr_string(env):
-    # AMY bp string mirroring the web ADSR encoding: A,1,D,S,R,0
-    return "%s,1,%s,%s,%s,0" % (_fmt(env.get('attack', 0)),
-                                _fmt(env.get('decay', 100)),
-                                _fmt(env.get('sustain', 1)),
-                                _fmt(env.get('release', 100)))
+def _adsr_string(which, env, penv=None):
+    """AMY bp string mirroring the web ADSR encoding: A,1,D,S,R,0.
+
+    bp0/bp1 are ONE composite string, so touching a single slider necessarily
+    restates all four slots. Slots the user never set therefore fall back to
+    the PATCH's own envelope when it is known (penv), and only then to the
+    schema defaults. Filling them from the schema is what made a nudge of
+    `attack` silently rewrite a GM patch's baked 60 s decay to 100 ms -- the
+    exact hazard _merge_fx already avoids for the FX buses by layering user
+    edits over the patch's values instead of over zeros.
+    """
+    base = dict(ENV_DEFAULTS[which])
+    base.update(penv or {})
+    base.update(env or {})
+    return "%s,1,%s,%s,%s,0" % (_fmt(base['attack']), _fmt(base['decay']),
+                                _fmt(base['sustain']), _fmt(base['release']))
 
 
-def synth_send_calls(params):
+def synth_send_calls(params, penv=None):
     """Given an instrument's stored params, return a list of kwargs dicts for
     amy.send(synth=<n>, **kwargs). Deterministic + pure.
 
@@ -337,9 +527,13 @@ def synth_send_calls(params):
     fallbacks for the editor -- stamping the whole table over every patch
     rewrote its character (forcing e.g. cutoff 1000 Hz onto A11 made the deck
     sound different from the same patch pre-boot). Unset coef slots emit ''
-    which AMY treats as 'leave the patch's value'. Caveat: envelopes and EQ
-    are composite strings, so touching one slot sends the group with schema
-    defaults for its unset siblings."""
+    which AMY treats as 'leave the patch's value'.
+
+    `penv` is the patch's OWN envelopes (amyparams.patch_env) and is purely a
+    fallback for the composite bp0/bp1 strings: an envelope group is emitted
+    only when the user has stored at least one of its slots, so penv can never
+    turn an untouched instrument into a send. synth_send_calls({}, penv) == []
+    for every penv."""
     merged = dict(params or {})
 
     coefmap = {}                    # (osc, arg) -> {coef: value}
@@ -383,10 +577,17 @@ def synth_send_calls(params):
         if osc is not None:
             kw['osc'] = osc
         calls.append(kw)
+    # NOTE the `if`: an envelope group with no user-stored slot emits NOTHING,
+    # whether or not we know the patch's envelope. Seeding the editor's display
+    # never reaches this path.
     if env['amp']:
-        calls.append({'osc': OSC_CTL, 'bp0': _adsr_string(env['amp'])})
+        calls.append({'osc': OSC_CTL,
+                      'bp0': _adsr_string('amp', env['amp'],
+                                          (penv or {}).get('amp'))})
     if env['filter']:
-        calls.append({'osc': OSC_CTL, 'bp1': _adsr_string(env['filter'])})
+        calls.append({'osc': OSC_CTL,
+                      'bp1': _adsr_string('filter', env['filter'],
+                                          (penv or {}).get('filter'))})
     if any(v is not None for v in eq):
         calls.append({'eq': "%s,%s,%s" % tuple(
             _fmt(v if v is not None else 0) for v in eq)})

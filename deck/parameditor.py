@@ -31,6 +31,22 @@ class ParamEditor:
         # In the tabbed editor each tab is one group, so the in-list group header
         # is redundant -- callers set this False.
         self.group_headers = group_headers
+        # The envelope this instrument's PATCH actually bakes, so the ADSR
+        # sliders start from what is SOUNDING rather than from schema defaults
+        # the patch never had (FxEditor seeds from device_patch_fx for exactly
+        # the same reason). Read once at build time: it is a pure function of
+        # the patch number and cannot change while the panel is open.
+        #
+        # Seeding is DISPLAY-ONLY. It is never written back to deckcfg, so an
+        # untouched param stays unstored and therefore unsent -- only _set(),
+        # which nothing but a real slider/dropdown event calls, ever stores.
+        self._penv = self._load_patch_env()
+
+    def _load_patch_env(self):
+        try:
+            return amyparams.patch_env(deckcfg.get_instrument(self.iid))
+        except Exception:
+            return {}
 
     # ----- overridable hooks for curated subclasses -----
     def label_for(self, d):
@@ -63,8 +79,21 @@ class ParamEditor:
             self._toggle(body, d)
 
     # ----- value plumbing -----
+    def _stored_params(self):
+        """ONLY the params the user has actually set (deckcfg stores nothing
+        else). The layer that must never be confused with a seeded display."""
+        try:
+            return (deckcfg.get_instrument(self.iid) or {}).get('params') or {}
+        except Exception:
+            return {}
+
+    def _get_source(self, d):
+        """(value, 'user'|'patch'|'default') for a control."""
+        return amyparams.param_value_source(self._stored_params(), self._penv,
+                                            d['name'], d['default'])
+
     def _get(self, d):
-        return deckcfg.get_instrument_param(self.iid, d['name'], d['default'])
+        return self._get_source(d)[0]
 
     def _set(self, d, value, flush=True):
         # flush=False during a slider drag: the value lands in deckcfg's RAM
@@ -79,12 +108,21 @@ class ParamEditor:
                 pass
 
     # ----- value formatting -----
-    def _fmt_value(self, d, value):
+    def _fmt_value(self, d, value, source='user'):
         """Human-readable current value: decimals scaled to the param's
         resolution (whole ms/Hz at scale 1, tenths at 10, hundredths at 100),
         with an optional unit suffix (Hz / ms / dB). Unit '%' formats a 0..1
         fraction as a percentage ("0.50" read as a broken slider; "50 %"
-        doesn't -- UX-REVIEW-6 L7)."""
+        doesn't -- UX-REVIEW-6 L7).
+
+        An ENVELOPE param we could not read off the patch (source 'default')
+        reads "patch default" instead of a number. `value` is still a real
+        number there -- the schema fallback -- but it is OUR guess, not the
+        patch's envelope, and printing it is what told a user their GM patch
+        had "attack 0, decay 0, release 0" when it actually had 5/60000/220.
+        """
+        if source == 'default' and amyparams.is_env_param(d['name']):
+            return 'patch default'
         scale = d.get('scale', 1)
         unit = d.get('unit', '')
         try:
@@ -102,7 +140,7 @@ class ParamEditor:
         # full-width fat slider (the MPE screen's pattern, generalized). The
         # audit flagged the old bare 14px slider with no number as "blind".
         scale = d.get('scale', 1)
-        cur = self._get(d)
+        cur, src = self._get_source(d)
         cell = lv.obj(body)
         cell.set_width(lv.pct(100))
         cell.set_height(96)
@@ -111,9 +149,16 @@ class ParamEditor:
         cell.set_style_pad_all(0, 0)
         name = dk.label(cell, self.label_for(d), color=dk.TEXT)
         name.align(lv.ALIGN.TOP_LEFT, 20, 12)
-        val = dk.label(cell, self._fmt_value(d, cur), color=dk.TEAL,
+        val = dk.label(cell, self._fmt_value(d, cur, src),
+                       color=(dk.TEAL if src != 'default' else dk.MUTED),
                        font=dk.FONT_MONO, w=150, align=lv.TEXT_ALIGN.RIGHT)
         val.align(lv.ALIGN.TOP_RIGHT, -20, 12)
+        # The knob is CLAMPED to the track by LVGL; the readout above is not.
+        # A patch value past the range (a GM patch's 60000 ms decay on a
+        # 0..2000 slider) therefore shows its true number with the knob pinned
+        # at the stop next to a "2000 ms" max microlabel -- visibly "at or
+        # beyond max", not a fake 2000. Nothing writes the clamp back: only a
+        # real touch event stores a value.
         s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
                       int(round(d['max'] * scale)), w=lv.pct(84),
                       cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26,
@@ -202,9 +247,13 @@ class FxEditor(ParamEditor):
         # "lowers" in confusion.
         self._pfx = amyparams.device_patch_fx(device)
 
-    def _get(self, d):
-        return amyparams.fx_value(deckcfg.device_fx(self.device), self._pfx,
-                                  d['bus'], d['name'])
+    def _get_source(self, d):
+        # FX values are always CONCRETE (schema default < patch < user), so
+        # they never take the "patch default" unknown path -- fx_value already
+        # layers the patch's own FX in. Reported as 'user' to keep the plain
+        # numeric readout.
+        return (amyparams.fx_value(deckcfg.device_fx(self.device), self._pfx,
+                                   d['bus'], d['name']), 'user')
 
     def _set(self, d, value, flush=True):
         deckcfg.set_device_fx(self.device, d['bus'], d['name'], value,

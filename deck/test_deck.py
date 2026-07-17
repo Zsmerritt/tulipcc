@@ -118,6 +118,12 @@ def _install_hw_mocks():
     return sent
 
 
+# Every call the ORIGINAL (unfiltered) ui.lv_soft_kb_cb receives. ui_patch's
+# keyboard filter delegates to it only for the close key, so this doubles as
+# the record of which keys were treated as "close".
+_ORIG_KB_CB_CALLS = []
+
+
 def _install_ui_mocks():
     """Fake ui + lvgl so ui_patch imports and its task-bar/quit patches run.
 
@@ -173,6 +179,8 @@ def _install_ui_mocks():
     ui.repl_screen = None
     ui.lv_launcher = None
     ui.keyboard = lambda: None
+    ui.lv_soft_kb = None
+    ui.lv_soft_kb_cb = lambda e: _ORIG_KB_CB_CALLS.append(e)
     ui.launcher = lambda *a, **k: None
     ui.pal_to_lv = lambda pal: pal
 
@@ -902,6 +910,133 @@ def test_synth_send_calls_envelopes():
     assert {'osc': ap.OSC_CTL, 'bp0': '10,1,200,0.5,300,0'} in calls
     # EQ is no longer emitted per-synth (moved to per-device FX)
     assert not any('eq' in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# The envelope editor must show the patch's REAL envelope, not schema defaults.
+# A GM patch bakes 'A5,1,60000,0.85,220,0'; the editor used to draw its own
+# 0/100/1.0/100 for every instrument, which on the 0..2000 / 0..8000 ms ranges
+# renders as "attack 0, decay 0, sustain full, release 0" -- numbers the patch
+# never had, and which sent a debugging session in the wrong direction.
+# ---------------------------------------------------------------------------
+
+def test_parse_bp_reads_the_real_adsr():
+    import amyparams as ap
+    # the GM looped-preset envelope, with and without its wire letter
+    want = {'attack': 5, 'decay': 60000, 'sustain': 0.85, 'release': 220}
+    assert ap.parse_bp('A5,1,60000,0.85,220,0') == want
+    assert ap.parse_bp('5,1,60000,0.85,220,0') == want
+    # the GM one-shot envelope
+    assert ap.parse_bp('A0,1,30000,1,4000,0') == {
+        'attack': 0, 'decay': 30000, 'sustain': 1, 'release': 4000}
+    # exact inverse of the string we emit, for both envelopes' defaults
+    for which in ('amp', 'filter'):
+        e = ap.ENV_DEFAULTS[which]
+        assert ap.parse_bp(ap._adsr_string(which, e)) == e
+
+
+def test_parse_bp_unknown_beats_a_wrong_guess():
+    import amyparams as ap
+    # absent / malformed -> {} (UNKNOWN), never a fabricated ADSR
+    for bad in (None, '', 'A', 'Z', 'garbage', 'A5,1,60000,0.85,220',
+                'A5,1,60000,0.85,220,0,7', 'A5,x,60000,0.85,220,0',
+                'A,,,,,'):
+        assert ap.parse_bp(bad) == {}, bad
+    # a NON-ADSR breakpoint set our four sliders cannot represent: an AD pair,
+    # and shapes whose peak/end aren't 1/0. Misreading these as ADSR would be
+    # the same lie in a new place.
+    assert ap.parse_bp('0,1.0,300,0.0') == {}
+    assert ap.parse_bp('A5,0.5,60000,0.85,220,0') == {}
+    assert ap.parse_bp('A5,1,60000,0.85,220,0.3') == {}
+
+
+def test_patch_env_known_for_gm_unknown_for_patch_number_engines():
+    import amyparams as ap
+    import gm
+    # (a) GM: the deck BUILDS the patch string, so the real envelope is readable.
+    # Program 2 uses a LOOPED preset -> the 'A5,1,60000,0.85,220,0' recipe.
+    assert gm.PRESET_LOOPED[gm.PROGRAM_PRESET[2]] == 1
+    penv = ap.patch_env({'type': 'gm', 'patch': 2})
+    assert penv['amp'] == ap.parse_bp(ap._wire_bp(gm.patch_string(2), 'A'))
+    assert penv['amp']['decay'] == 60000        # not the schema's 100 ms
+    assert penv['amp']['sustain'] == 0.85       # not the schema's 1.0
+    assert penv['amp']['release'] == 220        # not the schema's 100 ms
+    # Program 0 (Grand Piano) is a ONE-SHOT preset: a different real recipe,
+    # and the editor must show that one instead -- not one recipe for all GM.
+    assert gm.PRESET_LOOPED[gm.PROGRAM_PRESET[0]] == 0
+    assert ap.patch_env({'type': 'gm', 'patch': 0})['amp'] == {
+        'attack': 0, 'decay': 30000, 'sustain': 1, 'release': 4000}
+    # gm2 reads the same recipe off the emu4 font
+    assert ap.patch_env({'type': 'gm2', 'patch': 0})['amp']['decay'] == 60000
+    # GM patch strings carry NO bp1 -> filter envelope stays unknown, not made up
+    assert 'filter' not in penv
+    # (b) juno6/dx7/piano patches live in AMY's patches.h and reach the device
+    # as a NUMBER -- unknown, and honestly so.
+    for t in ('juno6', 'dx7', 'piano'):
+        assert ap.patch_env({'type': t, 'patch': 11}) == {}
+    assert ap.patch_env(None) == {}
+    assert ap.patch_env({}) == {}
+    # a gm2 program the font does not cover raises KeyError internally -> {}
+    assert ap.patch_env({'type': 'gm2', 'patch': 1}) == {}
+
+
+def test_param_value_layers_user_over_patch_over_default():
+    import amyparams as ap
+    penv = ap.patch_env({'type': 'gm', 'patch': 2})
+    # untouched: the editor shows the PATCH's value, flagged as such
+    assert ap.param_value_source({}, penv, 'amp_decay') == (60000, 'patch')
+    assert ap.param_value_source({}, penv, 'amp_sustain') == (0.85, 'patch')
+    # a user override wins
+    assert ap.param_value_source({'amp_decay': 250}, penv,
+                                 'amp_decay') == (250, 'user')
+    # unknown patch envelope -> schema fallback, flagged 'default' so the UI
+    # can say "patch default" instead of drawing an invented number
+    v, src = ap.param_value_source({}, {}, 'amp_decay')
+    assert (v, src) == (100, 'default')
+    assert ap.is_env_param('amp_decay') and ap.is_env_param('filt_sustain')
+    # non-envelope params are unaffected by seeding
+    assert ap.is_env_param('filter_freq') is False
+    assert ap.param_value_source({}, penv, 'filter_freq') == (1000, 'default')
+
+
+def test_seeding_the_display_never_sends_to_amy():
+    import amyparams as ap
+    penv = ap.patch_env({'type': 'gm', 'patch': 2})
+    assert penv['amp']['decay'] == 60000        # we DO know the envelope...
+    # ...and knowing it must still send NOTHING while the user has touched
+    # nothing. Seeding is display-only; only stored params are sent.
+    assert ap.synth_send_calls({}, penv) == []
+    assert ap.synth_send_calls(None, penv) == []
+    # a non-envelope edit must not drag the seeded envelope along
+    calls = ap.synth_send_calls({'pan': 0.5}, penv)
+    assert not any('bp0' in c for c in calls)
+
+
+def test_touching_one_env_slot_keeps_the_patchs_other_values():
+    import amyparams as ap
+    penv = ap.patch_env({'type': 'gm', 'patch': 2})
+    # bp0 is ONE composite string, so a touched attack restates D/S/R. They
+    # must come from the PATCH (60000/0.85/220), not the schema (100/1/100):
+    # filling from the schema silently destroyed the patch's baked envelope.
+    calls = ap.synth_send_calls({'amp_attack': 10}, penv)
+    assert {'osc': ap.OSC_CTL, 'bp0': '10,1,60000,0.85,220,0'} in calls
+    # with no patch envelope known, the schema fallback stands (old behaviour)
+    calls = ap.synth_send_calls({'amp_attack': 10})
+    assert {'osc': ap.OSC_CTL, 'bp0': '10,1,100,1,100,0'} in calls
+    # the user still wins over the patch for the slot they actually set
+    calls = ap.synth_send_calls({'amp_decay': 250}, penv)
+    assert {'osc': ap.OSC_CTL, 'bp0': '5,1,250,0.85,220,0'} in calls
+
+
+def test_filter_env_defaults_come_from_the_schema_not_a_second_hardcode():
+    import amyparams as ap
+    # bp1's sustain slider defaults to 0, but _adsr_string used to hardcode a
+    # sustain default of 1 for BOTH envelopes -- an untouched filter sustain
+    # was SENT as 1 while the editor showed 0.
+    assert ap.ENV_DEFAULTS['filter']['sustain'] == 0
+    assert ap.ENV_DEFAULTS['amp']['sustain'] == 1
+    calls = ap.synth_send_calls({'filt_attack': 10})
+    assert {'osc': ap.OSC_CTL, 'bp1': '10,1,100,0,100,0'} in calls
 
 
 # NOTE: test_fx_calls_map_to_amy_kwargs was removed here: the concurrent
@@ -1869,6 +2004,55 @@ def test_style_keyboard_noop_without_a_keyboard():
     dk.style_keyboard()               # must not raise when the kb isn't up
 
 
+# --- soft keyboard: the close key must work in EVERY keymap ----------------
+class _FakeKbEvent:
+    """An lv event from a soft keyboard whose close key reports `text`.
+
+    get_textarea() returns a truthy stand-in, i.e. the deck's own mode, in
+    which ui_patch's filter swallows ordinary keys (LVGL already typed them)
+    and only forwards the close key to the original ui.lv_soft_kb_cb.
+    """
+    def __init__(self, text):
+        self._text = text
+
+    def get_target_obj(self):
+        return self
+
+    def get_selected_button(self):
+        return 0
+
+    def get_button_text(self, btn):
+        return self._text
+
+    def get_textarea(self):
+        return object()
+
+
+# LVGL labels the close key with a DIFFERENT glyph per keymap (lv_keyboard.c):
+# lowercase/special/number use SYMBOL.KEYBOARD, uppercase (and Arabic) use
+# SYMBOL.CLOSE. lv_keyboard_def_event_cb accepts both; so must the deck.
+@pytest.mark.parametrize('symbol_name', ['KEYBOARD', 'CLOSE'])
+def test_keyboard_close_key_recognised_in_every_mode(uipatch, symbol_name):
+    ui, _ = uipatch
+    lv = sys.modules['lvgl']
+    _ORIG_KB_CB_CALLS.clear()
+    e = _FakeKbEvent(getattr(lv.SYMBOL, symbol_name))
+    ui.lv_soft_kb_cb(e)               # the filtered cb ui_patch installed
+    assert _ORIG_KB_CB_CALLS == [e], (
+        "the lv.SYMBOL.%s close key was swallowed by the keyboard filter: in "
+        "the keymaps that label it that way the keyboard cannot be dismissed"
+        % symbol_name)
+
+
+def test_keyboard_ordinary_key_still_filtered(uipatch):
+    # The whole point of the filter: with a textarea attached LVGL already
+    # inserted the character, so the original cb must NOT also key_send() it.
+    ui, _ = uipatch
+    _ORIG_KB_CB_CALLS.clear()
+    ui.lv_soft_kb_cb(_FakeKbEvent('q'))
+    assert _ORIG_KB_CB_CALLS == []
+
+
 # --- rename: deleting down to (and past) an empty name stays harmless -------
 def test_empty_instrument_name_shortens_to_a_placeholder():
     # Backspacing the rename field down to empty writes name='' through
@@ -2183,3 +2367,112 @@ def test_synthkit_registers_dense_note_maps():
     # the Python-routed path aliases too: 43 -> nearest pad 42
     kit.note_on(43, 1.0)
     assert kit.hit_synths[42].on == [60]
+
+
+# --- deckcfg: per-pad drum edits survive a reload ---
+def test_instrument_hits_survive_reload(deck):
+    deckcfg, _ = deck
+    iid = deckcfg.load()['instruments'][0]['id']
+    deckcfg.set_instrument(iid, 'type', 'drums')
+    deckcfg.set_instrument(iid, 'kit', 'synth:tr808syn')
+    deckcfg.set_instrument(iid, 'hits', {'36': {'tune': -5}})
+    deckcfg.set_instrument(iid, 'hit_swaps', {'38': 'x/y'})
+    deckcfg.set_instrument(iid, 'reverb_send', 0.5)
+    deckcfg.invalidate()                      # simulated reboot: re-read + merge
+    instr = deckcfg.get_instrument(iid)
+    assert instr['kit'] == 'synth:tr808syn'
+    assert instr['hits'] == {'36': {'tune': -5}}
+    assert instr['hit_swaps'] == {'38': 'x/y'}
+    assert instr['reverb_send'] == 0.5
+
+
+# --- home: _DECK_MODULES must list every deck module ---
+def _deck_modules_from_source():
+    """Read _DECK_MODULES out of home.py WITHOUT importing it (needs LVGL)."""
+    import ast
+    with open(os.path.join(_HERE, 'home.py')) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == '_DECK_MODULES':
+                    return set(e.value for e in node.value.elts
+                               if isinstance(e, ast.Constant))
+    raise AssertionError("_DECK_MODULES not found in home.py")
+
+
+def test_deck_modules_covers_every_deck_module():
+    # The list has drifted twice: Apps then re-reads the missing files in full
+    # on every scan, and files.py's delete guard stops protecting them.
+    listed = _deck_modules_from_source()
+    on_disk = set(n[:-3] for n in os.listdir(_HERE)
+                  if n.endswith('.py') and not n.startswith('test_'))
+    assert not (on_disk - listed)
+
+
+# --- ui_patch: the safe MIDI drain ---
+def _drain_harness(queue):
+    """Install the mocks, preload `queue` into tulip.midi_in, return the drain."""
+    _install_hw_mocks()
+    _install_ui_mocks()
+    tulip = sys.modules['tulip']
+    holder = []
+    tulip.midi_callback = lambda fn: holder.append(fn)
+    pending = list(queue)
+    tulip.midi_in = lambda: pending.pop(0) if pending else None
+    tulip.sysex_in = lambda: b''
+    sys.modules.pop('ui_patch', None)
+    ui_patch = importlib.import_module('ui_patch')
+    ui_patch._install_safe_midi_drain()
+    assert holder, "drain was not registered"
+    return holder[0]
+
+
+def test_safe_drain_coalesces_bend_and_isolates_faults():
+    drain = _drain_harness([
+        bytes((0x90, 60, 100)),
+        bytes((0xE0, 0x00, 0x10)),
+        bytes((0xE0, 0x00, 0x20)),
+        bytes((0xE0, 0x00, 0x40)),      # only this one survives coalescing
+        bytes((0x80, 60, 0)),
+    ])
+    midi = sys.modules['midi']
+    seen = []
+
+    def _boom(m):
+        raise RuntimeError("callback fault")
+
+    midi.MIDI_CALLBACKS = set((seen.append, _boom))
+    drain(False)
+    # notes never coalesce, bends collapse to the LAST value per channel, and
+    # the raising callback does not strand the rest of the batch
+    assert seen == [bytes((0x90, 60, 100)), bytes((0xE0, 0x00, 0x40)),
+                    bytes((0x80, 60, 0))]
+
+
+# --- forwarder: a layered MPE zone silently mutes its partner ---
+def test_mpe_zone_layered_partner_is_warned(deck):
+    deckcfg, forwarder = deck
+    deckcfg.set_value('mpe_enabled', True)
+    a = deckcfg.load()['instruments'][0]['id']
+    deckcfg.set_instrument_mpe(a, 'enabled', True)
+    b = deckcfg.add_instrument(device='internal', channel=1)['id']
+    logs = []
+    fake = types.ModuleType('decklog')
+    fake.log = lambda m: logs.append(m)
+    fake.dbg = lambda *a, **k: None
+    fake.err = lambda *a, **k: None
+    prev = sys.modules.get('decklog')
+    sys.modules['decklog'] = fake
+    try:
+        forwarder.start()
+        forwarder._route(bytes((0x90, 60, 100)))
+        # pinned CURRENT behaviour: the zone C-owns ch1, so the layered
+        # partner never sounds -- but the mute is now logged, not silent
+        assert forwarder._state['synths'][b].on == []
+        assert any('ch1' in m and 'MPE zone' in m for m in logs)
+    finally:
+        if prev is None:
+            sys.modules.pop('decklog', None)
+        else:
+            sys.modules['decklog'] = prev

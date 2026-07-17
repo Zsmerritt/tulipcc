@@ -178,10 +178,15 @@ def _release_synths():
         pass
 
 
-def _apply_params(syn, params):
+def _apply_params(syn, params, instr=None):
     """Push an internal instrument's stored AMY params to its owned synth via
     amy.send(synth=<n>, ...). Also assigns the synth to the device's FX bus
-    (internal device = bus 0) so per-bus FX (reverb/chorus/echo/EQ) apply."""
+    (internal device = bus 0) so per-bus FX (reverb/chorus/echo/EQ) apply.
+
+    `instr` supplies the patch's own envelope as the fallback for the
+    composite bp0/bp1 strings (see amyparams.synth_send_calls): without it, a
+    user-touched attack restates decay/sustain/release from schema defaults and
+    wipes the patch's baked envelope. It never causes an extra send."""
     sn = getattr(syn, 'synth', None)
     if sn is None:
         return
@@ -194,7 +199,11 @@ def _apply_params(syn, params):
         amy.send(synth=sn, bus=0)     # internal device FX bus
     except Exception:
         pass
-    for kw in amyparams.synth_send_calls(params):
+    try:
+        penv = amyparams.patch_env(instr)
+    except Exception:
+        penv = {}
+    for kw in amyparams.synth_send_calls(params, penv):
         try:
             amy.send(synth=sn, **kw)
         except Exception as e:
@@ -376,7 +385,7 @@ def rebuild_one(iid):
             except Exception:
                 pass
         if instr.get('type') != 'drums':
-            _apply_params(syn, instr.get('params', {}))
+            _apply_params(syn, instr.get('params', {}), instr)
         # refresh this instrument's FX-bus target + re-baseline ITS bus only
         sn = getattr(syn, 'synth', None)
         if sn is not None and 'bus' in rec:
@@ -580,6 +589,15 @@ def _start_once():
             # routing (auto ids never collide with channels 1-15).
             solo = internal_count.get(ch, 0) == 1
             c_own = solo or is_mpe
+            if is_mpe and not solo:
+                # the zone C-owns the channel, so _route skips it entirely and
+                # anything layered here is silently muted -- say so out loud
+                try:
+                    import decklog
+                    decklog.log("forwarder: MPE zone on ch%d C-owns the channel; "
+                                "other instruments layered on ch%d will not sound" % (ch, ch))
+                except Exception:
+                    pass
             if c_own:
                 # Scrub the channel's C-layer state before taking it over:
                 # AMY NOTE MAPS are keyed by channel and OUTLIVE the synth
@@ -703,7 +721,7 @@ def _start_once():
                 sn = getattr(syn, 'synth', None)
                 if instr.get('type') != 'drums':
                     # (drums carry no osc/filter params)
-                    _apply_params(syn, instr.get('params', {}))
+                    _apply_params(syn, instr.get('params', {}), instr)
                 if sn is not None:
                     internal_synths.append(sn)
                     # per-instrument FX bus: routing + this patch's FX baseline
