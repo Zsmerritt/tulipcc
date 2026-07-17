@@ -244,8 +244,22 @@ void mp_task(void *pvParameter) {
 
     heap_caps_register_failed_alloc_callback(esp_alloc_failed);
     uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM;
-    size_t mp_task_heap_size = MP_TASK_HEAP_SIZE; 
+    size_t mp_task_heap_size = MP_TASK_HEAP_SIZE;
     void *mp_task_heap = heap_caps_malloc(mp_task_heap_size, caps);
+    // NULL here used to sail straight into gc_init(NULL, NULL+size) below and
+    // take the interpreter down without ever saying why. PSRAM is contended on
+    // this board -- SPIRAM_FETCH_INSTRUCTIONS/RODATA put code+rodata there and
+    // the GM bank falls back into it when the mmap vaddr pool fills -- so this
+    // is reachable. Say it out loud and flush; the alloc-failed hook printf()s
+    // without flushing, which is worthless if we are about to die.
+    if (mp_task_heap == NULL) {
+        fprintf(stderr, "FATAL: MicroPython heap alloc of %u bytes from PSRAM "
+                        "failed. No Python will run: no UI, no REPL.\n",
+                (unsigned)mp_task_heap_size);
+        fprintf(stderr, "FATAL: largest free SPIRAM block = %u bytes\n",
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        fflush(stderr);
+    }
 
 soft_reset:
 
@@ -437,7 +451,21 @@ void app_main(void) {
     delay_ms(500);
     
     fprintf(stderr,"Starting MicroPython on core %d\n", TULIP_MP_TASK_COREID);
-    xTaskCreatePinnedToCore(mp_task, TULIP_MP_TASK_NAME, (TULIP_MP_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TULIP_MP_TASK_PRIORITY, &tulip_mp_handle, TULIP_MP_TASK_COREID);
+    // Say so if the task cannot be created. An unchecked pdFAIL here is a
+    // SILENT brick: the C side keeps running and logging, the display holds
+    // its startup fill, and nothing ever says why there is no UI and no
+    // REPL -- because MicroPython simply never started. The stack must come
+    // out of internal SRAM, so anything that eats it (e.g. enlarging the
+    // i-cache) can push this over the edge with no other symptom.
+    BaseType_t mp_ok = xTaskCreatePinnedToCore(mp_task, TULIP_MP_TASK_NAME, (TULIP_MP_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TULIP_MP_TASK_PRIORITY, &tulip_mp_handle, TULIP_MP_TASK_COREID);
+    if (mp_ok != pdPASS) {
+        fprintf(stderr,
+                "FATAL: MicroPython task creation failed (%d): need %d bytes of "
+                "internal-SRAM stack. No Python will run: no UI, no REPL.\n",
+                (int)mp_ok, (int)(TULIP_MP_TASK_STACK_SIZE));
+        fprintf(stderr, "FATAL: largest free internal block = %u bytes\n",
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     fflush(stderr);
     delay_ms(100);
 

@@ -32,8 +32,12 @@ CONFIG_LWIP_PPP_SUPPORT=n
 
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=8192
 
-# 32KB i-cache (round-2 firmware review P-2): the 16KB default is shared
-# between the render kernels and MP/LVGL -- UI activity evicted the audio
-# inner loops between blocks (~0.5-1.8% of a core in misses). Free win
-# before any IRAM_ATTR placement.
-CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+# 32KB i-cache (round-2 firmware review P-2) is REVERTED and must stay off
+# unless someone re-measures the internal-SRAM budget first. It was never
+# free: the extra 16KB of cache is carved out of internal SRAM, and this
+# board is already at the edge -- with it enabled the MicroPython task's
+# stack no longer fits, xTaskCreatePinnedToCore() fails, and (its result
+# being unchecked, see main.c) the deck dies silently: C side keeps
+# logging, no Python ever runs, teal screen, no REPL, no panic. The ~0.5-1.8%
+# of a core it was worth is not a trade for that.
+#CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
