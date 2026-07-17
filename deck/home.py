@@ -191,7 +191,9 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'flashlib', 'flash_fw', 'flash_ota', 'flash_stream',
                  'flash_pingpong', 'mem_probe', 'presets',
                  # /user update engine (deck/UPGRADE.md Phase 1)
-                 'update')
+                 'update',
+                 # Debug mode: Profiler + Logs tiles (Settings > System)
+                 'profiler', 'profilerdata', 'logs', 'logtail')
 
 
 def deck_modules_set():

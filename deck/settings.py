@@ -126,7 +126,7 @@ def panel(parent, shell=None):
         [("Network", lambda page, s=screen: (_build_wifi(page, s),
                                              _build_time(page, s))),
          ("Display", lambda page: _build_display(page)),
-         ("System", lambda page, s=screen: _build_system(page, s))],
+         ("System", lambda page, s=screen, sh=shell: _build_system(page, s, sh))],
         _TabBuilder, x=8, y=104, w=w - 16, h=h - 112)
     # keyboard left up over a hidden Wi-Fi field on tab switch = the known
     # textarea use-after-free crash family -- close it on every tab change
@@ -386,7 +386,37 @@ def _switch_row(body, title, sub, value, on_change, h=76):
     dk.switch(r, value, on_change)
 
 
-def _build_system(body, screen):
+def _open_debug_panel(shell, key, title, module_name):
+    """cb factory for a debug-tile button: lazily imports `module_name`
+    (profiler / logs) ONLY on tap, then pushes its panel() -- or rebuilds
+    the top panel in place if the same one is already open (mirrors
+    deckui._open_settings / devices.open_fx's rebuild-vs-push choice)."""
+    def cb(e):
+        import importlib
+        mod = importlib.import_module(module_name)
+        if sm.open_panel_action(shell.top_key(), key) == 'rebuild':
+            shell.rebuild_top(mod.panel, title, key=key)
+        else:
+            shell.push(mod.panel, title, key=key)
+    return cb
+
+
+def _build_debug_tools(body, shell):
+    """Two debug-only tiles: Profiler (live core-load + memory) and Logs
+    (live decklog tail). Rows only -- the actual screens are built lazily
+    when tapped (see _open_debug_panel)."""
+    r = dk.row(body, h=64)
+    dk.label(r, "Profiler", color=dk.TEXT)
+    dk.button(r, "Open", w=120, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+              cb=_open_debug_panel(shell, 'profiler', "Profiler", 'profiler'))
+
+    r = dk.row(body, h=64)
+    dk.label(r, "Logs", color=dk.TEXT)
+    dk.button(r, "Open", w=120, h=48, bg=dk.SURFACE2, font=dk.FONT_S,
+              cb=_open_debug_panel(shell, 'logs', "Logs", 'logs'))
+
+
+def _build_system(body, screen, shell=None):
     """System tab: MPE gate, Debug, touch, firmware, power."""
     cfg = deckcfg.load()
 
@@ -412,6 +442,15 @@ def _build_system(body, screen):
             pass
     _switch_row(body, "Debug", "status-bar RAM readout + verbose log",
                 bool(cfg.get('debug', False)), _debug_switch)
+
+    # Profiler / Logs tiles: debug-mode ONLY (mirror the status-bar debug
+    # readout's gate), and only when there's a shell to push a panel onto --
+    # the standalone launcher path (tulip.run('settings'), no HomeShell) has
+    # nowhere to push these, so they'd be dead taps there. Both screens are
+    # imported lazily, on tap, inside _open_debug_panel -- NOT here -- so
+    # Debug mode adds zero build cost to Settings itself (REVIEW-UI).
+    if shell is not None and bool(cfg.get('debug', False)):
+        _build_debug_tools(body, shell)
 
     r = dk.row(body, h=64)
     dk.label(r, "Touch", color=dk.TEXT)

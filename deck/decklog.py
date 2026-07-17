@@ -47,6 +47,13 @@ def _lf():
     return _LOGFILE
 
 
+def logfile():
+    """Public accessor for the Debug > Logs screen: the resolved on-device
+    log path (lazily resolved on first use, same rule the writer uses --
+    /sd/deck.log when a card is mounted, else /user/var/deck.log)."""
+    return _lf()
+
+
 def use_sd():
     """Boot calls this right after a successful uos.mount(..., '/sd') so the
     log channel actually engages the card that _logfile() couldn't see at

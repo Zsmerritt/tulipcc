@@ -3706,3 +3706,184 @@ def test_missing_library_dir_is_empty_not_an_error(presets):
     assert P.list_presets() == []
     assert P.load('nope') is None
     assert P.exists('nope') is False
+
+
+# --- profilerdata: pure logic behind the Debug > Profiler screen ---
+def test_pct_of_budget_and_format():
+    import profilerdata as pfd
+    assert pfd.format_pct(pfd.pct_of_budget(pfd.CYCLES_PER_BLOCK)) == '100%'
+    assert pfd.format_pct(pfd.pct_of_budget(pfd.CYCLES_PER_BLOCK // 2)) == '50%'
+    assert pfd.pct_of_budget(0) == 0.0
+
+
+def test_pct_of_budget_never_negative():
+    import profilerdata as pfd
+    # a bogus/negative cycle reading must not read as a negative percent
+    assert pfd.pct_of_budget(-100) == 0.0
+
+
+def test_pct_of_budget_over_100_is_real_signal():
+    import profilerdata as pfd
+    # a core that missed its deadline must show > 100%, not get clamped away
+    assert pfd.pct_of_budget(pfd.CYCLES_PER_BLOCK * 2) > 100.0
+
+
+def test_pct_of_budget_guards_zero_budget():
+    import profilerdata as pfd
+    assert pfd.pct_of_budget(1000, budget=0) == 0.0
+
+
+def test_block_budget_cycles_from_clock():
+    import profilerdata as pfd
+    # 100 MHz * 256 / 44100 -- a different clock must change the budget,
+    # not silently fall back to the 240 MHz constant
+    b = pfd.block_budget_cycles(cpu_hz=100_000_000)
+    assert b == 100_000_000 * 256 // 44100
+    assert b != pfd.CYCLES_PER_BLOCK
+
+
+def test_block_budget_cycles_falls_back_without_clock():
+    import profilerdata as pfd
+    assert pfd.block_budget_cycles(cpu_hz=None) == pfd.CYCLES_PER_BLOCK
+    assert pfd.block_budget_cycles(cpu_hz=0) == pfd.CYCLES_PER_BLOCK
+
+
+def test_core_load_lines_formats_all_four_fields():
+    import profilerdata as pfd
+    budget = pfd.CYCLES_PER_BLOCK
+    rc = (budget, budget // 4, budget // 2, budget // 10)  # (c0w, c1w, c0l, c1l)
+    lines = pfd.core_load_lines(rc, budget=budget)
+    assert lines == {'core0_worst': '100%', 'core1_worst': '25%',
+                      'core0_last': '50%', 'core1_last': '10%'}
+
+
+def test_read_render_cyc_present():
+    import profilerdata as pfd
+    calls = []
+
+    class _T:
+        def render_cyc(self, *a):
+            calls.append(a)
+            return (1, 2, 3, 4)
+    assert pfd.read_render_cyc(_T()) == (1, 2, 3, 4)
+
+
+def test_read_render_cyc_absent_is_graceful_fallback():
+    """The currently-installed firmware may not have tulip.render_cyc at
+    all (it ships with an upcoming build) -- the Profiler screen must show
+    'n/a', not raise, in that case."""
+    import profilerdata as pfd
+
+    class _NoRenderCyc:
+        pass
+    assert pfd.read_render_cyc(_NoRenderCyc()) is None
+
+
+def test_read_render_cyc_swallows_exceptions():
+    import profilerdata as pfd
+
+    class _T:
+        def render_cyc(self, *a):
+            raise RuntimeError('not ready')
+    assert pfd.read_render_cyc(_T()) is None
+
+
+def test_reset_worst_calls_render_cyc_with_one():
+    import profilerdata as pfd
+    calls = []
+
+    class _T:
+        def render_cyc(self, *a):
+            calls.append(a)
+    pfd.reset_worst(_T())
+    assert calls == [(1,)]
+
+
+def test_reset_worst_absent_is_noop():
+    import profilerdata as pfd
+
+    class _NoRenderCyc:
+        pass
+    pfd.reset_worst(_NoRenderCyc())   # must not raise
+
+
+def test_internal_sram_summary_excludes_psram_region():
+    import profilerdata as pfd
+    # (total, free, largest_free, min_free) -- matches mem_probe.py's
+    # confirmed esp32.idf_heap_info() tuple shape
+    regions = [
+        (8 * 1024 * 1024, 6 * 1024 * 1024, 5 * 1024 * 1024, 4 * 1024 * 1024),  # PSRAM
+        (100 * 1024, 40 * 1024, 31 * 1024, 20 * 1024),                        # internal A
+        (30 * 1024, 10 * 1024, 8 * 1024, 5 * 1024),                           # internal B
+    ]
+    free_total, largest = pfd.internal_sram_summary(regions)
+    assert free_total == 50 * 1024               # 40K + 10K internal only
+    assert largest == 31 * 1024                   # the larger of 31K/8K
+
+
+def test_internal_sram_summary_empty_regions():
+    import profilerdata as pfd
+    assert pfd.internal_sram_summary([]) == (0, 0)
+
+
+# --- logtail: pure tail-reading logic behind the Debug > Logs screen ---
+def test_read_tail_bytes_missing_file(tmp_path):
+    import logtail
+    data, truncated = logtail.read_tail_bytes(str(tmp_path / 'nope.log'))
+    assert data == b''
+    assert truncated is False
+
+
+def test_read_tail_bytes_short_file_not_truncated(tmp_path):
+    import logtail
+    p = tmp_path / 'deck.log'
+    # write_bytes (not write_text/'\n') -- write_text's universal-newline
+    # translation turns '\n' into '\r\n' on Windows, which would corrupt
+    # the line-splitting assertions below
+    p.write_bytes(b"[1] one\n[2] two\n[3] three\n")
+    data, truncated = logtail.read_tail_bytes(str(p), max_bytes=8192)
+    assert truncated is False
+    assert logtail.tail_lines(data, n=40, truncated=truncated) == [
+        "[1] one", "[2] two", "[3] three"]
+
+
+def test_read_tail_bytes_seeks_near_end_when_large(tmp_path):
+    import logtail
+    p = tmp_path / 'deck.log'
+    lines = ["[%d] line %d" % (i, i) for i in range(1, 201)]
+    p.write_bytes(("\n".join(lines) + "\n").encode('utf-8'))
+    data, truncated = logtail.read_tail_bytes(str(p), max_bytes=200)
+    assert truncated is True
+    out = logtail.tail_lines(data, n=40, truncated=truncated)
+    # the last line is always intact; a leading partial fragment is dropped
+    assert out[-1] == "[200] line 200"
+    assert all(l.startswith('[') for l in out)
+
+
+def test_tail_lines_newest_last_and_capped_to_n():
+    import logtail
+    data = ("\n".join("[%d] msg" % i for i in range(1, 11))).encode('utf-8')
+    out = logtail.tail_lines(data, n=3, truncated=False)
+    assert out == ["[8] msg", "[9] msg", "[10] msg"]
+
+
+def test_tail_lines_empty_data():
+    import logtail
+    assert logtail.tail_lines(b'', n=40, truncated=False) == []
+    assert logtail.tail_lines(None, n=40, truncated=False) == []
+
+
+def test_tail_lines_drops_blank_lines():
+    import logtail
+    data = b"[1] a\n\n[2] b\n"
+    assert logtail.tail_lines(data, n=40, truncated=False) == ["[1] a", "[2] b"]
+
+
+def test_decklog_logfile_accessor(decklog_mod):
+    """decklog.logfile() is the public path the Logs screen reads -- it
+    must return exactly the path decklog itself writes to (the
+    decklog_mod fixture pins _LOGFILE to a temp path so this doesn't probe
+    the real /sd, /user/var of the HOST running the test)."""
+    decklog = decklog_mod
+    assert decklog.logfile() == decklog._LOGFILE
+    assert decklog.logfile() == decklog._lf()
