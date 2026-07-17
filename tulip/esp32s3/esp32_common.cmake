@@ -380,10 +380,17 @@ set_source_files_properties(
     ${AMY_DIR}/src/delay.c
     ${AMY_DIR}/src/filters.c
     ${AMY_DIR}/src/pcm.c
-    # amy.c (mix_with_pan + the fill fold loops) and envelope.c join the
-    # list per the round-2 firmware review (O-4): together they hold a
-    # further ~25-30% of render cycles.
-    ${AMY_DIR}/src/amy.c
+    # envelope.c joins the list per the round-2 firmware review (O-4).
+    #
+    # amy.c must NOT, however much of the render it holds (O-4 added it and
+    # this reverts that): amy.c is the ONLY caller of the amy_blockops.h PIE
+    # ops, and every call site sits inside a `for (bus/osc ...)` loop. With
+    # -funroll-loops the compiler lowers such a loop to an Xtensa
+    # zero-overhead hardware loop, and the ops' inner `loopnez` clobbers the
+    # LBEG/LEND/LCOUNT it runs on -- exactly the hazard amy_blockops.h
+    # documents. On device that runs away inside core 0, which serves AMY
+    # *and* the display: frozen screen, dead MicroPython, no REPL. It
+    # compiles and links cleanly, so only hardware catches it.
     ${AMY_DIR}/src/envelope.c
     PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
 )
