@@ -621,6 +621,65 @@ def confirm(title, message, on_yes, yes_text="Delete", yes_bg=RED):
     return ov
 
 
+def choice(title, message, options):
+    """A modal like confirm() but with N buttons (used for the preset save
+    collision: Overwrite / Save as new / Cancel). `options` is a list of
+    (text, bg, cb) -- cb() runs after the modal closes; cb may be None (a plain
+    dismiss, e.g. Cancel). Shares confirm()'s single-modal slot so every
+    navigation path (close_confirm) dismisses it too."""
+    global _confirm_open
+    close_confirm()             # never stack two
+    w, h = tulip.screen_size()
+    ov = lv.obj(lv.layer_top())
+    ov.set_size(w, h)
+    ov.set_pos(0, 0)
+    ov.set_style_border_width(0, 0)
+    ov.set_style_pad_all(0, 0)
+    ov.set_style_bg_color(c(BG), 0)
+    ov.set_style_bg_opa(200, 0)
+    ov.remove_flag(lv.obj.FLAG.SCROLLABLE)
+
+    card = lv.obj(ov)
+    card.set_size(640, 300)
+    card.center()
+    _flat(card, radius=20, bg=SURFACE)
+    card.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    label(card, title, 32, 30, color=WHITE, font=FONT_L)
+    label(card, message, 32, 84, color=MUTED, font=FONT_M, w=576)
+
+    def _close():
+        global _confirm_open
+        if _confirm_open is ov:
+            _confirm_open = None
+        try:
+            ov.delete()
+        except Exception:
+            pass
+
+    n = len(options)
+    bw = (576 - 16 * (n - 1)) // max(1, n)
+    x = 32
+    for text, bg, cb in options:
+        b = button(card, text, w=bw, h=60, bg=bg, font=FONT_M)
+        b.set_pos(x, 210)
+        x += bw + 16
+
+        def _mk(fn):
+            def _do(e):
+                if e.get_code() != lv.EVENT.CLICKED:
+                    return
+                _close()
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            return _do
+        b.add_event_cb(_mk(cb), lv.EVENT.CLICKED, None)
+    _confirm_open = ov
+    return ov
+
+
 def hgroup(parent, w, h=52, gap=8):
     # A transparent, fixed-width flex row that right-aligns its children
     # (for grouping buttons on the right side of a row).
