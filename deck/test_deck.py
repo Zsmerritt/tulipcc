@@ -1774,6 +1774,126 @@ def test_build_list_bails_on_freed_body():
     instrument._build_list()          # alive gate: never even calls clean()
 
 
+# --- soft keyboard: styling must not plant a NULL LVGL style transition -----
+class _LvAuto(int):
+    """Auto-vivifying LVGL constant: any attribute is another int, so the
+    PART/STATE/OPA selectors deckui composes with `|` all work."""
+
+    def __getattr__(self, k):
+        if k.startswith('__'):
+            raise AttributeError(k)
+        v = _LvAuto(abs(hash(k)) & 0xffff)
+        object.__setattr__(self, k, v)
+        return v
+
+    def __call__(self, *a, **kw):
+        return _LvAuto(0)
+
+
+class _LvModuleAuto(types.ModuleType):
+    def __getattr__(self, k):
+        if k.startswith('__'):
+            raise AttributeError(k)
+        v = _LvAuto(abs(hash(k)) & 0xffff)
+        setattr(self, k, v)
+        return v
+
+
+def _import_deckui_with_fakes():
+    """Import deckui.py against a permissive LVGL/ui fake so the soft-keyboard
+    styling path is exercisable on the host (the real UI stack is not)."""
+    _install_hw_mocks()
+    tulip = sys.modules['tulip']
+    tulip.color = lambda r, g, b: (r, g, b)
+    tulip.keyboard = lambda: None
+    tulip.lv = _LvModuleAuto('lvgl')
+
+    ui = types.ModuleType('ui')
+    ui.lv_soft_kb = None
+    ui.keyboard = lambda: None
+    ui.pal_to_lv = lambda pal: pal
+    sys.modules['ui'] = ui
+
+    sys.modules['lvgl'] = _LvModuleAuto('lvgl')
+    sys.modules.pop('deckui', None)
+    return importlib.import_module('deckui'), ui
+
+
+class _RecordingKb:
+    """Stands in for ui.lv_soft_kb, recording every style call made on it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def _rec(*a):
+            self.calls.append((name, a))
+        return _rec
+
+
+def test_style_keyboard_never_sets_a_null_transition():
+    # A NULL LV_STYLE_TRANSITION is stored, not ignored: lv_obj_set_state()
+    # scans every style on the object for LV_STYLE_TRANSITION and dereferences
+    # the pointer WITHOUT a NULL check. The first key press adds
+    # LV_STATE_PRESSED, so the very first keystroke on the soft keyboard --
+    # from ANY deck text field -- panicked the device (no Python traceback,
+    # reset_cause=HARD). Reported live as "renamed an instrument, hit delete
+    # first, it crashed"; delete was simply the first key pressed.
+    dk, ui = _import_deckui_with_fakes()
+    kb = _RecordingKb()
+    ui.lv_soft_kb = kb
+    dk.style_keyboard()
+
+    assert kb.calls, "style_keyboard styled nothing -- fake is wrong, not the code"
+    nulls = [c for c in kb.calls
+             if c[0] == 'set_style_transition' and c[1] and c[1][0] is None]
+    assert nulls == [], (
+        "style_keyboard passed None to set_style_transition %d time(s): that "
+        "stores a NULL transition pointer and hard-faults LVGL on the first "
+        "keyboard state change" % len(nulls))
+
+
+def test_style_keyboard_keeps_pressed_key_feedback():
+    # The press tint is the whole point of the styling pass -- it must survive
+    # the removal of the transition-stripping loop.
+    dk, ui = _import_deckui_with_fakes()
+    kb = _RecordingKb()
+    ui.lv_soft_kb = kb
+    dk.style_keyboard()
+    assert any(c[0] == 'set_style_bg_color' for c in kb.calls)
+
+
+def test_style_keyboard_noop_without_a_keyboard():
+    dk, ui = _import_deckui_with_fakes()
+    ui.lv_soft_kb = None
+    dk.style_keyboard()               # must not raise when the kb isn't up
+
+
+# --- rename: deleting down to (and past) an empty name stays harmless -------
+def test_empty_instrument_name_shortens_to_a_placeholder():
+    # Backspacing the rename field down to empty writes name='' through
+    # deckcfg.set_instrument, and chip_label feeds that straight to
+    # name_short: '' must degrade to the '?' placeholder, not an empty chip.
+    # (chip_label itself is covered by the chip_specs tests above, which run
+    # before this file's module fakes replace `catalog`.)
+    import shellmodel as sm
+    assert sm.name_short('') == '?'
+    assert sm.name_short(None) == '?'
+
+
+def test_rename_to_empty_then_delete_again_is_stable(deck):
+    # delete-to-empty, then one more delete: the field is already '' and the
+    # handler just rewrites '' -- idempotent, no underflow, no flush churn.
+    deckcfg, _ = deck
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'name', '', flush=False)
+    assert deckcfg.get_instrument(iid)['name'] == ''
+    deckcfg.set_instrument(iid, 'name', '', flush=False)
+    assert deckcfg.get_instrument(iid)['name'] == ''
+    deckcfg.flush()
+    assert deckcfg.get_instrument(iid)['name'] == ''
+
+
 # ---------------------------------------------------------------------------
 # flashmode.py / flashlib.py -- ping-pong dual-frequency flash update (pure
 # logic, faked esp32/NVS/Partition/machine). No hardware, no device calls.

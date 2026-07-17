@@ -430,19 +430,16 @@ def style_keyboard():
         kb.set_style_text_color(c(WHITE), lv.PART.ITEMS)
         kb.set_style_radius(8, lv.PART.ITEMS)
         kb.set_style_bg_color(c(ACCENT), lv.PART.ITEMS | lv.STATE.CHECKED)
-        # KILL the theme's style TRANSITIONS on the key matrix: releasing a
-        # key starts a fade-back animation, and every animation frame
-        # invalidates the WHOLE keyboard widget -- in DIRECT mode that is
-        # the visible full-keyboard flash on each keypress. With no
-        # transition, a press/release invalidates just the one key.
-        for part in (lv.PART.MAIN, lv.PART.ITEMS):
-            for state in (0, lv.STATE.PRESSED, lv.STATE.CHECKED,
-                          lv.STATE.FOCUSED, lv.STATE.FOCUS_KEY):
-                try:
-                    kb.set_style_transition(None, part | state)
-                except Exception:
-                    pass
-        # pressed keys still give instant visual feedback (no anim needed)
+        # NEVER set_style_transition(None, ...) here. It reads as "no
+        # transition", but it STORES the LV_STYLE_TRANSITION property with a
+        # NULL pointer, and lv_obj_set_state() walks every style on the object
+        # and does `tr->props[j]` with no NULL check (lv_obj.c, the
+        # LV_STYLE_TRANSITION scan). The first press on the keyboard adds
+        # LV_STATE_PRESSED -> NULL deref -> the whole device panics (no Python
+        # traceback, reset_cause=HARD). Nothing to kill anyway: the default
+        # theme attaches transition styles to lv_button/slider/switch, never to
+        # a buttonmatrix, so the key matrix has no fade to strip.
+        # Pressed keys give instant visual feedback (no anim involved).
         kb.set_style_bg_color(c(ACCENT), lv.PART.ITEMS | lv.STATE.PRESSED)
     except Exception:
         pass
