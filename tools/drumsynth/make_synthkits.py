@@ -26,7 +26,15 @@ ROLES = [
     ('clap',    39, r'clap|\bcp\b'),
     ('phh',     44, r'pedal|phh'),
     ('ohh',     46, r'hat ?o|\boh\b|open|hho|ophat'),
-    ('chh',     42, r'hat ?c|\bch\b|closed|clsd|chh|hhc|clhat|hi ?hat|\bhh\b|hat\b'),
+    # The trailing suffix-hat alternative must NOT eat "what"/"that": a bare
+    # `hat\b` only bounds the RIGHT side, so 'what_time_is_it' (a 3.2s FX
+    # drone) and 'what_to_do_at_220' classified as CLOSED HI-HATS and landed
+    # on note 42 of the community kits. `\bhat\b` overcorrects -- it would
+    # also drop the REAL suffix hats in the corpus ('hardhat', 'lighthat',
+    # 'heavy_electrihat'). Bound the left side at the WORD level instead:
+    # reject only when the h-a-t is preceded by a word-initial w/t.
+    ('chh',     42, r'hat ?c|\bch\b|closed|clsd|chh|hhc|clhat|hi ?hat|\bhh\b'
+                    r'|(?<!\bw)(?<!\bt)hat\b'),
     ('tomlo',   45, r'tom ?(l\b|lo|low|1)|lowtom|\blt\b'),
     ('tomhi',   50, r'tom ?(h\b|hi|3)|hitom|\bht\b'),
     ('tommid',  47, r'tom'),
