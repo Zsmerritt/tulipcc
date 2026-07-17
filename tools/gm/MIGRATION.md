@@ -109,6 +109,31 @@ toys. `--from-dir` is for building an image from scratch, not for migrating.
 If you want to eyeball or prune the files first, `--extract userfiles/` to look,
 then still run `--migrate` to build (or prune and use `--from-dir` knowingly).
 
+## 4b. Re-deploy the deck code into that image -- DO NOT SKIP
+
+The backup's /user holds the deck code **as it was**, and the rebake changes
+`gm.py` in lockstep with the bank. Restore /user alone and you get the NEW banks
+paired with the OLD metadata: `gm.PRESET_LOOPED[gm.PROGRAM_PRESET[0]]` reads 0,
+Grand Piano still dies at ~1.0 s, and it looks exactly like the rebake failed.
+It did not -- the table just describes the previous bank.
+
+This is easy to miss because **`gm.py` is the same 7414 bytes before and after**
+(the rebake rewrites a fixed-length table in place). Only a hash catches it.
+
+The rule, matching `deck/deploy.ps1`: top-level `deck/*.py` EXCLUDING `test_*.py`
+(host pytest files -- they slow the Apps discovery scan) is CODE and takes the
+repo version. Everything else on the device -- notably `/var` (config, wifi,
+logs) -- is the user's and must be preserved byte-for-byte. Subdirectories of
+`deck/` (`amyboard_companion/`, `device-backup/`) are NOT device code; deploy.ps1
+does not recurse.
+
+Mind the dependencies: the updated `amyparams.py` imports `patchparams`, which
+may not exist in the old /user. Ship the update without it and the param editor
+dies on import. Take the whole `deck/*.py` set, not just the files that differ.
+
+Verify before flashing: every `deck/*.py` hash-equal on the device, `/var/*`
+byte-identical to the backup, and no `test_*` in the image.
+
 ## 5. Build the firmware images
 
 Build as usual. `fs_create.py` regenerates `build/<distro>-fonts.bin` from the
@@ -154,6 +179,11 @@ only risks the one region this migration is guaranteed not to touch.
 
 ## 7. Verify on the device
 
+0. Confirm the metadata matches the bank before trusting your ears -- this is
+   the cheap check that would have caught the step-4b mistake:
+   `gm.PRESET_LOOPED[gm.PROGRAM_PRESET[0]]` must be **1** (Grand Piano loops)
+   while program 104 (Sitar) and 13 (Xylophone) stay **0**. If program 0 reads
+   0, /user still has the old `gm.py` -- go back to 4b; do not touch the bank.
 1. It boots and /user has your files (`os.listdir('/user')`).
 2. Console at boot: a `gm: ... vaddr pool full -> loaded N bytes into PSRAM` line
    for exactly one bank is **expected and correct** (258 pages needed, 256
