@@ -371,16 +371,31 @@ target_compile_definitions(${MICROPY_TARGET} PUBLIC
 #LFS2_NO_DEBUG LFS2_NO_WARN LFS2_NO_ERROR
 
 # Hot render translation units get -O3 + unrolling (OPT-6); the rest of the
-# build stays at the sdkconfig PERF (-O2) level. These four hold the
-# per-sample loops (oscillator LUTs, delay lines/reverb, biquads, PCM);
-# typical gain on such loops is 3-8%. Measure with AMY_DEBUG profilers
-# before/after if the size delta matters.
+# build stays at the sdkconfig PERF (-O2) level. These hold the per-sample
+# loops (oscillator LUTs, delay lines/reverb, biquads, PCM).
+#
+# NOTHING GOES ON THIS LIST WITHOUT A MEASUREMENT. -O3 + unrolling costs flash
+# and, more importantly, i-cache footprint -- the S3 has 16KB of it, so a
+# bigger hot path can cost more than the unrolling wins. Earlier revisions of
+# this comment twice asserted a "typical 3-8%" gain that was never measured on
+# this code; the one file since measured (envelope.c, below) gained exactly
+# zero. The four files above have NOT been A/B'd on device and are here on the
+# same untested assumption -- treat them as unproven, not as precedent.
+#
+# envelope.c was on this list per the round-2 firmware review (O-4) and has
+# been REMOVED. Host profile, bit-identical audio out, same block count:
+#   envelope.c at -O3: 32.3 us/block
+#   envelope.c at -O2: 32.2 us/block
+# i.e. no gain, within noise. Mechanism: envelope.c's hot function is
+# compute_breakpoint_scale, branchy control-rate code that runs once per
+# envelope per block. There is no per-sample loop for -funroll-loops to
+# unroll, so -O3 bought only i-cache pressure. Do not re-add it without a
+# measurement that beats these numbers.
 set_source_files_properties(
     ${AMY_DIR}/src/oscillators.c
     ${AMY_DIR}/src/delay.c
     ${AMY_DIR}/src/filters.c
     ${AMY_DIR}/src/pcm.c
-    # envelope.c joins the list per the round-2 firmware review (O-4).
     #
     # amy.c is back on the list (it was reverted out on an UNVERIFIED theory
     # that -funroll-loops would lower the enclosing for(bus/osc) loops to
@@ -396,7 +411,6 @@ set_source_files_properties(
     # compiler). tools/check_zol.py re-verifies every CI build and fails it
     # if a future compiler ever nests ZOLs.
     ${AMY_DIR}/src/amy.c
-    ${AMY_DIR}/src/envelope.c
     PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
 )
 
