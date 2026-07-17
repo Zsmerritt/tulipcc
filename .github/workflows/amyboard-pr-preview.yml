@@ -163,6 +163,7 @@ jobs:
             python fs_create.py amyboard &&
             cd esp32s3 &&
             idf.py -DMICROPY_BOARD=TULIP4_R11 build &&
+            python ../../tools/check_zol.py build &&
             cd .. &&
             python fs_create.py tulip &&
             cd esp32s3 &&

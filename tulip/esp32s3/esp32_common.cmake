@@ -382,15 +382,20 @@ set_source_files_properties(
     ${AMY_DIR}/src/pcm.c
     # envelope.c joins the list per the round-2 firmware review (O-4).
     #
-    # amy.c must NOT, however much of the render it holds (O-4 added it and
-    # this reverts that): amy.c is the ONLY caller of the amy_blockops.h PIE
-    # ops, and every call site sits inside a `for (bus/osc ...)` loop. With
-    # -funroll-loops the compiler lowers such a loop to an Xtensa
-    # zero-overhead hardware loop, and the ops' inner `loopnez` clobbers the
-    # LBEG/LEND/LCOUNT it runs on -- exactly the hazard amy_blockops.h
-    # documents. On device that runs away inside core 0, which serves AMY
-    # *and* the display: frozen screen, dead MicroPython, no REPL. It
-    # compiles and links cleanly, so only hardware catches it.
+    # amy.c is back on the list (it was reverted out on an UNVERIFIED theory
+    # that -funroll-loops would lower the enclosing for(bus/osc) loops to
+    # Xtensa zero-overhead hardware loops around the amy_blockops.h `loopnez`
+    # asm, corrupting LBEG/LEND/LCOUNT). Settled by disassembly + compiler
+    # source: GCC's hw-doloop pass (gcc/hw-doloop.cc scan_loop sets
+    # loop->has_asm for any inline asm; xtensa.cc hwloop_optimize rejects
+    # has_asm/has_call/non-innermost loops) can NEVER form a hardware loop
+    # around a body containing inline asm or a call. Verified on esp GCC
+    # 15.1 by disassembling amy.c.obj built with -O3 -funroll-loops: 25 ZOL
+    # instructions, zero nested, every blockop loopnez outside any generated
+    # `loop`; the policy code is identical in esp-14.2.0 (IDF v5.4.1, the CI
+    # compiler). tools/check_zol.py re-verifies every CI build and fails it
+    # if a future compiler ever nests ZOLs.
+    ${AMY_DIR}/src/amy.c
     ${AMY_DIR}/src/envelope.c
     PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
 )
