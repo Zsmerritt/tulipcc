@@ -1,7 +1,9 @@
 # Migration runbook: repartition for the rebaked GM bank
 
-You execute this; nothing here was run against hardware. Read it through once
-before starting.
+Read it through once before starting.
+
+Steps 1-4 have now been executed against the real deck (2026-07-17) and are
+corrected below to match what the hardware actually does. Steps 6-7 have not.
 
 ## What changes
 
@@ -45,9 +47,22 @@ Use the same esptool flags your build uses (see `build/flash_args`); the N32R8 i
 
 ## 1. Full backup — do this first, no exceptions
 
+**A single 32 MB read does not work.** It dies around 7.8 MB with `Corrupt data,
+expected 0x1000 bytes but received 0xf18` -- reproduced at both 921600 and
+460800, so it is not a baud problem. Read it in 4 MB chunks and concatenate;
+8/8 chunks come back clean:
+
 ```sh
-esptool.py -p $PORT -b 921600 read_flash 0 0x2000000 backup-preGM-$(date +%Y%m%d).bin
+for i in $(seq 0 7); do
+  off=$(( i * 0x400000 ))
+  esptool.py -p $PORT -b 921600 read_flash $off 0x400000 chunk$i.bin || echo "CHUNK $i FAILED"
+done
+cat chunk?.bin > backup-preGM-$(date +%Y%m%d).bin
 ```
+
+Check each chunk's exit code and size (4194304 B) as it lands. Do not pipe
+esptool into `tail`/`head` -- you get the pager's exit code, not esptool's, and
+a backup that died at 23% reports success.
 
 Verify it before trusting it — a short read here is how you lose /user:
 
@@ -70,27 +85,29 @@ Keep this file. It is your entire rollback.
 python tools/gm/migrate_user_vfs.py --backup backup-preGM-YYYYMMDD.bin --list
 ```
 
-Expect roughly "1,056,768 B of data ... target 0x200000 -> FITS". **If it says
-DOES NOT FIT, stop** and move samples to the SD card first.
+On the deck as of 2026-07-17 this reports **84 files, 827,108 B (0.79 MB) ->
+FITS**, with 2.5x headroom. **If it says DOES NOT FIT, stop** and move samples to
+the SD card first.
 
-## 3. Extract /user to the host
-
-```sh
-python tools/gm/migrate_user_vfs.py --backup backup-preGM-YYYYMMDD.bin --extract userfiles/
-```
-
-Look through `userfiles/`. This is exactly what will be written back — delete
-anything that belongs on the SD card now (the point of the shrink is that /user
-is config-only going forward).
-
-## 4. Build the new 2 MB /user image
+## 3-4. Build the new 2 MB /user image
 
 ```sh
-python tools/gm/migrate_user_vfs.py --from-dir userfiles/ --out build/user-2mb.bin
+python tools/gm/migrate_user_vfs.py --migrate     --backup backup-preGM-YYYYMMDD.bin --out build/user-2mb.bin
 ```
 
-It re-mounts the image it just produced and diffs every file back before
-writing, and refuses to emit an image that does not round-trip.
+One step, on purpose. It mounts /user out of the backup, rebuilds it at 2 MB,
+and diffs every file back **against the backup** before writing -- the source is
+the oracle and never touches the disk in between.
+
+Do **not** migrate via `--extract DIR` + `--from-dir DIR`. Those steps are joined
+by a directory, so a failed extract leaves `--from-dir` imaging whatever was
+already in it -- which is exactly what happened here: it imaged a leftover 4-file
+test fixture and printed *"round-trip verified"*, because that check only proves
+the image reads back what it wrote. It would have replaced 84 real files with 4
+toys. `--from-dir` is for building an image from scratch, not for migrating.
+
+If you want to eyeball or prune the files first, `--extract userfiles/` to look,
+then still run `--migrate` to build (or prune and use `--from-dir` knowingly).
 
 ## 5. Build the firmware images
 
