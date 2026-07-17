@@ -53,6 +53,18 @@ _WIRE = (('wave', 'w'), ('freq', 'f'), ('duty', 'd'), ('phase', 'P'),
          ('bp1', 'B'), ('bp0', 'A'), ('amp', 'a'), ('filter_type', 'G'),
          ('filter_freq', 'F'), ('resonance', 'R'))
 
+# Per-osc filter reset defaults (AMY: reset_osc -> filter_type FILTER_NONE=0,
+# resonance 0.7; see amy.c). AMY recycles a RELEASED voice's oscs WITHOUT
+# clearing per-osc params, so any filter a patch string OMITS persists from
+# whatever last played on that voice. The pad picker auditions every hit on
+# the SAME scratch synth (17), so a plain hit auditioned right after a
+# filtered one (e.g. an HPF@9400 hi-hat) inherited the cutoff and rendered
+# near-silent. Emitting these for every osc that leaves a filter param out
+# makes each patch string self-contained -- a recycled voice starts clean.
+# (F0/G0 = filter fully off; F is irrelevant once G0 but reset for good
+# measure so a leaked cutoff can't matter.)
+_FILTER_RESET = (('filter_type', 0), ('filter_freq', 0), ('resonance', 0.7))
+
 
 def _load():
     if _state['index'] is None:
@@ -222,7 +234,8 @@ def _xform_partials(ps, tune, decay, level):
                 val += ch
         if key is not None:
             toks.append((key, val))
-        wave = dict(toks).get('w')
+        present = dict(toks)
+        wave = present.get('w')
         nf = []
         for k, v in toks:
             if k == 'f' and tune != 1.0 and wave == '9':
@@ -232,6 +245,13 @@ def _xform_partials(ps, tune, decay, level):
             elif k in 'AB' and decay != 1.0:
                 v = _scale_times(v, decay)
             nf.append(k + v)
+        # self-contained filter state (same recycled-voice leak as the wire
+        # path above): reset any filter letter this osc omits so a partials
+        # hit auditioned after a filtered one can't inherit its cutoff.
+        for key, letter in (('G', 'filter_type'), ('F', 'filter_freq'),
+                            ('R', 'resonance')):
+            if key not in present:
+                nf.append(key + _fmt(dict(_FILTER_RESET)[letter]))
         out.append(''.join(nf))
     return 'Z'.join(out) + 'Z'
 
@@ -265,6 +285,11 @@ def hit_patch_string(hit_key, overrides=None):
         g = level * (snap if o.get('wave') == 5 else 1.0)   # 5 = NOISE
         if g != 1.0 and 'amp' in o:
             o['amp'] = _capped_gain(o['amp'], g)
+        # make the osc self-contained: fill any omitted filter param with its
+        # reset default so a recycled voice can't inherit a prior hit's filter
+        for key, dflt in _FILTER_RESET:
+            if key not in o:
+                o[key] = dflt
         frag = ['v%d' % i]
         for key, letter in _WIRE:
             if key in o:
