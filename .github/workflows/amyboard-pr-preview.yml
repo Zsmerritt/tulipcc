@@ -169,9 +169,8 @@ jobs:
             idf.py -B build-TULIP4_R11_FLASHER -DMICROPY_BOARD=TULIP4_R11_FLASHER build &&
             echo "=== flasher resolved MSPI clock ===" &&
             grep -E "^CONFIG_(ESPTOOLPY_FLASHFREQ|SPIRAM_SPEED)" build-TULIP4_R11_FLASHER/sdkconfig &&
-            grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y' build-TULIP4_R11_FLASHER/sdkconfig &&
-            grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ="80m"' build-TULIP4_R11_FLASHER/sdkconfig &&
-            ! grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ_120M=y' build-TULIP4_R11_FLASHER/sdkconfig &&
+            grep -qx CONFIG_ESPTOOLPY_FLASHFREQ_80M=y build-TULIP4_R11_FLASHER/sdkconfig &&
+            ! grep -qx CONFIG_ESPTOOLPY_FLASHFREQ_120M=y build-TULIP4_R11_FLASHER/sdkconfig &&
             mkdir -p dist &&
             cp build-TULIP4_R11_FLASHER/micropython.bin dist/tulip-flasher-TULIP4_R11_FLASHER.bin &&
             cd ..
