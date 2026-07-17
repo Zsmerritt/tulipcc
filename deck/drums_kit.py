@@ -106,13 +106,15 @@ class SynthKit:
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1
-        # Dense GM mapping: alias every unmapped note 35-81 to the nearest pad
-        # that ACTUALLY built (skipped pads must not be alias targets). Hit
-        # patches have a 0 note-coefficient on freq, so an alias fires the
-        # identical sound -- intended: any key plays something, like the
-        # sampled kits. Built from hit_synths, not kit_notes, so a skipped pad
-        # never becomes an alias target.
-        fill = synthkits.gm_fill(self.hit_synths.keys())
+        # Contiguous packing: lay the kit's distinct hits onto ADJACENT keys
+        # from the lowest pad up (anchor = lowest built pad, one hit per key).
+        # gm_fill's nearest-pad aliasing let one pad beside a big gap win half
+        # the keyboard on a sparse kit (TR808 -> all cowbell); pack_fill keeps
+        # hits compact so each key plays a DISTINCT hit. Hit patches have a 0
+        # note-coefficient on freq, so every mapped key fires its hit's sound.
+        # Built from hit_synths, not kit_notes, so a skipped pad is never a
+        # map target.
+        fill = synthkits.pack_fill(self.hit_synths.keys())
         self.note_alias = fill
         # silent placeholder osc; flags 3 = route notes via the note maps +
         # ignore note-offs (one-shots self-terminate)

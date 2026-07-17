@@ -140,6 +140,21 @@ def gm_fill(notes):
     return out
 
 
+def pack_fill(notes):
+    """{played_note: home_note} packing distinct hits onto ADJACENT keys.
+    Sorted distinct home-notes anchor at min(home_notes): the lowest hit keeps
+    its own key, and each subsequent hit squishes up one key (anchor+i -> i-th
+    sorted home-note). Keys outside [anchor, anchor+len) are unmapped (silent).
+    Unlike gm_fill, which aliases every unmapped GM note to its NEAREST pad --
+    on a sparse kit (TR808) one pad beside a big gap wins half the keyboard --
+    this keeps a kit's hits compact and one-per-key. Empty input -> {}."""
+    home = sorted(set(notes))
+    if not home:
+        return {}
+    anchor = home[0]                    # == min(home_notes)
+    return {anchor + i: h for i, h in enumerate(home)}
+
+
 def hit_name(hit_key):
     name = _load()['names'].get(hit_key, hit_key)
     # strip trailing dedup-hash suffixes ('brush1_139732', 'kick_7dbbaa')

@@ -2852,7 +2852,7 @@ def test_kit_notes_variant_fallback():
     assert synthkits.kit_notes('garbage') == {}
 
 
-def test_synthkit_registers_dense_note_maps():
+def test_synthkit_registers_contiguous_note_maps():
     _install_hw_mocks()
     _fresh_synthkits()
     sys.modules.pop('drums_kit', None)
@@ -2860,16 +2860,28 @@ def test_synthkit_registers_dense_note_maps():
     amy = sys.modules['amy']
     amy._sends.clear()
     kit = drums_kit.SynthKit('tr909')
-    assert set(kit.hit_synths) == {36, 38, 39, 42, 46}
+    home = sorted(kit.hit_synths)                 # [36, 38, 39, 42, 46]
+    assert home == [36, 38, 39, 42, 46]
+    anchor = home[0]
     maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
-    assert len(maps) == 47                        # notes 35..81, none missing
-    assert sorted(int(m.split(',', 1)[0]) for m in maps) == list(range(35, 82))
-    hsns = set(hs.synth for hs in kit.hit_synths.values())
-    for m in maps:                                # every template fires a BUILT hit
-        assert int(m.split(',i')[1].split('n')[0]) in hsns
-    # the Python-routed path aliases too: 43 -> nearest pad 42
-    kit.note_on(43, 1.0)
-    assert kit.hit_synths[42].on == [60]
+    # pack_fill: N maps for N hits, contiguous keys anchor..anchor+N-1
+    assert len(maps) == len(home)                 # one map per DISTINCT hit
+    keys = sorted(int(m.split(',', 1)[0]) for m in maps)
+    assert keys == list(range(anchor, anchor + len(home)))   # contiguous, anchored
+    # each key anchor+i fires the i-th sorted home-note's hit synth (packed order)
+    key_to_hsn = {int(m.split(',', 1)[0]): int(m.split(',i')[1].split('n')[0])
+                  for m in maps}
+    for i, hn in enumerate(home):
+        assert key_to_hsn[anchor + i] == kit.hit_synths[hn].synth, (i, hn)
+    # Python-routed path packs the same way: key anchor+1 (37) -> 2nd hit (pad 38)
+    kit.note_on(anchor + 1, 1.0)
+    assert kit.hit_synths[home[1]].on == [60]
+    # keys outside [anchor, anchor+len) are unmapped -> silent (no nearest-pad grab)
+    off = anchor + len(home) + 2                   # 43: beyond the packed block
+    assert off not in kit.note_alias
+    kit.note_on(off, 1.0)
+    for hs in kit.hit_synths.values():
+        assert hs.on == ([60] if hs is kit.hit_synths[home[1]] else [])
 
 
 # --- deckcfg: per-pad drum edits survive a reload ---
