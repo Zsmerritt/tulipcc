@@ -67,7 +67,10 @@ def slug(name):
     out = []
     prev_dash = False
     for ch in (name or '').strip().lower():
-        if ch.isalnum():
+        # MicroPython's str has no .isalnum(); check the ASCII ranges
+        # explicitly. The input is already .lower()'d, so the A-Z arm only
+        # matters for non-ASCII-uppercase edge cases, but keep it for intent.
+        if ('a' <= ch <= 'z') or ('A' <= ch <= 'Z') or ('0' <= ch <= '9'):
             out.append(ch)
             prev_dash = False
         elif not prev_dash:
