@@ -42,6 +42,12 @@ _state = {
 
 _EMPTY = ((), ())        # shared empty route (no per-message allocation)
 
+# Default control-osc amp for a fresh Piano instrument (type patch >= 256). The
+# native Piano's baked amp of 1.0 clips the master on polyphonic high-velocity
+# play (see the crackle guard in _apply_params); 0.5 (-6 dB) gives margin. Only
+# the DEFAULT -- the user's level slider overrides it.
+PIANO_DEFAULT_LEVEL = 0.5
+
 
 def _has_device_arg():
     # tulip.num_midi_devices shipped in the same firmware as midi_out's device
@@ -203,6 +209,18 @@ def _apply_params(syn, params, instr=None):
         penv = amyparams.patch_env(instr)
     except Exception:
         penv = {}
+    # Piano crackle guard (deck default, NOT a schema change): Tulip's native
+    # Piano (AMY patch >= 256, additive ~25 partials) bakes a control-osc amp of
+    # 1.0 that CLIPS the master output on polyphonic high-velocity play. A host
+    # render measured 4 notes @ vel 1.0 reaching 1.54x full scale pre-clip
+    # (soft-clip starts 0.90 FS, hard flat-top at 1.05 FS = the crackle), vs
+    # 0.32-0.44 FS for the other engines. Default a FRESH piano's level to 0.5
+    # (-6 dB) -> worst case ~0.77 FS with margin. The user's level slider still
+    # OVERRIDES (range to 7): an explicitly-stored 'level' wins, so this only
+    # sets the default. Piano only -- Juno/DX7/etc. are untouched.
+    if instr and instr.get('type') == 'piano' and 'level' not in (params or {}):
+        params = dict(params or {})
+        params['level'] = PIANO_DEFAULT_LEVEL
     for kw in amyparams.synth_send_calls(params, penv):
         try:
             amy.send(synth=sn, **kw)
@@ -294,7 +312,9 @@ def reapply_params(iid):
         start()
         return
     instr = deckcfg.get_instrument(iid) or {}
-    _apply_params(syn, instr.get('params', {}))
+    # pass instr so the piano level default (and patch-envelope fallback) apply
+    # on live re-sends too, not just full builds
+    _apply_params(syn, instr.get('params', {}), instr)
 
 
 def _sig(instr, c_own):
