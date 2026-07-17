@@ -556,7 +556,10 @@ def _patch_string(instr):
         if t == 'gm2':
             import gmbig
             return gmbig.patch_string(int(instr.get('patch', 0)))
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("amyparams: patch_string(%s) failed: %r"
+                    % (instr.get('type'), e))
         return None        # e.g. a program the gm2 font does not cover
     return None
 
@@ -587,7 +590,10 @@ def patch_params(instr):
         try:
             import patchparams
             return patchparams.patch_params(int(instr.get('patch', 0)))
-        except Exception:
+        except Exception as e:
+            import decklog
+            decklog.dbg("amyparams: patchparams for %s failed: %r"
+                        % (instr.get('type'), e))
             return {}
     return {}
 
@@ -962,7 +968,9 @@ def patch_fx(patch):
     try:
         import patchfx
         return patchfx.patch_fx(patch)
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("amyparams: patch_fx(%s) failed: %r" % (patch, e))
         return {}
 
 
@@ -984,7 +992,9 @@ def device_patch_fx(device):
                     and ins.get('enabled', True)
                     and ins.get('type', 'juno6') in ('juno6', 'dx7', 'piano')):
                 return patch_fx(ins.get('patch', 0))
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("amyparams: device_patch_fx(%s) failed: %r" % (device, e))
         pass
     return {}
 

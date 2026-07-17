@@ -326,6 +326,12 @@ def _select(note):
 
 def panel(parent, shell=None):
     _s['shell'] = shell
+    # Drop stale widget handles from a prior build: the no-kit path below
+    # returns early without rebuilding pads/card, and swap_btn/swap_packbtn
+    # (set inside the pushed swap panel) are never re-set here -- all would
+    # otherwise point at deleted LVGL objects on the next rebuild.
+    for _k in ('pads', 'card', 'swap_btn', 'swap_packbtn'):
+        _s.pop(_k, None)
     import synthkits
     kit_key = _kit_key()
     w = tulip.screen_size()[0]
