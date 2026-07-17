@@ -2884,16 +2884,17 @@ def test_synthkit_registers_contiguous_note_maps():
         assert hs.on == ([60] if hs is kit.hit_synths[home[1]] else [])
 
 
-def test_piano_default_level_minus_6db():
-    # Piano (AMY patch >= 256) clips the master on polyphonic high-velocity play
-    # at its baked amp 1.0 (host render: 4 notes @ vel 1.0 -> 1.54 FS pre-clip,
-    # hard flat-top 1.05 FS = crackle). A fresh piano defaults its control-osc
-    # amp to 0.5 (-6 dB); the user's level slider still overrides.
+def test_piano_gets_no_special_level_injection():
+    # A fresh piano must NOT get any deck-injected level/amp: it uses its natural
+    # schema default (full volume). The old -6 dB crackle default was reverted --
+    # on device the crackle is CPU-bound, not master clipping, so lowering volume
+    # only made the piano too quiet. No engine gets a level injected here.
     _install_hw_mocks()
     for m in ('deckcfg', 'forwarder'):
         sys.modules.pop(m, None)
     import forwarder
     amy = sys.modules['amy']
+    assert not hasattr(forwarder, 'PIANO_DEFAULT_LEVEL')
 
     class _Syn:
         synth = 42
@@ -2904,19 +2905,10 @@ def test_piano_default_level_minus_6db():
                 return float(str(k['amp']).split(',')[0])
         return None
 
-    assert forwarder.PIANO_DEFAULT_LEVEL == 0.5
-    # a FRESH piano (no stored level) is defaulted to -6 dB
-    amy._sends.clear()
-    forwarder._apply_params(_Syn(), {}, {'type': 'piano', 'patch': 256})
-    assert _amp_sent() == 0.5
-    # the user's level slider OVERRIDES the default (they can raise it back)
-    amy._sends.clear()
-    forwarder._apply_params(_Syn(), {'level': 2.0}, {'type': 'piano', 'patch': 256})
-    assert _amp_sent() == 2.0
-    # non-piano engines are untouched: no level injected -> no amp send at all
-    for t in ('juno6', 'dx7'):
+    # no engine (piano included) has an amp injected when none is stored
+    for t in ('piano', 'juno6', 'dx7'):
         amy._sends.clear()
-        forwarder._apply_params(_Syn(), {}, {'type': t, 'patch': 0})
+        forwarder._apply_params(_Syn(), {}, {'type': t, 'patch': 256 if t == 'piano' else 0})
         assert _amp_sent() is None, t
 
 
