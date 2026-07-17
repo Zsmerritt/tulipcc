@@ -127,8 +127,10 @@ static int synth_for_osc(uint16_t osc) {
 // AMY render hook: route osc audio to CV DAC if its synth is mapped
 uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
     if (!tulip_any_cv_active) return 0;   // FW-7/O-8: nothing mapped
-    // First check old per-osc map for backward compat
-    if(external_map[osc]>0) {
+    // First check old per-osc map for backward compat. external_map can be
+    // NULL (alloc failed in run_amy) while a synth-based CV map still holds
+    // the gate above open, so it must be checked here too.
+    if(external_map != NULL && external_map[osc]>0) {
         uint8_t cv_channel = external_map[osc] - 1;
 #ifdef AMYBOARD
         // AMYboard GP8413 DAC at address 88, channels 0x02/0x04
@@ -174,37 +176,31 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
 }
 #endif
 
-// defined in amy/src/midi_mappings.c — processes ic (MIDI CC mapping) commands
-// On web, AMY runs in a separate wasm worker so midi_msg_handler is not linkable
-#ifndef __EMSCRIPTEN__
-extern void midi_msg_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex, uint32_t time);
-#endif
-
 // I am called when AMY receives MIDI in, whether it has been processed (played in a instrument) or not
 // In tulip i just fill up the last_midi queue so that MIDI input is accessible to Python
-// I also process sysex if given, and dispatch CC mappings via midi_msg_handler
+// I also process sysex if given.
+// NOTE: this hook does NOT call midi_msg_handler. amy_event_midi_message_received()
+// (amy/src/amy_midi.c) already ran it on this exact data immediately before
+// calling us -- doing it again here dispatched every CC mapping and every
+// default-note mapping TWICE (double notes on unclaimed channels).
 void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
-    // Process ic (MIDI CC mapping) commands before queuing to Python
-    #ifndef __EMSCRIPTEN__
-    uint32_t time;
-    AMY_UNSET(time);
-    midi_msg_handler(data, len, is_sysex, time);
-    #endif
     if(is_sysex) {
-        // f0 and f7 are stripped on some platforms
+        // f0 and f7 are stripped on some platforms.
+        // memmove + clamp, NOT a forward byte loop: on internal-AMY builds
+        // `data` IS sysex_buffer (amy_midi.c passes it straight in), so the
+        // old copy smeared byte 0 across the whole message (F0 F0 F0 ...).
         if(data[0]!=0xf0) {
-            uint16_t c = 0;
-            sysex_buffer[c++] = 0xf0;
-            for(uint16_t i = 0; i< len; i++) {
-                sysex_buffer[c++] = data[i];
-            }
-            sysex_buffer[c++] = 0xf7;
-            sysex_len = c;
+            uint16_t n = len;
+            if(n > MAX_SYSEX_BYTES - 2) n = MAX_SYSEX_BYTES - 2;
+            memmove(sysex_buffer + 1, data, n);
+            sysex_buffer[0] = 0xf0;
+            sysex_buffer[n + 1] = 0xf7;
+            sysex_len = n + 2;
         } else {
-            for(uint16_t i = 0; i< len; i++) {
-                sysex_buffer[i] = data[i];
-            }
-            sysex_len = len;
+            uint16_t n = len;
+            if(n > MAX_SYSEX_BYTES) n = MAX_SYSEX_BYTES;
+            memmove(sysex_buffer, data, n);
+            sysex_len = n;
         }
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_true);
     } else {
@@ -647,7 +643,15 @@ void run_amy(uint8_t midi_out_pin) {
 #endif
     amy_start(amy_config);
     external_map = malloc_caps(amy_config.max_oscs, MALLOC_CAP_INTERNAL);
-    for(uint16_t i=0;i<amy_config.max_oscs;i++) external_map[i] = 0;
+    if(external_map == NULL) {
+        // unchecked, this NULL-deref'd in the init loop right below. Leave it
+        // NULL and keep booting: every reader gates on it, so the cost is
+        // per-osc CV out, not the device.
+        fprintf(stderr, "run_amy: external_map alloc of %u bytes FAILED -- per-osc CV out disabled\n",
+                (unsigned)amy_config.max_oscs);
+    } else {
+        for(uint16_t i=0;i<amy_config.max_oscs;i++) external_map[i] = 0;
+    }
     for(uint8_t i=0;i<MAX_CV_SYNTHS;i++) cv_synth_map[i] = 0;
 }
 

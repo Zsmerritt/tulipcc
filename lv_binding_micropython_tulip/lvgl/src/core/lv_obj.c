@@ -753,6 +753,7 @@ static void update_obj_state(lv_obj_t * obj, lv_state_t new_state)
         lv_style_value_t v;
         if(lv_style_get_prop_inlined(obj_style->style, LV_STYLE_TRANSITION, &v) != LV_STYLE_RES_FOUND) continue;
         const lv_style_transition_dsc_t * tr = v.ptr;
+        if(tr == NULL) continue; /*A NULL transition descriptor means "no transition", not a crash*/
 
         /*Add the props to the set if not added yet or added but with smaller weight*/
         uint32_t j;

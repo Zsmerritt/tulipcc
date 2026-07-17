@@ -17,7 +17,11 @@
 #
 # The sample mode is deliberately NOT set here: N32R8 leaves
 # CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR commented out, and inheriting play's
-# setting is the entire point. Both images therefore run octal STR.
+# setting is the entire point. NOTE: that inherited setting is DTR, not STR --
+# with ESPTOOLPY_OCT_FLASH=y the Kconfig choice DEFAULTS to DTR, so both images
+# run octal DTR (verified in the resolved sdkconfig, 2026-07-16). At 80MHz
+# octal DTR is a standard supported mode; at 120MHz it is the experimental
+# thermally-risky one, which is exactly why this image exists.
 #
 # The =n lines are required, not decorative: the frequency and PSRAM speed are
 # mutually exclusive Kconfig choices, so N32R8's 120M selections must be turned
@@ -27,4 +31,7 @@ CONFIG_SPIRAM_SPEED_120M=n
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_ESPTOOLPY_FLASHFREQ_120M=n
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESPTOOLPY_FLASHFREQ="80m"
+# (No CONFIG_ESPTOOLPY_FLASHFREQ="..." line: that string is promptless/derived
+# -- kconfgen ignores it from defaults files and computes "80m" from the choice
+# above. Build identity must come from the _80M/_120M choice symbols, which is
+# what tulip.flash_freq() reports.)

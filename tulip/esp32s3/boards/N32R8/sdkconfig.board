@@ -7,7 +7,17 @@ CONFIG_SPIRAM_MODE_OCT=y
 
 CONFIG_SPIRAM_SPEED_120M=y
 CONFIG_ESPTOOLPY_FLASHFREQ_120M=y
-CONFIG_ESPTOOLPY_FLASHFREQ="120m"
+# NOTE: do NOT set CONFIG_ESPTOOLPY_FLASHFREQ="120m" here. It is a promptless
+# derived string that kconfgen ignores from defaults files, and the IDF pins it
+# to "80m" even for 120MHz builds (it is the BOOT-header frequency; MSPI timing
+# tuning raises the clock to 120MHz after boot). The resolved build/sdkconfig
+# for this 120MHz image therefore reads FLASHFREQ_120M=y + FLASHFREQ="80m" --
+# both correct. A "120m" line here is a lie that never survives resolution.
+#
+# Sample mode: with ESPTOOLPY_OCT_FLASH=y the Kconfig DEFAULT is DTR, so this
+# build runs octal DTR (DDR) at 120MHz -- the mode Espressif marks experimental
+# with the +/-20C thermal-drift crash risk (spi_flash/esp32s3/Kconfig.flash_freq).
+# That risk is the entire reason the ping-pong flasher image exists.
 #CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR=y
 
 #CONFIG_SPIRAM_SPEED_80M=y
@@ -15,7 +25,12 @@ CONFIG_ESPTOOLPY_FLASHFREQ="120m"
 #CONFIG_ESPTOOLPY_FLASHFREQ="80m"
 
 CONFIG_ESPTOOLPY_OCT_FLASH=y
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# (CONFIG_ESPTOOLPY_FLASHMODE_QIO removed 2026-07-16: QIO depends on
+# !ESPTOOLPY_OCT_FLASH, so kconfgen silently dropped it and the choice resolved
+# to its OCT_FLASH default, OPI -- which is the correct mode for this chip.
+# The resolved config is FLASHMODE_OPI=y, header string "dout" (bootloader
+# limitation, see esptool_py/Kconfig.projbuild). There was never a QIO/OPI
+# contradiction in the built image, just a dead line here.)
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/N32R8/tulip-partitions-32MB.csv"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

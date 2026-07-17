@@ -426,16 +426,20 @@ uint16_t scan_ascii(uint8_t code, uint32_t modifier) {
 }
 
 extern int16_t lvgl_is_repl;
-extern mp_obj_t keyboard_callback, ui_quit_callback, ui_switch_callback;
+// keyboard/ui_quit/ui_switch_callback are GC-rooted mp_state slots now --
+// the aliases come from keyscan.h (a plain extern here would collide with
+// the macro).
 
 void send_key_to_micropython(uint16_t c) {
     // handle the global system hotkeys before anything else. we have two, ctrl-tab and ctrl-q 
     if(c==17) {
-        if(ui_quit_callback != NULL) 
-            mp_sched_schedule(ui_quit_callback, NULL);
+        // mp_const_none, not NULL: MP_OBJ_NULL as a Python arg is UB the
+        // moment the callback touches it
+        if(ui_quit_callback != NULL)
+            mp_sched_schedule(ui_quit_callback, mp_const_none);
     } else if (c==263) {
-        if(ui_switch_callback != NULL) 
-            mp_sched_schedule(ui_switch_callback, NULL);
+        if(ui_switch_callback != NULL)
+            mp_sched_schedule(ui_switch_callback, mp_const_none);
     } else {
         // Call the callback if set
         if(keyboard_callback != NULL)  {

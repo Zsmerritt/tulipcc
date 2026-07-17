@@ -25,6 +25,20 @@ extern uint8_t keyboard_send_keys_to_micropython;
 extern int8_t keyboard_grab_ui_focus;
 extern uint8_t last_scan[8];
 
+// The UI callback stores are GC ROOT POINTERS (MP_REGISTER_ROOT_POINTER in
+// modtulip.c), NOT plain C globals -- same bug class as the defer/sequencer/
+// midi slots (see tsequencer.h): a plain global holding an mp_obj_t is
+// invisible to the collector, so a lambda whose only reference was one of
+// these slots could be COLLECTED and its reused heap block later CALLED.
+// Aliased here because both modtulip.c (setters + ISRs) and keyscan.c
+// (send_key_to_micropython) need to see the same slots.
+#define frame_callback MP_STATE_PORT(tulip_frame_callback_ref)
+#define frame_arg MP_STATE_PORT(tulip_frame_arg_ref)
+#define touch_callback MP_STATE_PORT(tulip_touch_callback_ref)
+#define keyboard_callback MP_STATE_PORT(tulip_keyboard_callback_ref)
+#define ui_quit_callback MP_STATE_PORT(tulip_ui_quit_callback_ref)
+#define ui_switch_callback MP_STATE_PORT(tulip_ui_switch_callback_ref)
+
 uint16_t scan_ascii(uint8_t code, uint32_t modifier);
 void send_key_to_micropython(uint16_t c);
 void send_touch_to_micropython(int16_t touch_x, int16_t touch_y, uint8_t up);

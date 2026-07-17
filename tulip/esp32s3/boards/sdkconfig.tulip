@@ -1,5 +1,7 @@
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_CACHE_WORKAROUND=y
+# (CONFIG_SPIRAM_CACHE_WORKAROUND removed 2026-07-16: it is an ESP32-only
+# symbol that does not exist on the S3 -- kconfgen dropped it as unknown, so it
+# was never in any resolved sdkconfig.)
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 #CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
@@ -18,7 +20,12 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
-CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+# NOTE: CONFIG_FREERTOS_USE_TRACE_FACILITY resolves to =y regardless of what
+# is written here: GENERATE_RUN_TIME_STATS below `select`s it (and
+# USE_STATS_FORMATTING_FUNCTIONS), so an =n line is silently overridden.
+# RUN_TIME_STATS is load-bearing: tulip.cpu() / compute_cpu_usage() in main.c
+# reads ulRunTimeCounter via uxTaskGetSystemState(). Do not turn it off
+# without replacing that feature.
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 

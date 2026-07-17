@@ -188,6 +188,14 @@ static int extra_claiming_slot = -1;  // slot being set up during the current en
 // a send frees the usb_transfer_t out from under the sender (use-after-free).
 static SemaphoreHandle_t midi_out_lock = NULL;
 
+// Who midi_out_transfer_cb should notify. send_usb_midi_out is called from
+// the MicroPython task, the AMY MIDI task AND the USB client task (C-router
+// board forwarding) -- hardcoding the MP task meant every non-MP sender's
+// 250ms wait ALWAYS timed out (250ms of stalled MIDI input per forwarded
+// message) while MP got a spurious notification. All senders serialize on
+// midi_out_lock, so one slot is enough.
+static TaskHandle_t midi_out_waiter = NULL;
+
 // Total MIDI-out devices available now (primary + extras). Exposed to Python.
 int usb_num_midi_out_devices() {
     return (midi_has_out ? 1 : 0) + extra_midi_count;
@@ -281,7 +289,7 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
 uint8_t out_mtx = 0;
 static void midi_out_transfer_cb(usb_transfer_t *transfer) {
     //fprintf(stderr, "**midi_out_transfer_cb context: %p, num_bytes %d\n", transfer->context, transfer->actual_num_bytes);
-    xTaskNotifyGive(tulip_mp_handle);
+    if (midi_out_waiter) xTaskNotifyGive(midi_out_waiter);
 }
 
 
@@ -306,6 +314,9 @@ bool check_interface_desc_MIDI(const void *p, usb_device_handle_t Device_Handle)
 
 void midi_out_transfer(usb_transfer_t *xfer) {
     if (xfer == NULL) return;
+    // Claim the notification BEFORE submitting: whoever is sending is who the
+    // completion callback must wake.
+    midi_out_waiter = xTaskGetCurrentTaskHandle();
     // Drain any stale completion notification (e.g. from a transfer that timed
     // out below but completed later) so it can't satisfy THIS transfer's wait.
     ulTaskNotifyTake(pdTRUE, 0);
@@ -396,6 +407,16 @@ static void send_usb_midi_out_locked(uint8_t * data, uint16_t len, int device) {
     for(size_t i=0;i<len;i++) {
         uint8_t byte = data[i];
         if(usb_sysex_flag) {
+            // usb_sysex_buffer is a fixed static: Python could overflow it via
+            // tulip.midi_out(). usb_emit_sysex only runs at F7, so the whole
+            // message accumulates first -- DROP it rather than truncate, since
+            // a truncated sysex with no F7 wedges the receiver.
+            if(usb_sysex_len >= MAX_USB_SYSEX_BYTES) {
+                usb_sysex_len = 0;
+                usb_sysex_flag = 0;
+                fprintf(stderr, "usb midi out: sysex too long, dropped\n");
+                return;
+            }
             usb_sysex_buffer[usb_sysex_len++] = byte;
             if(byte == 0xF7) {
                 usb_sysex_flag = 0;
@@ -410,8 +431,15 @@ static void send_usb_midi_out_locked(uint8_t * data, uint16_t len, int device) {
                     byte == 0xFA || byte == 0xFB || byte == 0xFC || byte == 0xFD || byte == 0xFE || byte == 0xFF) {
                     usb_midi_packet[0] = 0x05; // single byte system common message
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
+                    // no `i = len+1` here: it aborted the loop and dropped any
+                    // further messages batched in the same buffer
                 }  else if(byte == 0xF0) {
+                    if(usb_sysex_len >= MAX_USB_SYSEX_BYTES) {
+                        usb_sysex_len = 0;
+                        usb_sysex_flag = 0;
+                        fprintf(stderr, "usb midi out: sysex too long, dropped\n");
+                        return;
+                    }
                     usb_sysex_buffer[usb_sysex_len++] = 0xF0;
                     usb_sysex_flag = 1;
                 } else { // a new status message that expects at least one byte of message after
@@ -436,11 +464,15 @@ static void send_usb_midi_out_locked(uint8_t * data, uint16_t len, int device) {
                     usb_midi_packet[0] = (status >> 4);
                     usb_midi_packet[2] = byte;
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
+                    // The three `i = len+1;` statements that used to end each
+                    // of these branches ABORTED the loop, silently dropping
+                    // every message batched after the first in one buffer:
+                    // midi_out(b'\xc0\x05\x90\x3c\x64') sent the program
+                    // change and lost the note-on. Plain fallthrough keeps
+                    // parsing the rest of the buffer.
                 } else if (usb_midi_packet[1] == 0xF3 || usb_midi_packet[1] == 0xF1) {
                     usb_midi_packet[0] = 0x02; // special
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
                 }
             }
         }

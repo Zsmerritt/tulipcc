@@ -72,6 +72,19 @@ static void fence_drop_cb(void *arg) {
     portEXIT_CRITICAL(&fence_mux);
 }
 
+// The ONLY way anything outside this file may lower the fence: it re-checks
+// depth under the mux, so a Python override (tulip.flash_fence(0)) or a
+// fallback path here can't drop the fence out from under a wrapped flash op
+// that is mid-write -- which is exactly the dual-core WDT crash the fence
+// exists to prevent.
+void tulip_flash_fence_manual_drop(void) {
+    portENTER_CRITICAL(&fence_mux);
+    if (fence_depth == 0) {
+        amy_flash_fence = 0;
+    }
+    portEXIT_CRITICAL(&fence_mux);
+}
+
 void tulip_flash_fence_acquire(void) {
     bool need_handshake = false;
     portENTER_CRITICAL(&fence_mux);
@@ -122,7 +135,11 @@ void tulip_flash_fence_release(void) {
         uint8_t expected = 0;
         if (!__atomic_compare_exchange_n(&creating, &expected, 1, false,
                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            amy_flash_fence = 0;
+            // depth-rechecking drop, not a bare store: between our depth==0
+            // read above and here, another task can have acquired (depth 1)
+            // and skipped its handshake because the fence still read 1 --
+            // a bare store would then drop the fence during ITS write.
+            tulip_flash_fence_manual_drop();
             return;
         }
         const esp_timer_create_args_t args = {
@@ -132,14 +149,14 @@ void tulip_flash_fence_release(void) {
         esp_timer_handle_t t = NULL;
         if (esp_timer_create(&args, &t) != ESP_OK) {
             creating = 0;
-            amy_flash_fence = 0;            // no timer: drop immediately
+            tulip_flash_fence_manual_drop();  // no timer: drop now, if safe
             return;
         }
         fence_drop_timer = t;
     }
     esp_timer_stop(fence_drop_timer);
     if (esp_timer_start_once(fence_drop_timer, FENCE_DROP_DELAY_US) != ESP_OK) {
-        amy_flash_fence = 0;
+        tulip_flash_fence_manual_drop();   // no deferred drop coming: drop now, if safe
     }
 }
 

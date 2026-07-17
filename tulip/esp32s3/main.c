@@ -151,6 +151,8 @@ float compute_cpu_usage(uint8_t debug) {
 
     uxArraySize = uxTaskGetNumberOfTasks();
     pxTaskStatusArray = pvPortMalloc( uxArraySize * sizeof( TaskStatus_t ) );
+    // unchecked, uxTaskGetSystemState scribbles through NULL on exhaustion
+    if( pxTaskStatusArray == NULL ) return 0.0f;
     uxArraySize = uxTaskGetSystemState( pxTaskStatusArray, uxArraySize, NULL );
 //15 tasks running now
 //_tulip_mp_task_ _IDLE0_ _IDLE1_ _usb_task_ _tscreen_task_ _display_task_ _tiT_ _amy_fb_task_ _amy_midi_task_ _sys_evt_ _ipc1_ _ipc0_ _amy_r_task_ _esp_timer_ _Tmr Svc_ 
@@ -416,32 +418,60 @@ void app_main(void) {
     #ifndef TULIP4_R10_V0 // v0 doesn't do usb
     #ifndef TDECK // TDECK doesn't send power to USB
     fprintf(stderr,"Starting USB host on core %d\n", USB_TASK_COREID);
-    xTaskCreatePinnedToCore(run_usb, USB_TASK_NAME, (USB_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, USB_TASK_PRIORITY, &usb_handle, USB_TASK_COREID);
+    BaseType_t usb_ok = xTaskCreatePinnedToCore(run_usb, USB_TASK_NAME, (USB_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, USB_TASK_PRIORITY, &usb_handle, USB_TASK_COREID);
+    if (usb_ok != pdPASS) {
+        fprintf(stderr,
+                "FATAL: USB host task creation failed (%d): need %d bytes of "
+                "internal-SRAM stack. No USB keyboard, mouse or MIDI.\n",
+                (int)usb_ok, (int)(USB_TASK_STACK_SIZE));
+        fprintf(stderr, "FATAL: largest free internal block = %u bytes\n",
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     fflush(stderr);
     delay_ms(100);
     #endif
     #endif
 
     fprintf(stderr,"Starting display on core %d\n", DISPLAY_TASK_COREID);
+    BaseType_t display_ok;
     #ifdef TDECK
     delay_ms(100);
-    xTaskCreatePinnedToCore(run_tdeck_display, DISPLAY_TASK_NAME, (DISPLAY_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, DISPLAY_TASK_PRIORITY, &display_handle, DISPLAY_TASK_COREID);
+    display_ok = xTaskCreatePinnedToCore(run_tdeck_display, DISPLAY_TASK_NAME, (DISPLAY_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, DISPLAY_TASK_PRIORITY, &display_handle, DISPLAY_TASK_COREID);
     #else
-    xTaskCreatePinnedToCore(run_esp32s3_display, DISPLAY_TASK_NAME, (DISPLAY_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, DISPLAY_TASK_PRIORITY, &display_handle, DISPLAY_TASK_COREID);
+    display_ok = xTaskCreatePinnedToCore(run_esp32s3_display, DISPLAY_TASK_NAME, (DISPLAY_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, DISPLAY_TASK_PRIORITY, &display_handle, DISPLAY_TASK_COREID);
     #endif
+    if (display_ok != pdPASS) {
+        fprintf(stderr,
+                "FATAL: display task creation failed (%d): need %d bytes of "
+                "internal-SRAM stack. Nothing will be drawn to the screen.\n",
+                (int)display_ok, (int)(DISPLAY_TASK_STACK_SIZE));
+        fprintf(stderr, "FATAL: largest free internal block = %u bytes\n",
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     fflush(stderr);
     delay_ms(100);
 
     fprintf(stderr,"Starting touchscreen on core %d \n", TOUCHSCREEN_TASK_COREID);
+    // pdPASS default: the boards with no branch below never create the task, so
+    // "not created" must not read as "creation failed".
+    BaseType_t touch_ok = pdPASS;
     #ifdef TULIP_DIY
     ft5x06_init();
-    xTaskCreatePinnedToCore(run_ft5x06, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
+    touch_ok = xTaskCreatePinnedToCore(run_ft5x06, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
     #elif defined MAKERFABS
-    xTaskCreatePinnedToCore(run_gt911, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
+    touch_ok = xTaskCreatePinnedToCore(run_gt911, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
     #elif defined TDECK
     delay_ms(500);
-    xTaskCreatePinnedToCore(run_gt911, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
+    touch_ok = xTaskCreatePinnedToCore(run_gt911, TOUCHSCREEN_TASK_NAME, (TOUCHSCREEN_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, TOUCHSCREEN_TASK_PRIORITY, &touchscreen_handle, TOUCHSCREEN_TASK_COREID);
     #endif
+    if (touch_ok != pdPASS) {
+        fprintf(stderr,
+                "FATAL: touchscreen task creation failed (%d): need %d bytes of "
+                "internal-SRAM stack. No touch input.\n",
+                (int)touch_ok, (int)(TOUCHSCREEN_TASK_STACK_SIZE));
+        fprintf(stderr, "FATAL: largest free internal block = %u bytes\n",
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     fflush(stderr);
     delay_ms(100);
 
