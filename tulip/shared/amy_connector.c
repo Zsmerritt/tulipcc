@@ -61,6 +61,12 @@ uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
 // (USB + midi_local funnel through amy_midi_inject). AMY_MIDI_MPSC build:
 // uint16_t monotonic counters, multi-writer CAS claim.
 #include "midi_in_ring.h"
+// amy_connector.h dimensions the ring; midi_in_ring.h's protocols hard-code
+// their own message width. They are separate headers by design (the harness
+// compiles the protocols standalone), so pin them together HERE -- the single
+// place both are in scope -- rather than trusting two 3s to stay equal.
+_Static_assert(MIDI_IN_RING_MSG_BYTES == MAX_MIDI_BYTES_PER_MESSAGE,
+               "midi_in_ring.h message width disagrees with the last_midi ring");
 #ifdef AMY_MIDI_MPSC
 volatile uint16_t midi_queue_head = 0;
 volatile uint16_t midi_queue_tail = 0;

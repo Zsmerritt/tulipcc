@@ -58,27 +58,13 @@
 
 #define MIDI_IN_RING_MSG_BYTES 3
 
-// The ring cursors themselves. They are DEFINED in amy_connector.c and used by
-// modtulip.c, and they live here -- not in amy_midi.h -- for two reasons:
-//   * amy never touches them; they are purely tulip's, so amy's header was the
-//     wrong home for them.
-//   * modtulip.c includes amy_midi.h only `#ifndef __EMSCRIPTEN__`, so decls
-//     placed there are INVISIBLE to the web build while the code using them
-//     still compiles -- which is exactly how the web build broke. This header
-//     is included unconditionally by both the definer and the user, so one
-//     declaration still governs both and a type change cannot silently
-//     disagree.
-// Default build: SPSC ring, int16_t INDICES 0..MIDI_QUEUE_DEPTH-1; the sole
-// writer is the AMY MIDI task (every other producer funnels through
-// amy_midi_inject). AMY_MIDI_MPSC build: multi-producer, uint16_t MONOTONIC
-// counters (slot = value % depth; 65536 % 1024 == 0, so the wrap is seamless).
-#ifdef AMY_MIDI_MPSC
-extern volatile uint16_t midi_queue_tail;
-extern volatile uint16_t midi_queue_head;
-#else
-extern volatile int16_t midi_queue_tail;
-extern volatile int16_t midi_queue_head;
-#endif
+// This header is deliberately PURE: protocols only, fully parameterized, no
+// extern globals. tests/midi_input/ compiles it against its own arrays and
+// cursors, which is what lets the harness differential-test both disciplines --
+// it can only do that if nothing here reaches for a particular instance.
+// Tulip's actual ring instance (last_midi, last_midi_len, midi_queue_head/tail
+// and their dimensions) is declared in amy_connector.h, next to the .c that
+// defines it.
 
 // ---- SPSC (default build) -------------------------------------------------
 // Returns 1 if queued, 0 if full (caller counts the drop -- S2/S4).
