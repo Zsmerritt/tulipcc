@@ -61,133 +61,177 @@ image may be written to either slot, so slot != build identity).
 default (`120m`) so an unknown/garbled marker can never trap the deck in flash
 mode:
 
-1. **Compiled binding `tulip.flash_freq()`** — the cleanest single source of
-   truth (returns the actual `CONFIG_ESPTOOLPY_FLASHFREQ` the image was built
-   with). **Not implemented yet**; adding it is a tiny, guarded C change
-   (below). The Python already prefers it automatically if it appears.
-2. **Build-stamped constant `flashbuild.FLASH_FREQ`** — a one-line frozen module
-   CI writes per artifact (`'80m'` for the flasher, `'120m'`/absent for play).
-   **This is the lowest-risk mechanism and the one to ship first**: no C change.
+1. **Compiled binding `tulip.flash_freq()`** — **this is now the mechanism.** It
+   returns the actual `CONFIG_ESPTOOLPY_FLASHFREQ` the running image was built
+   with, so build identity comes straight from the build itself: nothing to
+   stamp, nothing to keep in sync, and the two artifacts differ *only* by their
+   board config.
+2. **Build-stamped constant `flashbuild.FLASH_FREQ`** — a frozen one-liner
+   (`FLASH_FREQ = "80m"`). **Superseded by (1) and NOT produced by CI.** The
+   lookup is kept in `flashmode.py` purely as a fail-soft escape hatch (e.g. an
+   old image predating the binding, or a hand-stamped bring-up build).
 3. **Fallback** — neither present ⇒ `120m` ⇒ play ⇒ never hijacks boot.
 
-### Recommended: ship the stamped constant (option 2)
+### The C binding (shipped)
 
-CI writes, into the frozen `/user` (or frozen modules) of the **80MHz build
-only**, a file `deck/flashbuild.py`:
+`tulip/shared/modtulip.c` defines `tulip_flash_freq` next to `tulip_board`, and
+registers `flash_freq` in `tulip_module_globals_table`. It is guarded on
+`CONFIG_ESPTOOLPY_FLASHFREQ` (`sdkconfig.h` is included only under
+`ESP_PLATFORM`), so on desktop/web — where the define does not exist — it
+compiles fine and returns `None`; `flashmode.flash_freq()` then falls through to
+the `120m` default, i.e. off-device is always "play". `tulip.py` does
+`from _tulip import *`, so no Python-side plumbing was needed.
 
-```python
-# generated per-build by CI; identifies the running image's flash clock
-FLASH_FREQ = "80m"
-```
+So on the two firmware artifacts:
 
-The 120MHz play build ships **no** `flashbuild.py` (absent ⇒ play). That is the
-entire mechanism — no C, no partition/bootloader change.
-
-### Optional later: the C binding (option 1, cleanest)
-
-A tiny addition to `tulip/shared/modtulip.c` exposing the compile-time define,
-guarded so it is a no-op where undefined:
-
-```c
-STATIC mp_obj_t tulip_flash_freq(void) {
-#ifdef CONFIG_ESPTOOLPY_FLASHFREQ
-    return mp_obj_new_str(CONFIG_ESPTOOLPY_FLASHFREQ, strlen(CONFIG_ESPTOOLPY_FLASHFREQ));
-#else
-    return mp_const_none;
-#endif
-}
-STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_flash_freq_obj, tulip_flash_freq);
-// ... add { MP_ROM_QSTR(MP_QSTR_flash_freq), MP_ROM_PTR(&tulip_flash_freq_obj) }
-```
-
-`flashmode.flash_freq()` uses it automatically once present; the stamped
-constant can then be retired. **This C change is left for the coordinator** — it
-needs a firmware rebuild and on-device validation.
+| Image                          | `tulip.flash_freq()` | `is_flasher_build()` |
+|--------------------------------|----------------------|----------------------|
+| `TULIP4_R11` (play, 120MHz)    | `'120m'`             | False                |
+| `TULIP4_R11_FLASHER` (flasher) | `'80m'`              | True                 |
+| desktop / web                  | `None` ⇒ `'120m'`    | False                |
 
 ## Build: two artifacts
 
-Both builds are byte-identical **except** the flash-frequency / sample-mode
-sdkconfig. The play (120MHz) build is unchanged and stays the default.
+The flasher is a **new board, `TULIP4_R11_FLASHER`**, whose whole content is the
+80MHz delta on top of the play config. Both boards share the same partition
+table (`boards/N32R8/tulip-partitions-32MB.csv`), so the two images are
+OTA-swappable by construction.
 
-### The 80MHz flasher build — exact sdkconfig delta
+| Role    | `MICROPY_BOARD`      | sdkconfig chain                                  |
+|---------|----------------------|--------------------------------------------------|
+| play    | `TULIP4_R11`         | base, 240mhz, sdkconfig.tulip, **N32R8**, TULIP4_R11 — **unchanged, do not touch** |
+| flasher | `TULIP4_R11_FLASHER` | base, 240mhz, sdkconfig.tulip, **N32R8**, TULIP4_R11_FLASHER |
 
-Source of truth is the last file in the N32R8 `SDKCONFIG_DEFAULTS` chain:
-`tulip/esp32s3/boards/N32R8/sdkconfig.board`. For the flasher artifact, apply
-this delta (the 120M choice lines are mutually exclusive Kconfig choices, so
-they must go OFF as the 80M lines go ON):
+The two chains are **identical but for the last entry**, and
+`boards/TULIP4_R11_FLASHER/mpconfigboard.cmake` is otherwise a byte-for-byte
+copy of the play board's (same `BOARD_DEFINITION1 TULIP4_R11` — same hardware —
+same `MICROPY_SOURCE_BOARD` list); `mpconfigboard.h` and `pins.csv` are exact
+copies. Everything the flasher is comes from `N32R8/sdkconfig.board`, i.e. from
+play, and then:
 
-```diff
--CONFIG_ESPTOOLPY_FLASHFREQ_120M=y
--CONFIG_ESPTOOLPY_FLASHFREQ="120m"
--#CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR=y
-+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-+CONFIG_ESPTOOLPY_FLASHFREQ="80m"
-+CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR=y
+```
+CONFIG_SPIRAM_SPEED_120M=n
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ_120M=n
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ="80m"
 ```
 
-Notes:
-- `80m` is valid with `CONFIG_ESPTOOLPY_OCT_FLASH=y` (already set). Keep
-  `CONFIG_ESPTOOLPY_OCT_FLASH=y` and `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y`.
-- Pick a sample mode explicitly. Octal 80MHz commonly uses **DTR/DDR**
-  (`..._SAMPLE_MODE_DTR`, the line already stubbed at
-  `sdkconfig.board:11`). STR is also permissible; DTR is higher-throughput.
-  **DTR vs STR must match what the specific octal flash part supports —
-  validate on hardware.**
-- `CONFIG_IDF_EXPERIMENTAL_FEATURES=y` is only required while any `120M` option
-  remains in a build; a pure-80M build does not need it, but leaving it on is
-  harmless and keeps the two configs closer.
-- **PSRAM speed is an independent axis.** `CONFIG_SPIRAM_SPEED_120M` can be held
-  constant, or dropped to `_80M`, deliberately. The flasher only needs the
-  *flash* clock lowered for safe writes; decide PSRAM separately and validate.
+That is the entire file. The `=n` lines are load-bearing: frequency and PSRAM
+speed are mutually exclusive Kconfig choices, so N32R8's 120M selections have to
+go OFF as the 80M ones come on.
+
+Why this matters: **the flasher is the recovery anchor.** It sits in `ota_0`
+permanently, and if it ever fails to boot there is no way back. So it must
+differ from play by the flash clock and *nothing else* — every extra delta is
+unproven risk in the one image that may never fail.
+
+Two deliberate properties, neither of them free choices (both still on the
+validation list at the bottom):
+
+- **Sample mode is inherited, not set.** `TULIP4_R11_FLASHER/sdkconfig.board`
+  does not mention `CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR`, so it stays
+  commented out exactly as N32R8 leaves it and both images run octal **STR**.
+  Inheriting play's setting is the point. DTR is the higher-throughput octal-80M
+  mode and would be the next knob if STR@80M disappoints — but it would be a
+  second delta, so it needs a hardware reason first.
+- **PSRAM drops with the flash clock.** On the S3 flash and PSRAM share the MSPI
+  clock domain, and both configs that exist in this tree set the pair together
+  (N32R8: 120/120; the unrelated `TULIP4_R11_DEBUG` board: 80/80). An 80/120
+  split is untried on this hardware, so we follow the established pairing rather
+  than invent a third combination in the recovery anchor.
+
+**Note: `TULIP4_R11_DEBUG` is NOT the flasher**, despite looking like one (it is
+80MHz on the same partition table). Its cmake chain *skips*
+`boards/N32R8/sdkconfig.board` entirely — losing e.g.
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` — and adds `sdkconfig.usb`, which the
+play board never includes and which can move USB/console routing. It is
+therefore not play-minus-clock, and it is someone else's debug board. Left
+alone.
 
 **Do NOT re-stamp the header of a 120M `.bin` to fake 80MHz** — on the S3 the
 clock/timing is baked into the app's compiled MSPI tuning, not the header byte.
 You get a mislabeled image, not an 80MHz image. Two real builds are required
 (PINGPONG-FINDINGS.md Q5).
 
-### CI change (for the coordinator to wire)
+### CI (wired)
 
-The existing workflow builds one N32R8 artifact. To produce BOTH, add a second
-job/matrix-leg that builds N32R8 with the delta above and stamps
-`deck/flashbuild.py` with `FLASH_FREQ="80m"` into its frozen payload. Concretely:
+`.github/workflows/amyboard-pr-preview.yml` builds all three targets in the ONE
+esp-idf container (so ccache carries the shared translation units), adding a
+third leg after the existing AMYBOARD and TULIP4_R11 legs:
 
-1. Duplicate the N32R8 firmware build step with an overlay sdkconfig carrying
-   the four changed lines (e.g. a `sdkconfig.flasher` appended to
-   `SDKCONFIG_DEFAULTS`, or `idf.py -D` overrides).
-2. Before freezing that build, write `deck/flashbuild.py` containing
-   `FLASH_FREQ = "80m"`. The play build writes nothing (absent ⇒ play).
-3. Publish two artifacts: `...-play-...bin` (120M, default) and
-   `...-flasher-...bin` (80M). The play artifact is what
-   `flash_pingpong.py` streams; the flasher is flashed to `ota_0` once during
-   provisioning.
+```
+idf.py -B build-TULIP4_R11_FLASHER -DMICROPY_BOARD=TULIP4_R11_FLASHER build
+cp build-TULIP4_R11_FLASHER/micropython.bin dist/tulip-flasher-TULIP4_R11_FLASHER.bin
+```
 
-This is more than a few lines, so it is documented here rather than wired blind.
+Notes on that leg:
+
+- **It uses its own build dir.** `esp32s3/CMakeLists.txt` puts the resolved
+  `sdkconfig` inside the build dir, and an existing `sdkconfig` beats
+  `SDKCONFIG_DEFAULTS` — so reusing `build/` after the TULIP4_R11 leg would
+  silently carry 120MHz settings into the "80MHz" image. That is precisely the
+  mislabeled-image failure above, except harder to spot.
+- **No `fs_create.py` pass.** Only the flasher's *app* image is ever written
+  (into an OTA slot); it never gets a full/vfs/sys image of its own, and it runs
+  on the play image's filesystem. So the leg publishes `micropython.bin` and
+  nothing else.
+- **Nothing is stamped.** `tulip.flash_freq()` makes `flashbuild.py` unnecessary.
+
+Artifacts (bundle name `tulip-firmware`, unchanged):
+
+| File in the artifact                  | What it is                                    |
+|---------------------------------------|-----------------------------------------------|
+| `tulip-firmware-TULIP4_R11.bin`       | play app image — what `flash_pingpong.py` streams into `ota_1` |
+| `tulip-full-TULIP4_R11.bin`           | play full-flash image (unchanged)             |
+| `tulip-sys.bin`                       | system filesystem image (unchanged)           |
+| `tulip-flasher-TULIP4_R11_FLASHER.bin`| **80MHz flasher app image** — flashed to `ota_0` once, at provisioning |
+
+The three play files keep their exact names: HW CI and `tulip.upgrade(pr=N)`
+depend on them.
 
 ## NEEDS ON-DEVICE VALIDATION (cannot be verified without hardware)
 
-Everything below is unverified — no device was touched.
+Everything below is unverified — no device was touched. The scheme is now fully
+*wired* (binding + CI + host tool), which means it is now capable of engaging;
+none of it is *proven*.
 
 1. **The freq switch itself.** That `ota_0` (80M) and `ota_1` (120M) both boot
    cleanly under the one unchanged bootloader, and that 120M reads stay reliable
    on cold boot (IDF issue #9156 shows freq handling has regressed before).
-2. **80MHz DTR vs STR** matches the actual octal flash part; that large writes
-   at 80MHz are in fact corruption-free where 120MHz was not.
-3. **`esp32.NVS`** get/set/erase/commit semantics on this firmware
+2. **80MHz STR.** `TULIP4_R11_FLASHER` inherits N32R8's commented-out
+   `CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR`, so the flasher is octal 80MHz
+   **STR** — a deliberate inherit (don't differ from play), not a tested choice.
+   Whether STR matches this octal part, and whether large writes at 80MHz are in
+   fact corruption-free where 120MHz was not, is provable only on hardware. If
+   STR@80M disappoints, DTR is the next knob — one line in
+   `boards/TULIP4_R11_FLASHER/sdkconfig.board` — but it would make the flasher
+   differ from play on a second axis, so it wants a hardware reason first.
+3. **PSRAM at 80MHz in the flasher.** The flasher runs `CONFIG_SPIRAM_SPEED_80M`
+   where play runs `_120M`. This rides along with the flash clock because the S3
+   shares the MSPI clock domain between the two and every config in this tree
+   pairs them (120/120 or 80/80); an 80/120 split is untried. Expected to be a
+   non-issue (flash mode does no audio/graphics work), but it is still a second
+   changed knob, and only hardware confirms the flasher boots and runs its idle
+   loop with it.
+4. **`esp32.NVS`** get/set/erase/commit semantics on this firmware
    (`get_i32` raising on a missing key is assumed; `flashmode.get_flash_pending`
    treats any exception as "not pending").
-4. **`Partition.find(TYPE_APP, label=...)` + `.set_boot()`** targeting a named
+5. **`Partition.find(TYPE_APP, label=...)` + `.set_boot()`** targeting a named
    slot, and that `finalize_to_play()` actually returns to `ota_1`.
-5. **`enter_flash_mode()` interaction with the host serial transport** — that a
+6. **`enter_flash_mode()` interaction with the host serial transport** — that a
    host `^C` (raw-REPL entry) cleanly interrupts the idle loop and that the
    device sits at a REPL the host can drive; and that the 15-min idle
    auto-recovery reboots to play when no host connects.
-6. **`is_flasher_build()` wiring** — that CI actually stamps `flashbuild.py`
-   (or that the optional `tulip.flash_freq()` binding is added). Until one of
-   those exists, every build reports `120m` and flash mode never engages
-   (safe, but the feature is inert).
-7. **Settings "Safe update" button** — the two-tap arm + reboot on real LVGL,
+7. **`is_flasher_build()` wiring end-to-end.** The binding compiles from a define
+   nobody has read back on-device: confirm `tulip.flash_freq()` returns exactly
+   `'80m'` on the `TULIP4_R11_FLASHER` image and `'120m'` on the play image (the
+   `startswith('80')` test in `is_flasher_build()` assumes that spelling). If it
+   returned something unexpected, the deck reports play — safe, but the feature
+   goes inert rather than loud.
+8. **Settings "Safe update" button** — the two-tap arm + reboot on real LVGL,
    and the on-screen flash-mode notice (`fwprogress`) rendering in the 80MHz
    image.
-8. **Updating the flasher image itself** is the one genuinely awkward case
+9. **Updating the flasher image itself** is the one genuinely awkward case
    (it would require writing `ota_0` from the 120MHz play image — the risky op
    this scheme avoids). Keep the flasher near-immutable; out of scope here.

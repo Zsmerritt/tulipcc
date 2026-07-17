@@ -27,6 +27,7 @@
 #include "genhdr/mpversion.h"
 
 #ifdef ESP_PLATFORM
+#include "sdkconfig.h"
 #include "tasks.h"
 #include "driver/rtc_io.h"
 #endif
@@ -107,6 +108,23 @@ STATIC mp_obj_t tulip_board(size_t n_args, const mp_obj_t *args) {
 #endif
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_board_obj, 0, 0, tulip_board);
+
+
+// tulip.flash_freq(): the SPI-flash clock this image was COMPILED for, e.g.
+// '80m' or '120m' -- the single source of truth for the ping-pong
+// dual-frequency update scheme (deck/PINGPONG.md), where the running image has
+// to know whether it is the 80MHz "flasher" build or the 120MHz "play" build
+// WITHOUT trusting which OTA slot it booted from. deck/flashmode.py picks this
+// up automatically and falls back to '120m' (= play) where it returns None, so
+// desktop/web builds -- which have no CONFIG_ESPTOOLPY_FLASHFREQ -- stay sane.
+STATIC mp_obj_t tulip_flash_freq(void) {
+#ifdef CONFIG_ESPTOOLPY_FLASHFREQ
+    return mp_obj_new_str(CONFIG_ESPTOOLPY_FLASHFREQ, strlen(CONFIG_ESPTOOLPY_FLASHFREQ));
+#else
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_flash_freq_obj, tulip_flash_freq);
 
 
 // GC-rooted callback stores (see tsequencer.h aliases): as plain C globals
@@ -1936,7 +1954,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
-    { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) }, 
+    { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_freq), MP_ROM_PTR(&tulip_flash_freq_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
 #if !defined(__EMSCRIPTEN__) && !defined(AMYBOARD)
     //{ MP_ROM_QSTR(MP_QSTR_multicast_start), MP_ROM_PTR(&tulip_multicast_start_obj) },

@@ -130,12 +130,26 @@ jobs:
           git add amy
 
       # --- Firmware (.bin sets) ---
-      # Build AMYBOARD then TULIP4_R11 in ONE esp-idf container: the two targets
-      # share most sources, so the second build hits ccache for the common units
-      # (we enable IDF_CCACHE_ENABLE) instead of recompiling from scratch. The
-      # Tulip firmware is what the HW CI bench flashes onto the physical Tulip
-      # (it shares the AMYboard bench); see tulip/amyboard/hwci/tulip_hwci.py.
-      - name: Build AMYboard + Tulip firmware
+      # Build AMYBOARD, TULIP4_R11 then TULIP4_R11_FLASHER in ONE esp-idf
+      # container: the targets share most sources, so each later build hits
+      # ccache for the common units (we enable IDF_CCACHE_ENABLE) instead of
+      # recompiling from scratch. The Tulip firmware is what the HW CI bench
+      # flashes onto the physical Tulip (it shares the AMYboard bench); see
+      # tulip/amyboard/hwci/tulip_hwci.py.
+      #
+      # The third leg is the ping-pong "flasher" image (deck/PINGPONG.md):
+      # TULIP4_R11_FLASHER is TULIP4_R11 with an 80MHz MSPI clock and NOTHING
+      # else changed, and it is the image that lives permanently in ota_0 to
+      # write big updates safely. It needs no fs_create pass — only its app
+      # image is ever written (into an OTA slot), never a full/vfs/sys image —
+      # so we just publish build-*/micropython.bin.
+      #
+      # It MUST use its own build dir: the IDF writes the resolved sdkconfig into
+      # the build dir (see esp32s3/CMakeLists.txt `set(SDKCONFIG ...)`), and an
+      # existing sdkconfig wins over SDKCONFIG_DEFAULTS. Reusing `build/` would
+      # silently carry TULIP4_R11's 120MHz flash settings into the 80MHz image —
+      # producing a mislabeled build, exactly the failure PINGPONG.md warns about.
+      - name: Build AMYboard + Tulip firmware (play + 80MHz ping-pong flasher)
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4.1
@@ -150,7 +164,17 @@ jobs:
             cd esp32s3 &&
             idf.py -DMICROPY_BOARD=TULIP4_R11 build &&
             cd .. &&
-            python fs_create.py tulip
+            python fs_create.py tulip &&
+            cd esp32s3 &&
+            idf.py -B build-TULIP4_R11_FLASHER -DMICROPY_BOARD=TULIP4_R11_FLASHER build &&
+            echo "=== flasher resolved MSPI clock ===" &&
+            grep -E "^CONFIG_(ESPTOOLPY_FLASHFREQ|SPIRAM_SPEED)" build-TULIP4_R11_FLASHER/sdkconfig &&
+            grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y' build-TULIP4_R11_FLASHER/sdkconfig &&
+            grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ="80m"' build-TULIP4_R11_FLASHER/sdkconfig &&
+            ! grep -qx 'CONFIG_ESPTOOLPY_FLASHFREQ_120M=y' build-TULIP4_R11_FLASHER/sdkconfig &&
+            mkdir -p dist &&
+            cp build-TULIP4_R11_FLASHER/micropython.bin dist/tulip-flasher-TULIP4_R11_FLASHER.bin &&
+            cd ..
 
       - name: Upload AMYboard firmware artifact
         uses: actions/upload-artifact@v4
@@ -164,6 +188,11 @@ jobs:
 
       # The HW CI workflow (chained off this one via workflow_run) downloads this
       # to flash the physical Tulip — there's no Vercel preview for Tulip firmware.
+      # tulip-flasher-TULIP4_R11_FLASHER.bin rides along in the same bundle: it is
+      # the 80MHz ping-pong flasher app (deck/PINGPONG.md), flashed to ota_0 once
+      # during provisioning, while the play image above is what flash_pingpong.py
+      # streams. The play artifact names are load-bearing for HW CI and
+      # tulip.upgrade(pr=N) — do not rename them.
       - name: Upload Tulip firmware artifact
         uses: actions/upload-artifact@v4
         with:
@@ -173,6 +202,7 @@ jobs:
             tulip/esp32s3/dist/tulip-firmware-TULIP4_R11.bin
             tulip/esp32s3/dist/tulip-full-TULIP4_R11.bin
             tulip/esp32s3/dist/tulip-sys.bin
+            tulip/esp32s3/dist/tulip-flasher-TULIP4_R11_FLASHER.bin
 
       # The esp-idf firmware step above runs in a Docker container as root, so any
       # file it created or rewrote in the bind-mounted workspace is now owned by
