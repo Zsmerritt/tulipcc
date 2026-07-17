@@ -678,6 +678,14 @@ def _build_edit(parent, shell):
     nav = dk.button(r, "Edit >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
     nav.add_event_cb(_open_fx_row, lv.EVENT.CLICKED, None)
 
+    # Presets -> save/recall this instrument's SOUND-DESIGN OVERLAY (type,
+    # patch, params, reverb send, and for drums the kit + per-pad edits). NOT
+    # the device FX bus (shared by other instruments) -- see presets.py.
+    r = dk.row(right)
+    dk.label(r, "Presets", color=dk.TEXT)
+    nav = dk.button(r, "Open >", w=150, h=52, bg=dk.SURFACE2, font=dk.FONT_S)
+    nav.add_event_cb(_open_presets, lv.EVENT.CLICKED, None)
+
     # (Reverb send moved into the Sound editor's FX group: it's a
     # per-instrument sound parameter, edited where the rest of the
     # instrument's sound lives. amyparams 'reverb_send' + forwarder
@@ -772,3 +780,271 @@ def _snd_apply():
         forwarder.reapply_params(_snd['iid'])
     except Exception:
         pass
+
+
+# ---------------- Presets sub-panel (save/recall the sound overlay) ----------
+# A "preset" is this instrument's sound-design overlay (type/patch/params/
+# reverb_send, and for drums kit + per-pad edits) -- NOT the device FX bus.
+# Storage + capture/recall logic lives in presets.py (host-tested); this is
+# only the LVGL front end.
+_pre = {}
+
+
+def _open_presets(e):
+    if e.get_code() != lv.EVENT.CLICKED:
+        return
+    if _s.get('shell') is not None:
+        _s['shell'].push(presets_panel, "Presets", key='presets')
+
+
+def _preset_toast(msg, color=None):
+    sh = _s.get('shell')
+    scr = getattr(sh, 'screen', None) if sh is not None else None
+    if scr is not None:
+        try:
+            dk.toast(scr, msg, color if color is not None else dk.GREEN)
+        except Exception:
+            pass
+
+
+def _do_save_preset(name):
+    import presets
+    instr = _active() or {}
+    try:
+        presets.save(name, instr)
+        _preset_toast('Saved "%s"' % name)
+    except Exception as ex:
+        _preset_toast("Save failed: %r" % ex, dk.RED)
+    _refresh_presets()
+
+
+def _save_preset(name):
+    """Save the active instrument's overlay as `name`. On a slug collision,
+    offer Overwrite vs Save as a new (auto-suffixed) name vs Cancel."""
+    import presets
+    name = (name or '').strip()
+    if not name:
+        _preset_toast("Name the preset first", dk.ORANGE)
+        return
+    if presets.exists(name):
+        alt = presets.unique_name(name)
+        dk.choice('Preset exists',
+                  'A preset named "%s" already exists.' % name,
+                  [("Overwrite", dk.RED, lambda: _do_save_preset(name)),
+                   ('Save as "%s"' % alt, dk.GREEN,
+                    lambda: _do_save_preset(alt)),
+                   ("Cancel", dk.SURFACE2, None)])
+    else:
+        _do_save_preset(name)
+
+
+def _refresh_presets():
+    parent = _pre.get('parent')
+    if parent is None:
+        return
+    try:
+        parent.clean()
+    except Exception:
+        return
+    _build_presets(parent)
+
+
+def presets_panel(parent, shell=None):
+    _s['shell'] = shell
+    _pre['parent'] = parent
+    _build_presets(parent)
+
+
+def _build_presets(parent):
+    import presets
+    w = tulip.screen_size()[0]
+    instr = _active() or {}
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+
+    dk.label(body, "Presets save this instrument's SOUND edits (type, patch, "
+             "sound params, and for drums the kit + pad edits). Device FX are "
+             "not included -- they are shared by every instrument on the "
+             "device.", color=dk.MUTED, font=dk.FONT_S, w=w - 84)
+
+    # --- Save current ---
+    card = lv.obj(body)
+    card.set_width(lv.pct(100))
+    card.set_height(76)
+    dk._flat(card, radius=16, bg=dk.SURFACE)
+    card.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    card.set_style_pad_all(0, 0)
+    dk.label(card, "Save as", color=dk.TEXT, font=dk.FONT_M).align(
+        lv.ALIGN.LEFT_MID, 20, 0)
+    nt = dk.text_field(card, text=instr.get('name', ''),
+                       placeholder="preset name", w=250, h=44)
+    nt.group.align(lv.ALIGN.RIGHT_MID, -220, 0)
+    dk.button(card, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
+              cb=lambda e: dk.toggle_keyboard_for(nt.ta)).align(
+                  lv.ALIGN.RIGHT_MID, -158, 0)
+    sb = dk.button(card, "Save", w=130, h=48, bg=dk.GREEN, font=dk.FONT_S)
+    sb.align(lv.ALIGN.RIGHT_MID, -14, 0)
+    sb.add_event_cb(lambda e: (_save_preset(nt.ta.get_text())
+                    if e.get_code() == lv.EVENT.CLICKED else None),
+                    lv.EVENT.CLICKED, None)
+
+    # --- Saved presets ---
+    dk.label(body, "Saved presets", color=dk.MUTED, font=dk.FONT_S)
+    items = presets.list_presets()
+    if not items:
+        dk.label(body, "No presets yet. Design a sound, then save it above.",
+                 color=dk.MUTED, font=dk.FONT_S, w=w - 84)
+        return
+    for rec in items:
+        rowc = lv.obj(body)
+        rowc.set_width(lv.pct(100))
+        rowc.set_height(64)
+        dk._flat(rowc, radius=12, bg=dk.SURFACE)
+        rowc.remove_flag(lv.obj.FLAG.SCROLLABLE)
+        rowc.set_style_pad_all(0, 0)
+        nm = dk.label(rowc, rec.get('name', '?'), color=dk.WHITE,
+                      font=dk.FONT_M, w=w - 48 - 180)
+        nm.align(lv.ALIGN.LEFT_MID, 16, 0)
+        try:
+            nm.set_long_mode(lv.label.LONG.DOT)
+        except Exception:
+            pass
+        ob = dk.button(rowc, "Open >", w=140, h=48, bg=dk.SURFACE2,
+                       font=dk.FONT_S)
+        ob.align(lv.ALIGN.RIGHT_MID, -14, 0)
+        ob.add_event_cb((lambda sl: (lambda e: _open_preset_detail(sl)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(
+                            rec['slug']), lv.EVENT.CLICKED, None)
+
+
+def _open_preset_detail(slug):
+    _pre['slug'] = slug
+    if _s.get('shell') is not None:
+        _s['shell'].push(preset_detail_panel, "Preset", key='preset_detail')
+
+
+def _do_recall():
+    import presets
+    rec = presets.load(_pre.get('slug'))
+    if rec is None:
+        _preset_toast("Preset not found", dk.RED)
+        return
+    iid = deckcfg.active_instrument()
+    try:
+        presets.recall(iid, rec)
+    except Exception as ex:
+        _preset_toast("Recall failed: %r" % ex, dk.RED)
+        return
+    sh = _s.get('shell')
+    if sh is not None:
+        try:
+            sh.refresh_chips()
+        except Exception:
+            pass
+    _preset_toast('Recalled "%s"' % rec.get('name', ''))
+    # pop the detail panel; the revealed presets list (and the editor beneath
+    # it) rebuild from their stored builders when next shown -- so the editor
+    # reflects the recalled overlay (same mechanism _reset_patch relies on).
+    if sh is not None:
+        sh.back()
+
+
+def _do_delete_preset():
+    import presets
+    presets.delete(_pre.get('slug'))
+    sh = _s.get('shell')
+    if sh is not None:
+        sh.back()          # back to the (rebuilt) presets list
+
+
+def _do_rename_preset(newname):
+    import presets
+    newname = (newname or '').strip()
+    if not newname:
+        _preset_toast("Enter a new name", dk.ORANGE)
+        return
+    rec = presets.rename(_pre.get('slug'), newname)
+    if rec is not None:
+        _pre['slug'] = rec['slug']
+        _preset_toast('Renamed to "%s"' % rec['name'])
+    _refresh_preset_detail()
+
+
+def _refresh_preset_detail():
+    parent = _pre.get('detail_parent')
+    if parent is None:
+        return
+    try:
+        parent.clean()
+    except Exception:
+        return
+    _build_preset_detail(parent)
+
+
+def preset_detail_panel(parent, shell=None):
+    _s['shell'] = shell
+    _pre['detail_parent'] = parent
+    _build_preset_detail(parent)
+
+
+def _build_preset_detail(parent):
+    import presets
+    w = tulip.screen_size()[0]
+    rec = presets.load(_pre.get('slug'))
+    body = dk.scroll_col(parent, w - 48, _panel_h() - 16)
+    body.set_pos(24, 8)
+    if rec is None:
+        dk.label(body, "This preset is no longer available.", color=dk.MUTED,
+                 font=dk.FONT_M)
+        return
+    dk.label(body, rec.get('name', '?'), color=dk.WHITE, font=dk.FONT_L)
+    # a short summary of what recalling will apply
+    if rec.get('type') == 'drums':
+        import drums_kit
+        summ = "Drums - kit %s" % drums_kit.kit_name(rec.get('kit', 384))
+    else:
+        summ = "%s - patch %s" % (_TYPE_NAMES.get(rec.get('type', ''),
+                                                  rec.get('type', '?')),
+                                  rec.get('patch', 0))
+    dk.label(body, summ, color=dk.MUTED, font=dk.FONT_S)
+    dk.label(body, "Recall applies this sound to the current instrument "
+             "(and may change its type). Device FX are not affected.",
+             color=dk.MUTED, font=dk.FONT_S, w=w - 84)
+
+    rb = dk.button(body, "Recall onto this instrument", w=lv.pct(100), h=60,
+                   bg=dk.GREEN, font=dk.FONT_M)
+    rb.add_event_cb(lambda e: (_do_recall()
+                    if e.get_code() == lv.EVENT.CLICKED else None),
+                    lv.EVENT.CLICKED, None)
+
+    # --- Rename ---
+    rcard = lv.obj(body)
+    rcard.set_width(lv.pct(100))
+    rcard.set_height(76)
+    dk._flat(rcard, radius=16, bg=dk.SURFACE)
+    rcard.remove_flag(lv.obj.FLAG.SCROLLABLE)
+    rcard.set_style_pad_all(0, 0)
+    dk.label(rcard, "Rename", color=dk.TEXT, font=dk.FONT_M).align(
+        lv.ALIGN.LEFT_MID, 20, 0)
+    rt = dk.text_field(rcard, text=rec.get('name', ''),
+                       placeholder="new name", w=250, h=44)
+    rt.group.align(lv.ALIGN.RIGHT_MID, -220, 0)
+    dk.button(rcard, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
+              cb=lambda e: dk.toggle_keyboard_for(rt.ta)).align(
+                  lv.ALIGN.RIGHT_MID, -158, 0)
+    nb = dk.button(rcard, "Rename", w=130, h=48, bg=dk.ACCENT, font=dk.FONT_S)
+    nb.align(lv.ALIGN.RIGHT_MID, -14, 0)
+    nb.add_event_cb(lambda e: (_do_rename_preset(rt.ta.get_text())
+                    if e.get_code() == lv.EVENT.CLICKED else None),
+                    lv.EVENT.CLICKED, None)
+
+    # --- Delete ---
+    def _confirm_delete(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        dk.confirm("Delete preset?",
+                   'Delete "%s"? This cannot be undone.' % rec.get('name', ''),
+                   _do_delete_preset, yes_text="Delete")
+    db = dk.button(body, "Delete preset", w=lv.pct(100), h=56, bg=dk.RED,
+                   font=dk.FONT_M)
+    db.add_event_cb(_confirm_delete, lv.EVENT.CLICKED, None)

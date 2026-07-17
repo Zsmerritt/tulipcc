@@ -3531,3 +3531,186 @@ def test_decklog_flush_triggers_rollover_end_to_end(decklog_mod):
     body = open(p).read()
     assert 'hello world this is a log line' in body
     assert decklog._state['size'] == len(body)
+
+
+# --- Phase 1: user PARAM presets (presets.py; pure + storage) ---------------
+@pytest.fixture
+def presets(tmp_path):
+    """Fresh deckcfg + presets with hardware mocked, a temp config file, and a
+    temp preset library dir. Returns (deckcfg, presets_module)."""
+    _install_hw_mocks()
+    for m in ('deckcfg', 'forwarder', 'presets'):
+        sys.modules.pop(m, None)
+    deckcfg = importlib.import_module('deckcfg')
+    deckcfg.PATH = str(tmp_path / 'deck_config.json')
+    deckcfg._state.clear()
+    # forwarder is imported by deckcfg.apply_instrument (recall); give it a
+    # clean state so rebuild_one is a no-op-safe path under the mocks.
+    forwarder = importlib.import_module('forwarder')
+    forwarder._state.update({'on': False, 'synths': {}, 'routes': {},
+                             'notes': {}, 'registered': False})
+    presets = importlib.import_module('presets')
+    presets.PRESETS_DIR = str(tmp_path / 'presets')
+    return deckcfg, presets
+
+
+def test_slug_is_filesystem_safe():
+    import presets as P
+    assert P.slug('Warm Bass') == 'warm-bass'
+    assert P.slug('  Deep   Pad!! ') == 'deep-pad'
+    assert P.slug('A/B\\C:D') == 'a-b-c-d'
+    assert P.slug('***') == 'preset'          # all-punctuation -> fallback
+    assert P.slug('') == 'preset'
+    assert len(P.slug('x' * 200)) <= 48
+
+
+def test_capture_grabs_exactly_the_reset_patch_set_plus_identity(presets):
+    deckcfg, P = presets
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'dx7')
+    deckcfg.set_instrument(iid, 'patch', 130)
+    deckcfg.set_instrument(iid, 'params', {'filter_freq': 800})
+    deckcfg.set_instrument(iid, 'reverb_send', 0.4)
+    instr = deckcfg.get_instrument(iid)
+    rec = P.capture(instr, name='My Sound')
+    assert rec['v'] == P.RECORD_VERSION
+    assert rec['name'] == 'My Sound'
+    assert rec['type'] == 'dx7' and rec['patch'] == 130
+    assert rec['params'] == {'filter_freq': 800}
+    assert rec['reverb_send'] == 0.4
+    assert rec['hits'] == {} and rec['hit_swaps'] == {}
+    assert 'created' in rec
+    # a non-drums instrument captures NO kit (it is meaningless there)
+    assert 'kit' not in rec
+    # capture must not alias the instrument's mutable dicts
+    rec['params']['filter_freq'] = 1
+    assert deckcfg.get_instrument(iid)['params']['filter_freq'] == 800
+
+
+def test_capture_includes_kit_and_pad_edits_for_drums(presets):
+    deckcfg, P = presets
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'drums')
+    deckcfg.set_instrument(iid, 'kit', 'synth:house')
+    deckcfg.set_instrument(iid, 'hits', {'38': {'tune': 2}})
+    deckcfg.set_instrument(iid, 'hit_swaps', {'36': 'corpus:kick2'})
+    rec = P.capture(deckcfg.get_instrument(iid), name='Kit A')
+    assert rec['kit'] == 'synth:house'
+    assert rec['hits'] == {'38': {'tune': 2}}
+    assert rec['hit_swaps'] == {'36': 'corpus:kick2'}
+
+
+def test_save_and_load_round_trip_through_json(presets):
+    deckcfg, P = presets
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'piano')
+    deckcfg.set_instrument(iid, 'patch', 5)
+    deckcfg.set_instrument(iid, 'params', {'pan': 0.25, 'resonance': 1.5})
+    deckcfg.set_instrument(iid, 'reverb_send', 0.3)
+    rec = P.save('Grand', deckcfg.get_instrument(iid))
+    assert rec['slug'] == 'grand'
+    # it really hit disk as one file per preset
+    import os
+    assert os.path.exists(str(P._path('grand')))
+    got = P.load('grand')
+    assert got is not None
+    assert got['name'] == 'Grand' and got['type'] == 'piano'
+    assert got['patch'] == 5
+    assert got['params'] == {'pan': 0.25, 'resonance': 1.5}
+    assert got['reverb_send'] == 0.3
+    assert got['slug'] == 'grand'
+    # list_presets surfaces it
+    names = [p['name'] for p in P.list_presets()]
+    assert names == ['Grand']
+
+
+def test_fx_is_excluded_from_presets(presets):
+    deckcfg, P = presets
+    iid = deckcfg.instruments()[0]['id']
+    # device FX lives on the shared bus, NOT the instrument -- a preset must
+    # never carry it (restoring it would stomp other instruments on the device)
+    deckcfg.set_device_fx('internal', 'reverb', 'level', 0.9)
+    rec = P.save('NoFX', deckcfg.get_instrument(iid))
+    assert 'fx' not in rec
+    assert 'reverb' not in rec            # only the per-instrument reverb_send
+
+
+def test_collision_overwrite_vs_auto_suffix(presets):
+    deckcfg, P = presets
+    iid = deckcfg.instruments()[0]['id']
+    instr = deckcfg.get_instrument(iid)
+    P.save('Bass', instr)
+    assert P.exists('Bass') is True
+    assert P.exists('bass') is True       # collision is by slug, case-folded
+    assert P.exists('Lead') is False
+    # auto-suffix picks the next free name (reusing deckcfg._unique_name)
+    assert P.unique_name('Bass') == 'Bass 2'
+    P.save(P.unique_name('Bass'), instr)
+    assert P.exists('Bass 2') is True
+    assert sorted(p['name'] for p in P.list_presets()) == ['Bass', 'Bass 2']
+    # overwrite: saving the SAME name again does not multiply files
+    P.save('Bass', instr)
+    assert len(P.list_presets()) == 2
+
+
+def test_recall_applies_every_captured_field(presets):
+    deckcfg, P = presets
+    src = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(src, 'type', 'gm')
+    deckcfg.set_instrument(src, 'patch', 42)
+    deckcfg.set_instrument(src, 'params', {'filter_freq': 1200})
+    deckcfg.set_instrument(src, 'reverb_send', 0.5)
+    rec = P.save('Organ', deckcfg.get_instrument(src))
+    # a DIFFERENT, differently-configured instrument
+    dst = deckcfg.add_instrument(device=0, channel=2)['id']
+    deckcfg.set_instrument(dst, 'type', 'juno6')
+    deckcfg.set_instrument(dst, 'patch', 0)
+    deckcfg.set_instrument(dst, 'params', {'pan': 0.1})
+    assert P.recall(dst, P.load('Organ')) is True
+    got = deckcfg.get_instrument(dst)
+    assert got['type'] == 'gm' and got['patch'] == 42
+    assert got['params'] == {'filter_freq': 1200}   # overlay REPLACED, not merged
+    assert got['reverb_send'] == 0.5
+    # recall persisted (survives a cache drop + reload)
+    deckcfg.invalidate()
+    assert deckcfg.get_instrument(dst)['patch'] == 42
+    # the source instrument was untouched
+    assert deckcfg.get_instrument(src)['patch'] == 42
+
+
+def test_recall_resets_overlay_deterministically(presets):
+    deckcfg, P = presets
+    src = deckcfg.instruments()[0]['id']
+    # a CLEAN melodic instrument (no params/hits) saved as a preset
+    rec = P.save('Clean', deckcfg.get_instrument(src))
+    dst = deckcfg.add_instrument(device='internal', channel=3)['id']
+    deckcfg.set_instrument(dst, 'params', {'pan': 0.9})
+    deckcfg.set_instrument(dst, 'reverb_send', 0.8)
+    P.recall(dst, P.load('Clean'))
+    got = deckcfg.get_instrument(dst)
+    # recalling a clean preset CLEARS the target's stray overlay (deterministic)
+    assert got['params'] == {}
+    assert got['reverb_send'] == 0.0
+
+
+def test_delete_and_rename(presets):
+    deckcfg, P = presets
+    instr = deckcfg.instruments()[0]
+    P.save('Temp', instr)
+    P.save('Keep', instr)
+    assert P.delete('temp') is True
+    assert P.exists('Temp') is False
+    assert [p['name'] for p in P.list_presets()] == ['Keep']
+    # rename moves the file to the new slug and drops the old one
+    out = P.rename('keep', 'Kept')
+    assert out['name'] == 'Kept' and out['slug'] == 'kept'
+    assert P.exists('Keep') is False and P.exists('Kept') is True
+    assert P.load('keep') is None
+
+
+def test_missing_library_dir_is_empty_not_an_error(presets):
+    deckcfg, P = presets
+    # nothing saved yet: the dir does not exist -- must read as empty, not raise
+    assert P.list_presets() == []
+    assert P.load('nope') is None
+    assert P.exists('nope') is False
