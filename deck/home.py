@@ -186,7 +186,8 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'gmbig', 'padeditor', 'synthkits',
                  # drifted again: Apps re-read ~75KB per scan and the Files
                  # delete guard let these be deleted out from under the deck
-                 'catalog', 'ticker', 'patchfx', 'fwprogress', 'flashmode',
+                 'catalog', 'ticker', 'patchfx', 'patchparams', 'fwprogress',
+                 'flashmode',
                  'flashlib', 'flash_fw', 'flash_ota', 'flash_stream',
                  'flash_pingpong', 'mem_probe')
 

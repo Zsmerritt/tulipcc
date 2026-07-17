@@ -53,11 +53,26 @@ uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
 // tsequencer.h (a plain extern here would collide with the macro).
 #include "tsequencer.h"
 
-// volatile: SPSC ring shared between the AMY MIDI task (writer) and the
-// MP task (reader) on different cores -- the E-11 discipline promised the
-// compiler was never told about (review F-6)
+// volatile: ring shared between the writer task(s) and the MP task (reader)
+// on different cores -- the E-11 discipline promised the compiler was never
+// told about (review F-6). Push/pop protocols live in midi_in_ring.h (shared
+// with the host harness in tests/midi_input/ -- run it if you touch them).
+// Default build: SPSC int16_t indices, sole writer = the AMY MIDI task
+// (USB + midi_local funnel through amy_midi_inject). AMY_MIDI_MPSC build:
+// uint16_t monotonic counters, multi-writer CAS claim.
+#include "midi_in_ring.h"
+#ifdef AMY_MIDI_MPSC
+volatile uint16_t midi_queue_head = 0;
+volatile uint16_t midi_queue_tail = 0;
+#else
 volatile int16_t midi_queue_head = 0;
 volatile int16_t midi_queue_tail = 0;
+#endif
+// Messages the ring refused because it was full (drop-newest). The silent
+// twin of amy_midi_inject_drops -- exposed with it via tulip.midi_in_drops()
+// so a stalled Python drain shows up as numbers, not as mystery-missing
+// notes. Logged on the same power-of-two schedule.
+volatile uint32_t tulip_midi_ring_drops = 0;
 
 // ---- C-side MIDI channel router (review O-2 / boundary sketch 1) ----
 // Python paid ~150-400us + ~3 heap allocs PER MESSAGE for routing that is
@@ -229,27 +244,25 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
                 return;   // fully handled in C: no queue, no scheduler, no GC
             }
         }
-        // SPSC discipline (E-11): only this writer moves TAIL; only the
-        // Python reader moves HEAD. The old wrap handling advanced head
-        // from the writer -- mutating the reader's cursor unsynchronized,
-        // so a flood could tear/duplicate the slot being read. Drop-NEWEST
-        // on full instead: the writer never touches head.
-        int16_t next = (midi_queue_tail + 1) % MIDI_QUEUE_DEPTH;
-        if (next != midi_queue_head) {
-            // clamp stored length to what was actually copied (C-8: a
-            // >255-byte blob stored len%256 while only 3 bytes landed)
-            uint8_t n = (len > MAX_MIDI_BYTES_PER_MESSAGE)
-                        ? MAX_MIDI_BYTES_PER_MESSAGE : (uint8_t)len;
-            for (uint8_t i = 0; i < n; i++) {
-                last_midi[midi_queue_tail][i] = data[i];
-            }
-            last_midi_len[midi_queue_tail] = n;
-            // RELEASE-publish (review FW-10): the payload stores must be
-            // visible before the tail moves; volatile alone doesn't order
-            // the non-volatile payload writes against it under -O3/LTO.
-            __atomic_store_n(&midi_queue_tail, next, __ATOMIC_RELEASE);
+        // Ring push -- the discipline (SPSC drop-newest by default, MPSC
+        // claim/publish under AMY_MIDI_MPSC) lives in midi_in_ring.h with
+        // its spec; the harness in tests/midi_input/ tests exactly this
+        // code. A refused push is drop-newest by contract: COUNT it and say
+        // so (first drop + every power of two), because "the ring was full"
+        // used to be indistinguishable from "the note never arrived".
+#ifdef AMY_MIDI_MPSC
+        int pushed = midi_in_ring_push_mpsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+#else
+        int pushed = midi_in_ring_push_spsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+#endif
+        if (!pushed) {
+            uint32_t n = ++tulip_midi_ring_drops;
+            if ((n & (n - 1)) == 0)
+                fprintf(stderr, "tulip midi ring full -- %u messages dropped so far "
+                        "(is Python draining midi_in?)\n", (unsigned)n);
         }
-        // else: queue full, drop this (newest) message
 
         // Tell Python -- COALESCED: one outstanding scheduler entry serves
         // the whole backlog (the drain loops until midi_in empties, which
@@ -265,7 +278,20 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
 
 void midi_local(uint8_t * bytes, uint16_t len) {
 #ifndef AMY_IS_EXTERNAL
+#ifdef ESP_PLATFORM
+    // Runs on the MicroPython task (core 1). The stream parser and everything
+    // under it belong to the AMY MIDI task alone (per-stream parser state,
+    // MPE globals, the SPSC ring's single-writer discipline) -- hand the
+    // bytes over instead of parsing here. Costs one queue hop (<=~1ms, the
+    // MIDI task's poll period); a dropped hand-off is counted and logged
+    // (tulip.midi_in_drops()).
+    amy_midi_inject(AMY_MIDI_SOURCE_LOCAL, bytes, len);
+#else
+    // Desktop builds: no funnel task exists; keep the direct parse. (The
+    // macOS CoreMIDI-callback-vs-MP-thread overlap predates this code and is
+    // unchanged by it.)
     convert_midi_bytes_to_messages(bytes, len, 0);
+#endif
 #endif
 #ifdef __EMSCRIPTEN__
     for(uint16_t i=0;i<len;i++) {
@@ -522,11 +548,16 @@ static void mount_gamma9001_drums(void) {
 
 #if defined(GM_FONTS) && defined(ESP_PLATFORM)
 // GM SoundFont banks: the `fonts` partition holds the GeneralUser bank at 0
-// and the big multi-font bank at 0x300000 (fs_create.py assembles them),
+// and the big multi-font bank at 0x4B0000 (fs_create.py assembles them),
 // mapped separately (a single 12.5MB map needs contiguous vaddr the S3
 // doesn't have). Whatever doesn't fit the 16MB dynamic mmap pool falls back
 // to a PSRAM copy inside map_or_load_partition.
-#define GM_BIG_BYTE_OFFSET 0x300000
+// Must match GM_BIG_OFFSET in tulip/fs_create.py and the `fonts` partition
+// geometry in boards/N32R8/tulip-partitions-32MB.csv. The GeneralUser bank
+// grew past the old 0x300000 when its capped presets were rebaked with their
+// real length + loops (tools/gm/README.md); a stale value here reads the big
+// bank from the wrong offset and plays garbage.
+#define GM_BIG_BYTE_OFFSET 0x4B0000
 static const void *map_or_load_partition(const esp_partition_t *part,
                                      uint32_t off, uint32_t size,
                                      const char *what) {

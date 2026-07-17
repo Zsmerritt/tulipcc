@@ -104,14 +104,16 @@ if drums_partition is not None:
 # GM SoundFont banks: assemble the checked-in blobs from the amy submodule
 # into the `fonts` partition image (AMY mmaps it at boot; see amy_connector.c).
 # Layout must match the amy maps: GeneralUser bank (pcm_gm.h) at 0, the big
-# multi-font bank (pcm_gm_big.h) at 0x300000.
+# multi-font bank (pcm_gm_big.h) at 0x4B0000. Keep GM_BIG_OFFSET below in
+# lockstep with GM_BIG_BYTE_OFFSET in tulip/shared/amy_connector.c and the
+# `fonts` partition in boards/N32R8/tulip-partitions-32MB.csv.
 fonts_partition = None
 try:
     fonts_partition = partition_table.find_by_name('fonts')
 except Exception:
     pass
 if fonts_partition is not None:
-    GM_BIG_OFFSET = 0x300000
+    GM_BIG_OFFSET = 0x4B0000
     small = open('../../amy/sounds/gm/fonts.bin', 'rb').read()
     if len(small) > GM_BIG_OFFSET:
         raise SystemExit("fonts.bin (%d bytes) overruns the big bank at 0x%x"

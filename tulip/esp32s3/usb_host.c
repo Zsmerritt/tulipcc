@@ -260,7 +260,14 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
                 //            p[i], p[i + 1], p[i + 2], p[i + 3]);
                 // Strip the first byte which is the USB-MIDI virtual wire ID,
                 // rest is MIDI message (at least for 3-byte messages).
-                if(tulip_ready) convert_midi_bytes_to_messages(p + i + 1, 3,1);
+                // This callback runs on the USB task (core 1). It must NOT
+                // call the parser directly: the parser's per-call state and
+                // everything downstream (AMY event dispatch, the last_midi
+                // ring's single-writer discipline) belong to the AMY MIDI
+                // task. amy_midi_inject hands the packet across (funnel
+                // build) or parses in this task's own stream context (MPSC
+                // build); drops are counted, never silent.
+                if(tulip_ready) amy_midi_inject(AMY_MIDI_SOURCE_USB_HOST, p + i + 1, 3);
             }
             esp_err_t err = usb_host_transfer_submit(transfer);
             if (err != ESP_OK) {

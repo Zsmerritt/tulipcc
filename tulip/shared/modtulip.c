@@ -402,14 +402,29 @@ STATIC mp_obj_t tulip_seq_ticks(size_t n_args, const mp_obj_t *args) {
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_seq_ticks_obj, 0, 0, tulip_seq_ticks);
 
-extern uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];
-extern uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
-
-extern volatile int16_t midi_queue_head;
-extern volatile int16_t midi_queue_tail;
+// last_midi/last_midi_len and midi_queue_head/midi_queue_tail (with their
+// build-dependent types) are declared in amy_midi.h -- no local externs, so
+// a type change there cannot silently disagree here.
+#include "midi_in_ring.h"
 
 STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
 
+#ifdef AMY_MIDI_MPSC
+    // MPSC build: consume via the pop protocol in midi_in_ring.h (copy, then
+    // release the slot via len=0, then advance head). Same clear-then-RECHECK
+    // dance for the coalesced scheduler flag as below (review F-6).
+    uint8_t tmp[MAX_MIDI_BYTES_PER_MESSAGE];
+    uint8_t n;
+    if (!midi_in_ring_pop_mpsc(last_midi, last_midi_len,
+            &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, tmp, &n)) {
+        tulip_midi_py_pending = 0;
+        if (!midi_in_ring_pop_mpsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, tmp, &n)) {
+            return mp_const_none;
+        }
+    }
+    return mp_obj_new_bytes(tmp, n);
+#else
     // ACQUIRE-load the tail to pair the writer's RELEASE store (review C2):
     // amy_connector.c publishes tail with __ATOMIC_RELEASE after writing the
     // payload; a plain volatile read here only half-builds the pair, letting
@@ -439,9 +454,33 @@ STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
     for (uint8_t i = 0; i < n; i++) tmp[i] = last_midi[prev_head][i];
     midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
     return mp_obj_new_bytes(tmp, n);
+#endif
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_obj, 0, 0, tulip_midi_in);
+
+// tulip.midi_in_drops() -> (inject_drops, ring_drops)
+// Loss accounting for the MIDI input path -- both are cumulative counts and
+// both also log to the console on a power-of-two schedule:
+//   inject_drops: messages the cross-task funnel refused (queue full or
+//                 missing) before they ever reached the parser -- see
+//                 amy_midi_inject() in amy/src/amy_midi.c.
+//   ring_drops:   parsed messages the last_midi ring refused because Python
+//                 wasn't draining tulip.midi_in() fast enough.
+// Nonzero numbers here are the difference between "debuggable" and "the
+// note just never happened".
+extern volatile uint32_t tulip_midi_ring_drops;
+STATIC mp_obj_t tulip_midi_in_drops(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t items[2];
+#ifdef ESP_PLATFORM
+    items[0] = mp_obj_new_int_from_uint(amy_midi_inject_drops);
+#else
+    items[0] = mp_obj_new_int(0);  // no funnel off-device
+#endif
+    items[1] = mp_obj_new_int_from_uint(tulip_midi_ring_drops);
+    return mp_obj_new_tuple(2, items);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_drops_obj, 0, 0, tulip_midi_in_drops);
 
 extern uint16_t sysex_len;
 STATIC mp_obj_t tulip_sysex_in(size_t n_args, const mp_obj_t *args) {
@@ -2088,6 +2127,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_routes), MP_ROM_PTR(&tulip_midi_routes_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_activity), MP_ROM_PTR(&tulip_midi_activity_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_in_drops), MP_ROM_PTR(&tulip_midi_in_drops_obj) },
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
 #endif

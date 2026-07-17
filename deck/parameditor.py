@@ -31,20 +31,20 @@ class ParamEditor:
         # In the tabbed editor each tab is one group, so the in-list group header
         # is redundant -- callers set this False.
         self.group_headers = group_headers
-        # The envelope this instrument's PATCH actually bakes, so the ADSR
-        # sliders start from what is SOUNDING rather than from schema defaults
-        # the patch never had (FxEditor seeds from device_patch_fx for exactly
-        # the same reason). Read once at build time: it is a pure function of
-        # the patch number and cannot change while the panel is open.
+        # What this instrument's PATCH actually bakes, so every control starts
+        # from what is SOUNDING rather than from a schema default the patch
+        # never had (FxEditor seeds from device_patch_fx for exactly the same
+        # reason). Read once at build time: it is a pure function of the patch
+        # number and cannot change while the panel is open.
         #
         # Seeding is DISPLAY-ONLY. It is never written back to deckcfg, so an
         # untouched param stays unstored and therefore unsent -- only _set(),
         # which nothing but a real slider/dropdown event calls, ever stores.
-        self._penv = self._load_patch_env()
+        self._ppv = self._load_patch_params()
 
-    def _load_patch_env(self):
+    def _load_patch_params(self):
         try:
-            return amyparams.patch_env(deckcfg.get_instrument(self.iid))
+            return amyparams.patch_params(deckcfg.get_instrument(self.iid))
         except Exception:
             return {}
 
@@ -89,7 +89,7 @@ class ParamEditor:
 
     def _get_source(self, d):
         """(value, 'user'|'patch'|'default') for a control."""
-        return amyparams.param_value_source(self._stored_params(), self._penv,
+        return amyparams.param_value_source(self._stored_params(), self._ppv,
                                             d['name'], d['default'])
 
     def _get(self, d):
@@ -115,13 +115,15 @@ class ParamEditor:
         fraction as a percentage ("0.50" read as a broken slider; "50 %"
         doesn't -- UX-REVIEW-6 L7).
 
-        An ENVELOPE param we could not read off the patch (source 'default')
-        reads "patch default" instead of a number. `value` is still a real
-        number there -- the schema fallback -- but it is OUR guess, not the
-        patch's envelope, and printing it is what told a user their GM patch
+        A param whose number we would be INVENTING reads "patch default"
+        instead. `value` is still a real number there -- the schema fallback --
+        but it is OUR guess, and printing it is what told a user their GM patch
         had "attack 0, decay 0, release 0" when it actually had 5/60000/220.
+        amyparams.is_fabricated() decides, per param and against AMY's own
+        reset defaults; it is deliberately narrow (ten params), because a
+        marker on all twenty-five would train the eye to skip it.
         """
-        if source == 'default' and amyparams.is_env_param(d['name']):
+        if amyparams.is_fabricated(d, source):
             return 'patch default'
         scale = d.get('scale', 1)
         unit = d.get('unit', '')
@@ -139,7 +141,6 @@ class ParamEditor:
         # A card showing the param name + a LIVE value readout on top, above a
         # full-width fat slider (the MPE screen's pattern, generalized). The
         # audit flagged the old bare 14px slider with no number as "blind".
-        scale = d.get('scale', 1)
         cur, src = self._get_source(d)
         cell = lv.obj(body)
         cell.set_width(lv.pct(100))
@@ -153,16 +154,24 @@ class ParamEditor:
                        color=(dk.TEAL if src != 'default' else dk.MUTED),
                        font=dk.FONT_MONO, w=150, align=lv.TEXT_ALIGN.RIGHT)
         val.align(lv.ALIGN.TOP_RIGHT, -20, 12)
-        # The knob is CLAMPED to the track by LVGL; the readout above is not.
-        # A patch value past the range (a GM patch's 60000 ms decay on a
-        # 0..2000 slider) therefore shows its true number with the knob pinned
-        # at the stop next to a "2000 ms" max microlabel -- visibly "at or
-        # beyond max", not a fake 2000. Nothing writes the clamp back: only a
-        # real touch event stores a value.
-        s = dk.slider(cell, int(round(cur * scale)), int(round(d['min'] * scale)),
-                      int(round(d['max'] * scale)), w=lv.pct(84),
-                      cb=self._slider_cb(d, scale, val), color=dk.TEAL, h=26,
-                      on_release=self._slider_release_cb(d, scale))
+        # POSITIONS, not values: amyparams owns the position<->value mapping so
+        # the log-curve params (the six envelope times, cutoff) can spread a
+        # 0..150000 ms / 16..100000 Hz span over one track without giving up
+        # 1 ms / 1 Hz resolution down where the music is. Linear params are the
+        # identity case -- position = value*scale rebased to 0 -- and behave
+        # exactly as before.
+        #
+        # curve_pos() is EXACT for every value the curve itself can produce,
+        # i.e. everything this slider can store, so a re-render always puts the
+        # knob back where the user left it. A value the curve cannot produce (a
+        # patch's baked 60000 ms, a setting saved by the old linear slider)
+        # shows the nearest position while the readout above keeps printing the
+        # TRUE number -- and nothing writes the approximation back, because
+        # seeding only ever reads. Only a real touch event stores a value.
+        s = dk.slider(cell, amyparams.curve_pos(d, cur), 0,
+                      amyparams.curve_steps(d), w=lv.pct(84),
+                      cb=self._slider_cb(d, val), color=dk.TEAL, h=26,
+                      on_release=self._slider_release_cb(d))
         s.align(lv.ALIGN.BOTTOM_MID, 0, -24)
         # min/max microlabels at the track ends: a knob hard-left on a nonzero
         # minimum (duty 50 %) is indistinguishable from a broken slider without
@@ -174,11 +183,10 @@ class ParamEditor:
                       font=dk.FONT_S)
         hi.align(lv.ALIGN.BOTTOM_RIGHT, -20, -4)
 
-    def _slider_cb(self, d, scale, val_label=None):
+    def _slider_cb(self, d, val_label=None):
         # Per-tick during a drag: cache-only value update + live audition.
         def cb(e):
-            raw = e.get_target_obj().get_value()
-            v = (raw / scale) if scale != 1 else raw
+            v = amyparams.curve_value(d, e.get_target_obj().get_value())
             self._set(d, v, flush=False)
             if val_label is not None:
                 try:
@@ -187,12 +195,10 @@ class ParamEditor:
                     pass
         return cb
 
-    def _slider_release_cb(self, d, scale):
+    def _slider_release_cb(self, d):
         # Finger lifted: commit the final value to flash (one write per drag).
         def cb(e):
-            raw = e.get_target_obj().get_value()
-            v = (raw / scale) if scale != 1 else raw
-            self._set(d, v)
+            self._set(d, amyparams.curve_value(d, e.get_target_obj().get_value()))
         return cb
 
     def _dropdown(self, body, d):
@@ -251,7 +257,8 @@ class FxEditor(ParamEditor):
         # FX values are always CONCRETE (schema default < patch < user), so
         # they never take the "patch default" unknown path -- fx_value already
         # layers the patch's own FX in. Reported as 'user' to keep the plain
-        # numeric readout.
+        # numeric readout (fx_defs also marks them TRUTH_DECK, so the marker
+        # could not fire even if a future caller reported 'default' here).
         return (amyparams.fx_value(deckcfg.device_fx(self.device), self._pfx,
                                    d['bus'], d['name']), 'user')
 

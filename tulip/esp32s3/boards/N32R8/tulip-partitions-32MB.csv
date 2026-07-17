@@ -8,9 +8,15 @@ phy_init, data, phy,     0xf000,   0x1000,
 ota_0,    app,  ota_0,   0x10000,  0x390000,
 ota_1,    app,  ota_1,   0x3a0000, 0x390000,
 system,   data, fat,     0x730000, 0x300000,
-vfs,      data, fat,     0xa30000, 0x5b0000,
+vfs,      data, fat,     0xa30000, 0x200000,
 # GM SoundFont banks (raw int16 PCM, mmapped by AMY): GeneralUser bank at 0,
-# big multi-font bank at 0x300000 (see amy pcm_gm.h / pcm_gm_big.h)
-fonts,    data, undefined, 0xfe0000, 0xc80000,
+# big multi-font bank at 0x4B0000 (see amy pcm_gm.h / pcm_gm_big.h).
+# The GeneralUser bank outgrew its old 0x300000 slice when the truncated
+# presets were rebaked with their real length + sustain loops (3.62MB; see
+# tools/gm/README.md), so `fonts` grew into `vfs`: /user is config-only now
+# and samples live on the SD card. Note this only buys STORAGE, not mmap
+# vaddr -- the three banks need 258 of the S3's 256 64KB pages, so one bank
+# always falls back to a PSRAM copy (see map_or_load_partition).
+fonts,    data, undefined, 0xc30000, 0x1030000,
 # Gamma9001 drum banks (raw int16 PCM, mmapped by AMY; see amy pcm_gamma9001.h)
 drums,    data, undefined, 0x1c60000, 0x3a0000,

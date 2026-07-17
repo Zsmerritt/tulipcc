@@ -1,0 +1,5 @@
+harness
+stress
+stress_tsan
+*.exe
+*.o

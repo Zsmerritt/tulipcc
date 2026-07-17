@@ -961,19 +961,31 @@ def test_patch_env_known_for_gm_unknown_for_patch_number_engines():
     assert penv['amp']['decay'] == 60000        # not the schema's 100 ms
     assert penv['amp']['sustain'] == 0.85       # not the schema's 1.0
     assert penv['amp']['release'] == 220        # not the schema's 100 ms
-    # Program 0 (Grand Piano) is a ONE-SHOT preset: a different real recipe,
-    # and the editor must show that one instead -- not one recipe for all GM.
-    assert gm.PRESET_LOOPED[gm.PROGRAM_PRESET[0]] == 0
-    assert ap.patch_env({'type': 'gm', 'patch': 0})['amp'] == {
+    # A ONE-SHOT preset carries a different real recipe, and the editor must
+    # show THAT one -- not one recipe for all GM. Program 13 (Xylophone) is the
+    # example on purpose: a struck bar physically cannot sustain, so it stays a
+    # one-shot across bank rebakes. This assertion used to name program 0
+    # (Grand Piano) and broke the day the bank was rebaked to give the piano
+    # back its real 1.02s sustain loop -- the test was right, its example rotted.
+    assert gm.PRESET_LOOPED[gm.PROGRAM_PRESET[13]] == 0
+    assert ap.patch_env({'type': 'gm', 'patch': 13})['amp'] == {
         'attack': 0, 'decay': 30000, 'sustain': 1, 'release': 4000}
     # gm2 reads the same recipe off the emu4 font
     assert ap.patch_env({'type': 'gm2', 'patch': 0})['amp']['decay'] == 60000
     # GM patch strings carry NO bp1 -> filter envelope stays unknown, not made up
     assert 'filter' not in penv
     # (b) juno6/dx7/piano patches live in AMY's patches.h and reach the device
-    # as a NUMBER -- unknown, and honestly so.
-    for t in ('juno6', 'dx7', 'piano'):
-        assert ap.patch_env({'type': t, 'patch': 11}) == {}
+    # as a NUMBER, so the deck cannot read them AT RUNTIME -- but patches.h is
+    # in the tree, so they were never unknowable, only unavailable.
+    # tools/gen_patchparams.py distils them into patchparams.py at build time
+    # (exactly what patchfx.py already does for a patch's FX), so the juno
+    # bank's real envelopes now read back like GM's.
+    assert ap.patch_env({'type': 'juno6', 'patch': 11})['amp'] == {
+        'attack': 62, 'decay': 142057, 'sustain': 1, 'release': 22}
+    # the DX7 bank stays honestly unknown: its osc-0 bp0 is a 10-field,
+    # 5-segment envelope that four ADSR sliders cannot represent, so parse_bp
+    # refuses it rather than mangling it into a shape it is not
+    assert ap.patch_env({'type': 'dx7', 'patch': 128}) == {}
     assert ap.patch_env(None) == {}
     assert ap.patch_env({}) == {}
     # a gm2 program the font does not cover raises KeyError internally -> {}
@@ -982,21 +994,24 @@ def test_patch_env_known_for_gm_unknown_for_patch_number_engines():
 
 def test_param_value_layers_user_over_patch_over_default():
     import amyparams as ap
-    penv = ap.patch_env({'type': 'gm', 'patch': 2})
+    ppv = ap.patch_params({'type': 'gm', 'patch': 2})
     # untouched: the editor shows the PATCH's value, flagged as such
-    assert ap.param_value_source({}, penv, 'amp_decay') == (60000, 'patch')
-    assert ap.param_value_source({}, penv, 'amp_sustain') == (0.85, 'patch')
+    assert ap.param_value_source({}, ppv, 'amp_decay') == (60000, 'patch')
+    assert ap.param_value_source({}, ppv, 'amp_sustain') == (0.85, 'patch')
     # a user override wins
-    assert ap.param_value_source({'amp_decay': 250}, penv,
+    assert ap.param_value_source({'amp_decay': 250}, ppv,
                                  'amp_decay') == (250, 'user')
     # unknown patch envelope -> schema fallback, flagged 'default' so the UI
     # can say "patch default" instead of drawing an invented number
     v, src = ap.param_value_source({}, {}, 'amp_decay')
     assert (v, src) == (100, 'default')
     assert ap.is_env_param('amp_decay') and ap.is_env_param('filt_sustain')
-    # non-envelope params are unaffected by seeding
     assert ap.is_env_param('filter_freq') is False
-    assert ap.param_value_source({}, penv, 'filter_freq') == (1000, 'default')
+    # a GM patch bakes no filter, so cutoff falls through to the schema -- and
+    # the schema's 1000 Hz is not AMY's default either (an unpatched osc has
+    # filter_type=FILTER_NONE), so it is flagged as ours to disown
+    assert ap.param_value_source({}, ppv, 'filter_freq') == (1000, 'default')
+    assert ap.is_fabricated(ap.PARAM_BY_NAME['filter_freq'], 'default') is True
 
 
 def test_seeding_the_display_never_sends_to_amy():
@@ -1026,6 +1041,120 @@ def test_touching_one_env_slot_keeps_the_patchs_other_values():
     # the user still wins over the patch for the slot they actually set
     calls = ap.synth_send_calls({'amp_decay': 250}, penv)
     assert {'osc': ap.OSC_CTL, 'bp0': '5,1,250,0.85,220,0'} in calls
+
+
+# ---------------------------------------------------------------------------
+# The log curve. A linear 0..2000 ms decay slider could not express the 60000 ms
+# a GM patch bakes (nor the 142057 ms a juno does): the knob pinned at the stop,
+# and a tap on a pinned knob is a real touch event with nothing to guard it, so
+# it silently rewrote a 60 s decay to 2 s. These tests pin the curve's two
+# load-bearing properties: it is a bijection (so a stored value survives every
+# re-render), and it reaches the values that actually exist.
+# ---------------------------------------------------------------------------
+
+_LOG_PARAMS = ('amp_attack', 'amp_decay', 'amp_release',
+               'filt_attack', 'filt_decay', 'filt_release', 'filter_freq')
+
+
+def test_log_curve_is_exactly_the_params_with_decade_spanning_reality():
+    import amyparams as ap
+    logged = {d['name'] for d in ap.PARAMS if d.get('curve') == 'log'}
+    assert logged == set(_LOG_PARAMS)
+    # the six envelope TIMES share one range that contains every real value:
+    # juno bp0 decay reaches 142057 ms, release 23282 ms, attack 1022 ms
+    for n in _LOG_PARAMS[:6]:
+        d = ap.PARAM_BY_NAME[n]
+        assert (d['min'], d['max']) == (0, 150000), n
+        assert d['unit'] == 'ms'
+    # portamento is a time param too and is deliberately NOT logged: no patch
+    # bakes it (wire letter 'm' appears in none), so nothing can seed it past
+    # its stop, and glide time is linear to the ear
+    assert ap.PARAM_BY_NAME['portamento'].get('curve') is None
+    assert ap.PARAM_BY_NAME['portamento']['unit'] == 'ms'
+
+
+def test_log_curve_round_trips_every_storable_value_exactly():
+    import amyparams as ap
+    # THE property. Every value the control can store must map back to the
+    # position that made it, and thence to the same value -- otherwise opening
+    # the panel would quietly restate the user's setting as something else.
+    for n in _LOG_PARAMS:
+        d = ap.PARAM_BY_NAME[n]
+        steps = ap.curve_steps(d)
+        assert steps == ap.LOG_STEPS
+        seen = {}
+        for pos in range(steps + 1):
+            v = ap.curve_value(d, pos)
+            assert v not in seen, (
+                "%s: positions %d and %d both produce %r -- the curve is not "
+                "invertible, so a re-render can move a stored value" % (
+                    n, seen.get(v), pos, v))
+            seen[v] = pos
+            assert ap.curve_pos(d, v) == pos, (
+                "%s: value %r stored from position %d renders at position %d"
+                % (n, v, pos, ap.curve_pos(d, v)))
+        # strictly increasing, and the ends are exactly the advertised range
+        vals = [ap.curve_value(d, p) for p in range(steps + 1)]
+        assert vals == sorted(vals) and len(set(vals)) == len(vals)
+        assert vals[0] == d['min'] and vals[-1] == d['max']
+
+
+def test_log_curve_reaches_the_values_that_actually_exist():
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME['amp_decay']
+    # the whole point: the values a linear 0..2000 slider pinned at its stop
+    for ms in (0, 5, 25, 50, 220, 1355, 4000, 30000, 60000, 142057):
+        pos = ap.curve_pos(d, ms)
+        assert 0 <= pos <= ap.LOG_STEPS
+        # ...land somewhere real, not at the stop
+        assert pos < ap.LOG_STEPS, "%d ms still pins the knob" % ms
+    # 1 ms resolution where the music is: every whole ms from 0..228 is its own
+    # position (AMY's bp times are whole ms -- nothing finer is expressible)
+    for ms in range(0, 229):
+        assert ap.curve_value(d, ap.curve_pos(d, ms)) == ms
+    # ...and the long tail is still reachable, at <2.5% per step
+    assert ap.curve_value(d, ap.LOG_STEPS) == 150000
+    a, b = ap.curve_value(d, 400), ap.curve_value(d, 401)
+    assert 1.0 < b / a < 1.025
+    # cutoff spans the junos' real 17.5 Hz .. 84288 Hz, both inside the range
+    f = ap.PARAM_BY_NAME['filter_freq']
+    assert f['min'] <= 17.527 and f['max'] >= 84288
+    assert 0 < ap.curve_pos(f, 17.527) and ap.curve_pos(f, 84288) < ap.LOG_STEPS
+
+
+def test_log_curve_never_rewrites_a_value_it_cannot_produce():
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME['amp_decay']
+    # A patch's 60000 ms and a setting saved by the OLD linear slider (any
+    # whole ms) are not always on the curve. Rendering one must place the knob
+    # nearby WITHOUT changing the value: curve_pos only reads. This is the
+    # class of bug the whole workstream exists to kill, so it is asserted, not
+    # assumed -- the value that gets displayed and sent is the stored one.
+    for ms in (1053, 1750, 60000, 142057):
+        pos = ap.curve_pos(d, ms)
+        shown = ap.curve_value(d, pos)
+        assert abs(shown - ms) / float(ms) < 0.025      # knob within one step
+        # the STORED value is untouched: nothing here writes
+        assert ap.param_value_source({'amp_decay': ms}, {},
+                                     'amp_decay') == (ms, 'user')
+        # and it is the stored value that reaches AMY, not the knob's
+        calls = ap.synth_send_calls({'amp_decay': ms})
+        assert any(str(ms) in c.get('bp0', '') for c in calls)
+
+
+def test_linear_params_map_positions_exactly_as_before():
+    import amyparams as ap
+    # the curve helpers are the identity for every non-log param: position is
+    # value*scale rebased to 0, which is what the sliders always did
+    for name, val in (('pan', 0.25), ('resonance', 1.2), ('lfo_freq', 4),
+                      ('portamento', 250), ('amp_sustain', 0.85)):
+        d = ap.PARAM_BY_NAME[name]
+        scale = d.get('scale', 1)
+        assert ap.curve_steps(d) == int(round(d['max'] * scale)) - \
+            int(round(d['min'] * scale))
+        pos = ap.curve_pos(d, val)
+        assert pos == int(round(val * scale)) - int(round(d['min'] * scale))
+        assert abs(ap.curve_value(d, pos) - val) < 1e-9
 
 
 def test_filter_env_defaults_come_from_the_schema_not_a_second_hardcode():
@@ -1079,6 +1208,192 @@ def test_fx_bus_baseline_and_overlay():
     o = ap.fx_send_strings({'chorus': {'level': 0.2}}, juno)
     assert o == {'chorus': '0.2,,0.83,0.5'}
     assert ap.fx_send_strings({}, juno) == {}
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the same divergence, established by evidence for the OTHER params.
+# The junos' patch strings prove it beyond the envelopes -- all 128 diverge on
+# cutoff, 86 on resonance, 120 on kbd track, 108 on level -- so the editor's
+# numbers were wrong there in exactly the way they were wrong for the ADSR.
+# ---------------------------------------------------------------------------
+
+def test_patch_params_reads_what_the_juno_patch_really_bakes():
+    import amyparams as ap
+    # Juno A11 Brass Set 1: the editor used to draw the schema's cutoff
+    # 1000 Hz / resonance 0.7 / level 1.0 on a patch whose real values are
+    # these. Numbers on a knob read as authoritative; these were invented.
+    pp = ap.patch_params({'type': 'juno6', 'patch': 0})
+    assert pp['filter_freq'] == 179.93           # not 1000
+    assert pp['resonance'] == 0.93               # not 0.7
+    assert pp['filter_kbd'] == 0.677             # not 0
+    assert pp['level'] == 0.85                   # not 1.0
+    assert pp['lfo_freq'] == 0.945               # not 4
+    assert pp['amp_decay'] == 1355               # not 100
+    for name, v in pp.items():
+        assert ap.param_value_source({}, pp, name) == (v, 'patch'), name
+    # the user still wins over the patch
+    assert ap.param_value_source({'filter_freq': 800}, pp,
+                                 'filter_freq') == (800, 'user')
+
+
+def test_patch_params_are_a_pure_view_of_the_patch_string():
+    import amyparams as ap
+    # The generated table and the live GM path are ONE parser, so the table
+    # cannot drift into saying something the patch string does not.
+    s = "v0w20F179.93,0.677,,5.024,0,0R0.93a0.85,,1,1,0A30,1,1355,0.354,232,0Z"
+    pp = ap.patch_params_from_string(s)
+    assert pp['filter_freq'] == 179.93
+    assert pp['filter_kbd'] == 0.677       # coef slot 1 (COEF_NOTE)
+    assert pp['filter_env'] == 0           # coef slot 4 (COEF_EG1), really 0
+    assert pp['lfo_filter'] == 0           # coef slot 5 (COEF_MOD)
+    assert pp['resonance'] == 0.93
+    assert pp['level'] == 0.85
+    assert pp['amp_decay'] == 1355
+    # a field the patch does not carry is ABSENT, never guessed at
+    assert 'pan' not in pp and 'portamento' not in pp and 'filt_decay' not in pp
+    assert ap.patch_params_from_string('') == {}
+    assert ap.patch_params_from_string('garbage') == {}
+
+
+def test_patch_params_reads_oscs_1_to_3_only_where_the_layout_matches():
+    import amyparams as ap
+    # The deck's Osc A/Osc B/LFO are oscs 2/3/1 of the four-osc layout whose
+    # signature is a SILENT (w20) control osc -- what the juno bank uses.
+    juno = ap.patch_params({'type': 'juno6', 'patch': 0})
+    assert juno['oscA_wave'] == 1 and juno['oscB_wave'] == 3
+    assert juno['oscA_duty'] == 0.902
+    # The DX7 bank does NOT: its oscs 2..7 are FM operators. Calling operator 2
+    # "Osc A" would be a category error dressed as a fact -- and operator
+    # levels run to 2.0, which oscA_level's 0..1 range cannot even hold, so
+    # seeding it would have re-created the pinned-knob trap on a fiction.
+    dx7 = ap.patch_params({'type': 'dx7', 'patch': 128})
+    for n in ('oscA_level', 'oscA_wave', 'oscB_level', 'lfo_freq', 'lfo_wave'):
+        assert n not in dx7, n
+    # its osc-0 amp IS the control osc's, but it equals the schema default, so
+    # it carries no information and the generator drops the row entirely
+    assert dx7 == {}
+
+
+def test_the_honesty_marker_is_scoped_by_evidence_not_sprayed():
+    import amyparams as ap
+    # Exactly the params whose schema default matches NEITHER AMY's
+    # reset_osc_params() state NOR anything any patch bakes. Ten, not
+    # twenty-five: a marker on every control teaches the eye to skip it.
+    fabricated = {d['name'] for d in ap.PARAMS
+                  if ap.is_fabricated(d, 'default')}
+    assert fabricated == {
+        'filter_freq',              # AMY resets filter_type to FILTER_NONE
+        'lfo_freq',                 # AMY's logfreq default is 440 Hz, not 4
+        'amp_attack', 'amp_decay', 'amp_sustain', 'amp_release',
+        'filt_attack', 'filt_decay', 'filt_sustain', 'filt_release',
+    }
+    # These are NOT marked, because the schema default IS the truth: it is
+    # exactly what reset_osc_params() leaves in the engine when no patch
+    # speaks. Verified against amy/src/amy.c, value by value.
+    for name, val in (('level', 1.0),            # amp_coefs[COEF_CONST]=1.0
+                      ('oscA_level', 1.0), ('oscB_level', 1.0),
+                      ('pan', 0.5),              # pan_coefs[COEF_CONST]=0.5
+                      ('portamento', 0),         # portamento_alpha=0
+                      ('resonance', 0.7),        # resonance=0.7f
+                      ('oscA_duty', 0.5), ('oscB_duty', 0.5),  # duty=0.5
+                      ('oscA_freq', 440), ('oscB_freq', 440),  # logfreq 0=440Hz
+                      ('filter_kbd', 0), ('filter_env', 0),    # coefs zeroed
+                      ('lfo_pitch', 0), ('lfo_pwm', 0), ('lfo_filter', 0)):
+        d = ap.PARAM_BY_NAME[name]
+        assert d['default'] == val, name
+        assert d['truth'] == ap.TRUTH_AMY, name
+        assert ap.is_fabricated(d, 'default') is False, name
+    # deck-side constructs no patch can set: true by construction
+    for name in ('reverb_send', 'piano_quality'):
+        assert ap.PARAM_BY_NAME[name]['truth'] == ap.TRUTH_DECK
+        assert ap.is_fabricated(ap.PARAM_BY_NAME[name], 'default') is False
+    # a user or patch value is never marked, whatever its truth class
+    for src in ('user', 'patch'):
+        assert ap.is_fabricated(ap.PARAM_BY_NAME['amp_decay'], src) is False
+    # FX defs share names with PARAMS ('level'), so the marker keys on the DEF
+    assert all(d['truth'] == ap.TRUTH_DECK for d in ap.fx_defs())
+    assert not any(ap.is_fabricated(d, 'default') for d in ap.fx_defs())
+
+
+def test_pan_matches_the_pan_amy_actually_implements():
+    import amyparams as ap
+    # AMY's pan is 0..1 and CLAMPED (lgain_of_pan/rgain_of_pan floor it at 0),
+    # centre 0.5 (reset_osc_params). The slider used to run -1..1 default 0.0:
+    # its entire left half sent values AMY clamps to hard-left, and the "0.00"
+    # it printed for an untouched pan was neither centre nor reachable.
+    d = ap.PARAM_BY_NAME['pan']
+    assert (d['min'], d['max'], d['default']) == (0.0, 1.0, 0.5)
+    # an old stored value still displays and still sends ITS OWN number -- the
+    # range change must not rewrite what a user saved
+    assert ap.param_value_source({'pan': -0.3}, {}, 'pan') == (-0.3, 'user')
+    assert {'pan': -0.3} in ap.synth_send_calls({'pan': -0.3})
+
+
+def test_seeding_a_juno_display_still_sends_nothing():
+    import amyparams as ap
+    ppv = ap.patch_params({'type': 'juno6', 'patch': 11})
+    penv = ap.patch_env({'type': 'juno6', 'patch': 11})
+    assert ppv['filter_freq'] == 4678.2         # we DO know a great deal now...
+    assert penv['amp']['decay'] == 142057
+    # ...and knowing it must still send NOTHING while the user has touched
+    # nothing. Seeding is display-only; only stored params are ever sent.
+    assert ap.synth_send_calls({}, penv) == []
+    assert ap.synth_send_calls(None, penv) == []
+    # a touched attack restates bp0's siblings from the PATCH (142057 ms), not
+    # from the schema's 100 ms -- the juno bank now gets the fix GM got
+    calls = ap.synth_send_calls({'amp_attack': 10}, penv)
+    assert {'osc': ap.OSC_CTL, 'bp0': '10,1,142057,1,22,0'} in calls
+    # and a touched NON-envelope param drags nothing along: coef strings leave
+    # unset slots empty, which AMY reads as "keep the patch's value"
+    calls = ap.synth_send_calls({'filter_env': 3}, penv)
+    assert not any('bp0' in c for c in calls)
+    assert {'osc': ap.OSC_CTL, 'filter_freq': ',,,,3'} in calls
+
+
+def test_patchparams_table_is_in_sync_with_patches_h():
+    # The table is generated; a stale one is a lie with a build step in front
+    # of it. Regenerate with: python tools/gen_patchparams.py
+    import subprocess
+    root = os.path.dirname(_HERE)
+    gen = os.path.join(root, 'tools', 'gen_patchparams.py')
+    if not os.path.exists(os.path.join(root, 'amy', 'src', 'patches.h')):
+        pytest.skip('amy submodule not checked out')
+    r = subprocess.run([sys.executable, gen, '--check'], cwd=root,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_patchparams_table_covers_the_juno_bank_and_nothing_it_cannot_read():
+    import patchparams
+    import amyparams as ap
+    # every juno patch carries a real envelope + cutoff
+    for p in range(128):
+        row = patchparams.PARAMS[p]
+        assert row['filter_freq'] > 0, p
+        assert {'amp_attack', 'amp_decay', 'amp_sustain',
+                'amp_release'} <= set(row), p
+    # the divergence, quantified: this is the evidence the marker rests on
+    assert sum(1 for p in range(128)
+               if patchparams.PARAMS[p]['filter_freq'] != 1000) == 128
+    assert sum(1 for p in range(128)
+               if patchparams.PARAMS[p].get('resonance') is not None) == 86
+    # the DX7 bank is absent: nothing it bakes is both readable and news
+    assert not any(p in patchparams.PARAMS for p in range(128, 256))
+    assert patchparams.patch_params(9999) == {}
+    # every name in the table is a real param this schema can show
+    for row in patchparams.PARAMS.values():
+        for name in row:
+            assert name in ap.PARAM_BY_NAME, name
+    # and every value the table seeds is INSIDE its slider's range, so no
+    # seeded control can present a pinned knob for a stray tap to knock off
+    for p, row in patchparams.PARAMS.items():
+        for name, v in row.items():
+            d = ap.PARAM_BY_NAME[name]
+            if d['type'] != 'slider':
+                continue
+            lo = int(round(d['min'] * d.get('scale', 1)))
+            hi = int(round(d['max'] * d.get('scale', 1)))
+            assert lo <= round(v * d.get('scale', 1)) <= hi, (p, name, v)
 
 
 def test_patchfx_table():
@@ -1907,6 +2222,194 @@ def test_build_list_bails_on_freed_body():
     instrument._build_list()          # must swallow, not propagate a hard crash
     instrument._s['alive'] = False
     instrument._build_list()          # alive gate: never even calls clean()
+
+
+# ---------------------------------------------------------------------------
+# ParamEditor against a fake LVGL: the two claims that only the RENDER path can
+# make good on -- a seeded patch value lands on a real, settable position (not
+# pinned at the stop where a stray tap knocks it off), and building the panel
+# writes nothing.
+# ---------------------------------------------------------------------------
+
+class _RecSlider:
+    def __init__(self, value, vmin, vmax, cb, on_release):
+        self.value, self.vmin, self.vmax = value, vmin, vmax
+        self.cb, self.on_release = cb, on_release
+
+    def align(self, *a):
+        pass
+
+    def get_value(self):
+        return self.value
+
+    def _drag_to(self, pos):
+        """Simulate a real touch: LVGL sets the position, then fires."""
+        self.value = pos
+
+        class _E:
+            def __init__(s, obj):
+                s._o = obj
+
+            def get_target_obj(s):
+                return s._o
+        if self.cb:
+            self.cb(_E(self))
+        if self.on_release:
+            self.on_release(_E(self))
+
+
+class _RecLabel:
+    def __init__(self, text=''):
+        self.text = text
+
+    def align(self, *a):
+        pass
+
+    def set_text(self, t):
+        self.text = t
+
+
+def _import_parameditor_with_fakes(tmp_path):
+    """parameditor over a permissive LVGL fake + a real deckcfg on a temp file,
+    so the seeding path can be driven exactly as the panel drives it."""
+    _install_hw_mocks()
+    sys.modules['lvgl'] = _LvModuleAuto('lvgl')
+
+    dk = types.ModuleType('deckui')
+    for c in ('ACCENT', 'SURFACE', 'SURFACE2', 'TEXT', 'MUTED', 'TEAL', 'WHITE',
+              'BG', 'PLACEHOLDER', 'FONT_S', 'FONT_M', 'FONT_MONO'):
+        setattr(dk, c, c)
+    dk.c = lambda x: x
+    dk._labels = []
+    dk._sliders = []
+
+    def _label(parent, text='', **k):
+        lb = _RecLabel(text)
+        dk._labels.append(lb)
+        return lb
+    dk.label = _label
+
+    def _slider(parent, value, vmin, vmax, w=None, cb=None, color=None, h=None,
+                on_release=None):
+        s = _RecSlider(value, vmin, vmax, cb, on_release)
+        dk._sliders.append(s)
+        return s
+    dk.slider = _slider
+    dk._flat = lambda *a, **k: None
+    dk.row = lambda parent: parent
+    dk.stepper = lambda *a, **k: None
+    dk.switch = lambda *a, **k: None
+    dk.style_dropdown = lambda dd: None
+    sys.modules['deckui'] = dk
+
+    sys.modules.pop('deckcfg', None)
+    deckcfg = importlib.import_module('deckcfg')
+    deckcfg.PATH = str(tmp_path / 'deck_config.json')
+    deckcfg._state.clear()
+
+    for m in ('amyparams', 'parameditor'):
+        sys.modules.pop(m, None)
+    return importlib.import_module('parameditor'), dk, deckcfg
+
+
+def _slider_for(pe, dk, deckcfg, iid, name):
+    """Build just one param's control and hand back (def, slider, readout)."""
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME[name]
+    dk._labels[:] = []
+    dk._sliders[:] = []
+    # group_headers off -> the card's labels are exactly [name, value, min, max]
+    ed = pe.ParamEditor(iid, defs=[d], show_advanced=True, group_headers=False)
+    ed.build(object())
+    return d, dk._sliders[-1], dk._labels[1]
+
+
+def test_editor_seeds_a_juno_onto_a_settable_position(tmp_path):
+    pe, dk, deckcfg = _import_parameditor_with_fakes(tmp_path)
+    import amyparams as ap
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 11)      # decay 142057 ms, cutoff 4678
+
+    d, s, val = _slider_for(pe, dk, deckcfg, iid, 'amp_decay')
+    # the readout tells the truth: the patch's real 142057 ms
+    assert val.text == '142057 ms'
+    # and the knob is on a REAL position, ~70% along -- not pinned at the stop
+    # where the old linear 0..2000 slider put it, and where the tap below
+    # would have silently rewritten a 142-second decay to 2 seconds
+    assert 0 < s.value < s.vmax
+    assert (s.vmin, s.vmax) == (0, ap.LOG_STEPS)
+    # THE pinned-knob case: a stray tap that does not move the knob. It is a
+    # real touch event, so it stores -- but it now stores essentially what was
+    # already there, instead of the range's stop.
+    s._drag_to(s.value)
+    stored = deckcfg.get_instrument(iid)['params']['amp_decay']
+    assert abs(stored - 142057) / 142057.0 < 0.025
+    assert stored > 100000, "a tap on the knob dropped a 142 s decay to %r" % stored
+
+
+def test_editor_build_seeds_the_display_and_stores_nothing(tmp_path):
+    pe, dk, deckcfg = _import_parameditor_with_fakes(tmp_path)
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 0)
+
+    ed = pe.ParamEditor(iid, show_advanced=True)
+    ed.build(object())
+    # Building the whole panel reads a great deal off the patch and writes NONE
+    # of it. An untouched param stays unstored, so it stays unsent -- the
+    # invariant the seeding path lives or dies by.
+    assert not (deckcfg.get_instrument(iid).get('params') or {})
+    import amyparams as ap
+    assert ap.synth_send_calls(deckcfg.get_instrument(iid).get('params'),
+                               ap.patch_env(deckcfg.get_instrument(iid))) == []
+
+
+def test_editor_rerender_never_moves_a_stored_value(tmp_path):
+    pe, dk, deckcfg = _import_parameditor_with_fakes(tmp_path)
+    iid = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 0)
+
+    # every value the slider can produce must survive an open/close/open cycle
+    d, s, _ = _slider_for(pe, dk, deckcfg, iid, 'amp_decay')
+    for pos in (0, 1, 37, 228, 300, 462, 500):
+        s._drag_to(pos)
+        first = deckcfg.get_instrument(iid)['params']['amp_decay']
+        for _ in range(3):                       # re-open the panel repeatedly
+            d2, s2, val = _slider_for(pe, dk, deckcfg, iid, 'amp_decay')
+            assert s2.value == pos, "re-render moved the knob off %d" % pos
+            assert deckcfg.get_instrument(iid)['params']['amp_decay'] == first
+            assert val.text == '%d ms' % first   # readout is real ms, not units
+
+
+def test_editor_marks_only_what_it_cannot_know(tmp_path):
+    pe, dk, deckcfg = _import_parameditor_with_fakes(tmp_path)
+    iid = deckcfg.instruments()[0]['id']
+    # a DX7: its 5-segment EG is unreadable and it bakes no filter at all
+    deckcfg.set_instrument(iid, 'type', 'dx7')
+    deckcfg.set_instrument(iid, 'patch', 128)
+    for name in ('amp_decay', 'filter_freq', 'lfo_freq'):
+        _, _, val = _slider_for(pe, dk, deckcfg, iid, name)
+        assert val.text == 'patch default', name
+    # ...but params AMY's own defaults settle keep printing their real number
+    for name, want in (('resonance', '0.7'), ('pan', '0.50'),
+                       ('filter_kbd', '0.00')):
+        _, _, val = _slider_for(pe, dk, deckcfg, iid, name)
+        assert val.text == want, (name, val.text)
+
+    # the same juno controls are all KNOWN, so nothing is marked -- Juno A11
+    # really is 1355 ms / 180 Hz / 0.9 Hz / 0.9, and never the 100 ms /
+    # 1000 Hz / 4 Hz / 0.7 the editor used to draw over it.
+    # (The readouts round to each control's own grid -- whole Hz for cutoff,
+    # tenths for the scale-10 params -- which is the same grid a touch stores
+    # onto, so what is shown and what would be saved agree.)
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 0)
+    for name, want in (('amp_decay', '1355 ms'), ('filter_freq', '180 Hz'),
+                       ('lfo_freq', '0.9 Hz'), ('resonance', '0.9')):
+        _, _, val = _slider_for(pe, dk, deckcfg, iid, name)
+        assert val.text == want, (name, val.text)
 
 
 # --- soft keyboard: styling must not plant a NULL LVGL style transition -----
