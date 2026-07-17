@@ -2979,3 +2979,228 @@ def test_mpe_zone_layered_partner_is_warned(deck):
             sys.modules.pop('decklog', None)
         else:
             sys.modules['decklog'] = prev
+
+
+# --- update engine: manifest-driven /user apply (deck/UPGRADE.md Phase 1) ---
+#
+# The engine is pure stdlib (no tulip/lvgl/deckcfg), so these run straight on
+# CPython. They pin the load-bearing guarantees: the format guard, sha256
+# verification (a corrupt file is NEVER written), verify-all-before-apply (one
+# bad file leaves /user untouched), the make_update_bundle -> apply round-trip,
+# and that /var is never written.
+
+import json as _json
+import hashlib as _hashlib
+
+_TOOLS = os.path.join(os.path.dirname(_HERE), 'tools')
+if _TOOLS not in sys.path:
+    sys.path.insert(0, _TOOLS)
+
+
+def _mk_update():
+    sys.modules.pop('update', None)
+    return importlib.import_module('update')
+
+
+def _capture_writer():
+    """A writer that records (dest, data) instead of touching flash."""
+    calls = []
+
+    def w(dest, data):
+        calls.append((dest, data))
+    return calls, w
+
+
+def _fs_writer(dest, data):
+    """A writer that actually lays bytes down (for the round-trip test)."""
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(dest, 'wb') as f:
+        f.write(data)
+
+
+def _write_bundle(bundle_dir, files, fmt=1, min_engine=1, fw='2026.07.17',
+                  corrupt=None):
+    """Write a bundle by hand. files: {relpath: bytes}. The manifest hash/size
+    always describe the ORIGINAL bytes; a relpath in `corrupt` is written to
+    disk with the same length but flipped bits, so only its sha256 mismatches
+    (isolating the hash check from the size check)."""
+    os.makedirs(bundle_dir, exist_ok=True)
+    corrupt = corrupt or set()
+    entries = []
+    for rel in sorted(files):
+        body = files[rel]
+        entries.append({'path': rel,
+                        'sha256': _hashlib.sha256(body).hexdigest(),
+                        'size': len(body), 'merge': 'deck-code'})
+        out = os.path.join(bundle_dir, rel.replace('/', os.sep))
+        parent = os.path.dirname(out)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        disk = bytes(b ^ 0xFF for b in body) if rel in corrupt else body
+        with open(out, 'wb') as f:
+            f.write(disk)
+    manifest = {'format': fmt, 'min_engine_format': min_engine,
+                'fw_version': fw, 'files': entries}
+    with open(os.path.join(bundle_dir, 'manifest.json'), 'w') as f:
+        _json.dump(manifest, f)
+    return manifest
+
+
+def test_update_format_guard_refuses_newer_bundle(tmp_path):
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'deckui.py': b'print(1)\n'}, fmt=2)  # > ENGINE_FORMAT
+    calls, w = _capture_writer()
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is False
+    assert res['applied'] == []
+    assert 'USB' in res['reason']            # clear refusal, not a half-apply
+    assert calls == []                       # nothing written
+
+
+def test_update_min_engine_guard_refuses(tmp_path):
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'deckui.py': b'x=1\n'}, min_engine=2)  # needs newer engine
+    calls, w = _capture_writer()
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is False and res['applied'] == [] and calls == []
+
+
+def test_update_verify_pass_applies_all(tmp_path):
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    files = {'deckui.py': b'A' * 5000, 'home.py': b'home\n'}
+    _write_bundle(bdir, files)
+    calls, w = _capture_writer()
+    root = str(tmp_path / 'user')
+    res = update.apply_bundle(bdir, writer=w, user_root=root)
+    assert res['ok'] is True
+    assert set(res['applied']) == {'deckui.py', 'home.py'}
+    assert res['failed'] == []
+    # writer got each file at its /user path with the correct bytes
+    got = {dest: data for dest, data in calls}
+    assert got[update._join(root, 'deckui.py')] == files['deckui.py']
+    assert got[update._join(root, 'home.py')] == files['home.py']
+
+
+def test_update_corrupted_file_is_rejected_and_not_written(tmp_path):
+    # THE load-bearing check: a file whose bytes don't match its manifest
+    # sha256 is never written.
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'deckui.py': b'good' * 100}, corrupt={'deckui.py'})
+    calls, w = _capture_writer()
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is False
+    assert res['applied'] == []
+    assert calls == []                        # corrupt file NEVER written
+    assert res['failed'] and res['failed'][0]['path'] == 'deckui.py'
+    assert 'sha256' in res['failed'][0]['reason']
+
+
+def test_update_verify_all_before_apply_one_bad_writes_nothing(tmp_path):
+    # A bundle with several good files and ONE bad one must write NOTHING --
+    # /user is never left half-updated.
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'a.py': b'aaa\n', 'b.py': b'bbb\n', 'c.py': b'ccc\n'},
+                  corrupt={'b.py'})
+    calls, w = _capture_writer()
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is False
+    assert res['applied'] == []               # not even the good files
+    assert calls == []
+    assert [f['path'] for f in res['failed']] == ['b.py']
+
+
+def test_update_never_writes_under_var(tmp_path):
+    # /var is user data (config, Wi-Fi, logs). A bundle listing it is malformed;
+    # guard anyway -- refuse the whole bundle, write nothing to /var or elsewhere.
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'deckui.py': b'ok\n',
+                         'var/deck_config.json': b'{"secret":1}\n'})
+    calls, w = _capture_writer()
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is False
+    assert calls == []                        # nothing written at all
+    assert any('var' in (f['path'] or '') for f in res['failed'])
+    # and definitely no write ever targeted a /var path
+    assert not any('/var/' in dest or dest.endswith('/var') for dest, _ in calls)
+
+
+def test_update_safe_relpath_rejects_traversal_and_absolute(tmp_path):
+    update = _mk_update()
+    for bad in ('/etc/passwd', '../escape.py', 'a/../../b.py', 'var/x', ''):
+        with pytest.raises(ValueError):
+            update._safe_relpath(bad)
+    assert update._safe_relpath('deckui.py') == 'deckui.py'
+    assert update._safe_relpath('sub/foo.py') == 'sub/foo.py'
+
+
+def test_make_update_bundle_roundtrip_reproduces_files(tmp_path):
+    # make_update_bundle -> apply_bundle reproduces the exact source files.
+    update = _mk_update()
+    sys.modules.pop('make_update_bundle', None)
+    mub = importlib.import_module('make_update_bundle')
+
+    srcdir = tmp_path / 'src'
+    srcdir.mkdir()
+    sources = {'deckui.py': b'# deckui\nprint("hi")\n',
+               'update.py': b'# engine\nx = ' + b'y' * 3000 + b'\n'}
+    for name, body in sources.items():
+        (srcdir / name).write_bytes(body)
+
+    bundle = str(tmp_path / 'bundle')
+    manifest = mub.build_bundle(
+        [str(srcdir / 'deckui.py'), str(srcdir / 'update.py')],
+        bundle, fw_version='2026.07.17', label='roundtrip test')
+
+    # manifest shape
+    assert manifest['format'] == update.ENGINE_FORMAT
+    assert manifest['fw_version'] == '2026.07.17'
+    assert all(e['merge'] == 'deck-code' for e in manifest['files'])
+
+    # apply into a fake /user and compare bytes
+    root = tmp_path / 'user'
+    res = update.apply_bundle(bundle, writer=_fs_writer, user_root=str(root))
+    assert res['ok'] is True
+    assert set(res['applied']) == set(sources)
+    for name, body in sources.items():
+        assert (root / name).read_bytes() == body
+
+
+def test_make_update_bundle_is_deterministic(tmp_path):
+    _mk_update()
+    sys.modules.pop('make_update_bundle', None)
+    mub = importlib.import_module('make_update_bundle')
+    src = tmp_path / 'f.py'
+    src.write_bytes(b'content\n')
+    b1, b2 = str(tmp_path / 'b1'), str(tmp_path / 'b2')
+    mub.build_bundle([str(src)], b1, fw_version='v1')
+    mub.build_bundle([str(src)], b2, fw_version='v1')
+    m1 = open(os.path.join(b1, 'manifest.json'), 'rb').read()
+    m2 = open(os.path.join(b2, 'manifest.json'), 'rb').read()
+    assert m1 == m2                            # byte-identical, re-runnable
+
+
+def test_update_progress_callback_reports_two_tiers(tmp_path):
+    # The engine feeds the two-tier UI: overall (byte-weighted) + per-file.
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'a.py': b'a' * 1000, 'b.py': b'b' * 3000})
+    events = []
+    update.apply_bundle(bdir, progress=lambda i: events.append(dict(i)),
+                        writer=lambda d, x: None, user_root=str(tmp_path / 'u'))
+    stages = {e['stage'] for e in events}
+    assert {'start', 'verifying', 'writing', 'done'} <= stages
+    # overall_total is byte-weighted (verify pass + write pass = 2 * 4000)
+    done = [e for e in events if e['stage'] == 'done'][0]
+    assert done['overall_total'] == 2 * 4000
+    assert done['overall_done'] == done['overall_total']
+    # sub-bar carries per-file identity + counts
+    v = [e for e in events if e['stage'] == 'writing' and e.get('path') == 'b.py']
+    assert v and v[0]['item_total'] == 3000 and v[0]['file_count'] == 2
