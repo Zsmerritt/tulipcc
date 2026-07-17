@@ -426,6 +426,24 @@ def main():
     print('dedupe: %d duplicate pool entries dropped; %d quiet hits normalized'
           % (dropped, boosted))
 
+    # 3) loudness FLAG report (not a gate). The [0.5, 1.0] floor above is a
+    #    per-hit NORMALIZER: a rendered-corpus measurement showed a hard peak
+    #    gate would reject ~62% of legitimate 2-osc hits, so quietness is
+    #    surfaced as a host-side FLAG list instead. Only the render-free
+    #    dead-silent flags are computed here; the realized-peak and RMS flags
+    #    need the amy_render_cli harness -- see loudness_flags.py. This is a
+    #    REPORT: it reads `hits` and never mutates them, so kit output is
+    #    unchanged.
+    try:
+        from loudness_flags import dead_silent_flags
+        silent = dead_silent_flags(hits)
+        tail = (' -> ' + ', '.join(silent[:12])) if silent else ''
+        print('loudness flags: %d dead-silent hit(s)%s' % (len(silent), tail))
+        print('  (peak/RMS flags: python tools/drumsynth/loudness_flags.py '
+              '--render <amy_render_cli.csv>)')
+    except Exception as e:      # a report must never break generation
+        print('loudness flags: report skipped (%r)' % (e,))
+
     # donor pools for missing roles
     donors = {}
     for role, note, _ in mk.ROLES:

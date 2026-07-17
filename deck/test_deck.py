@@ -3252,3 +3252,282 @@ def test_update_progress_callback_reports_two_tiers(tmp_path):
     # sub-bar carries per-file identity + counts
     v = [e for e in events if e['stage'] == 'writing' and e.get('path') == 'b.py']
     assert v and v[0]['item_total'] == 3000 and v[0]['file_count'] == 2
+
+
+# ===========================================================================
+# E-16: host-side coverage for the synthkits transform math, the deckcfg
+# write-retry chain, and decklog rollover -- functions that shipped without a
+# single test reference. Every assertion below pins REAL transform output for
+# a known input (values hand-verified against the functions), not a tautology.
+# ===========================================================================
+
+
+# --- synthkits: pure coef-string helpers ---
+def test_synthkits_scale_helpers_pin_transform_math():
+    import synthkits as s
+    # _scale_times scales ONLY the even (time) slots; odd (level) slots and
+    # non-numeric time slots pass through untouched.
+    assert s._scale_times('0,1,50,0', 2.0) == '0,1,100,0'
+    assert s._scale_times('4,1,abc,0', 2.0) == '8,1,abc,0'
+    # _scale_first scales only slot 0 (the const), leaving the rest; a
+    # non-numeric first slot is left as-is.
+    assert s._scale_first('100,0', 2.0) == '200,0'
+    assert s._scale_first('abc,5', 2.0) == 'abc,5'
+    # _capped_gain scales slot 0 by g but never past _AMP_CAP (2.5).
+    assert s._AMP_CAP == 2.5
+    assert s._capped_gain('1', 5.0) == '2.5'      # 5.0 -> clamped to the cap
+    assert s._capped_gain('1', 2.0) == '2'        # under the cap: exact
+    assert s._capped_gain('0.5', 2.0) == '1'
+    assert s._capped_gain('x,2', 3.0) == 'x,2'    # non-numeric const: passthrough
+    # _fmt: near-integers render as ints, fractions trim trailing zeros,
+    # strings pass through.
+    assert s._fmt(200.0) == '200'
+    assert s._fmt(2.5) == '2.5'
+    assert s._fmt(0) == '0'
+    assert s._fmt('str') == 'str'
+
+
+# --- synthkits: hit_patch_string osc-hit transforms ---
+def _inject_hit(s, key, hit):
+    pack = key.split('/', 1)[0]
+    s._state['packs'][pack] = {key: hit}
+
+
+def test_hit_patch_string_tune_decay_level_snap():
+    import synthkits as s
+    _inject_hit(s, 't16/k', {'oscs': [
+        {'wave': 0, 'freq': '100', 'amp': '1', 'bp0': '0,1,50,0',
+         'filter_freq': '200'},
+        {'wave': 5, 'amp': '0.5', 'bp0': '0,1,30,0'}]})   # wave 5 == NOISE
+    unity = 1.0 / s.KIT_GAIN            # cancels KIT_GAIN -> net level 1.0
+
+    # identity: net gain 1.0, no tune/decay -> osc params wired verbatim,
+    # bp0 -> 'A', filter_freq -> 'F', in _WIRE order. The pad-picker fix makes
+    # each osc self-contained: every osc gains a filter reset (G0 filter_type,
+    # F0 filter_freq when omitted, R0.7 resonance); osc0 keeps its own F200 and
+    # so emits G0F200R0.7, osc1 (no filter) emits G0F0R0.7.
+    assert s.hit_patch_string('t16/k', {'level': unity}) == \
+        'v0w0f100A0,1,50,0a1G0F200R0.7Zv1w5A0,1,30,0a0.5G0F0R0.7Z'
+    # tune +12 semitones doubles freq AND filter_freq (2**(12/12) == 2.0);
+    # envelope times and amps are untouched.
+    assert s.hit_patch_string('t16/k', {'level': unity, 'tune': 12}) == \
+        'v0w0f200A0,1,50,0a1G0F400R0.7Zv1w5A0,1,30,0a0.5G0F0R0.7Z'
+    # decay 2.0 scales bp0 TIME slots x2 (50->100, 30->60); freq/amp untouched.
+    assert s.hit_patch_string('t16/k', {'level': unity, 'decay': 2}) == \
+        'v0w0f100A0,1,100,0a1G0F200R0.7Zv1w5A0,1,60,0a0.5G0F0R0.7Z'
+    # level 2.0 -> net 2.0*2.5 == 5.0: both amps drive PAST the cap, so both
+    # land exactly on 2.5 (this pins the _capped_gain 2.5 ceiling).
+    assert s.hit_patch_string('t16/k', {'level': 2.0}) == \
+        'v0w0f100A0,1,50,0a2.5G0F200R0.7Zv1w5A0,1,30,0a2.5G0F0R0.7Z'
+    # default overrides -> net KIT_GAIN (2.5): amp '1' -> 2.5, and the noise
+    # osc amp '0.5' -> 1.25 (under the cap).
+    assert s.hit_patch_string('t16/k') == \
+        'v0w0f100A0,1,50,0a2.5G0F200R0.7Zv1w5A0,1,30,0a1.25G0F0R0.7Z'
+
+
+def test_hit_patch_string_snap_only_scales_the_noise_osc():
+    import synthkits as s
+    _inject_hit(s, 't16b/k', {'oscs': [
+        {'wave': 0, 'amp': '1'},        # tone
+        {'wave': 5, 'amp': '0.5'}]})    # noise/transient (wave 5)
+    unity = 1.0 / s.KIT_GAIN
+    # snap 2.0 with net level 1.0: the tone osc (wave 0) is untouched, only the
+    # noise osc gets the extra x2 (0.5*2 == 1.0). Both oscs still carry the
+    # self-contained filter reset (G0F0R0.7) from the pad-picker fix.
+    assert s.hit_patch_string('t16b/k', {'level': unity, 'snap': 2}) == \
+        'v0w0a1G0F0R0.7Zv1w5a1G0F0R0.7Z'
+
+
+def test_hit_patch_string_clamps_overrides():
+    import synthkits as s
+    _inject_hit(s, 't16c/k', {'oscs': [
+        {'wave': 0, 'freq': '100', 'bp0': '0,1,40,0', 'amp': '1'}]})
+    unity = 1.0 / s.KIT_GAIN
+    # tune clamps to +/-24 semitones: 9999 -> +24 -> x4 (100->400);
+    # -9999 -> -24 -> x0.25 (100->25).
+    assert 'f400' in s.hit_patch_string('t16c/k', {'level': unity, 'tune': 9999})
+    assert 'f25' in s.hit_patch_string('t16c/k', {'level': unity, 'tune': -9999})
+    # decay clamps to [0.25, 4.0]: 9999 -> 4.0 (40->160); 0 -> 0.25 (40->10).
+    assert 'A0,1,160,0' in \
+        s.hit_patch_string('t16c/k', {'level': unity, 'decay': 9999})
+    assert 'A0,1,10,0' in \
+        s.hit_patch_string('t16c/k', {'level': unity, 'decay': 0})
+
+
+def test_xform_partials_parent_only_level_rule():
+    import synthkits as s
+    # child = partial (w9), parent = summing carrier (w10). Both carry an amp.
+    ps = 'v0w9f100,0,0a3Zv1w10a1A0,1,100,0Z'
+    # identity transform via hit_patch_string (default level -> KIT_GAIN 2.5):
+    # ONLY the parent (w10) amp is scaled (1 -> 2.5, capped); the child amp
+    # 'a3' is left ALONE (scaling both would square the gain). Each osc also
+    # gains the self-contained filter reset (G0F0R0.7) from the pad-picker fix.
+    _inject_hit(s, 'p16/x', {'patch_string': ps})
+    assert s.hit_patch_string('p16/x', {'level': 1.0}) == \
+        'v0w9f100,0,0a3G0F0R0.7Zv1w10a2.5A0,1,100,0G0F0R0.7Z'
+    # direct call, tune/decay/level all != 1: child freq first-slot scaled by
+    # tune (100->200), parent amp by level (1->2, under cap), parent bp times
+    # by decay (100->200); the child amp 'a3' stays put -> parent-only rule.
+    assert s._xform_partials(ps, 2.0, 2.0, 2.0) == \
+        'v0w9f200,0,0a3G0F0R0.7Zv1w10a2A0,1,200,0G0F0R0.7Z'
+
+
+# ---------------------------------------------------------------------------
+# deckcfg._write: the deferred flash-write retry chain (coalescing, the
+# 60-retry cap, and the 5-second self-heal reclaim).
+# ---------------------------------------------------------------------------
+def _install_fake_ticks(start=1000):
+    """Swap in a `time` module exposing MicroPython's ticks_ms/ticks_diff (both
+    absent on CPython) so deckcfg's chain-age logic runs deterministically.
+    Returns (real_time_module, clock_dict); caller restores in finally."""
+    import time as rt
+    ft = types.ModuleType('time')
+    ft.__dict__.update(rt.__dict__)
+    clock = {'now': start}
+    ft.ticks_ms = lambda: clock['now']
+    ft.ticks_diff = lambda a, b: a - b
+    sys.modules['time'] = ft
+    return rt, clock
+
+
+def test_deckcfg_write_coalesces_one_chain_and_writes_latest(deck):
+    import json
+    deckcfg, _ = deck
+    tulip = sys.modules['tulip']
+    rt, clock = _install_fake_ticks(1000)
+    deferred = []
+    try:
+        # force the deferral path: fenced_write reports "not safe to write yet"
+        deckcfg.fenced_write = lambda fn: False
+        tulip.defer = lambda fn, arg, ms: deferred.append(fn)
+        deckcfg.save({'volume': 1, 'tag': 'first'})
+        assert len(deferred) == 1                 # one retry chain armed
+        assert deckcfg._state['write_chain'] is True
+        # a second save while the chain is live (< 5s old) does NOT spawn a
+        # second chain -- it coalesces, updating only the cached cfg.
+        deckcfg.save({'volume': 2, 'tag': 'second'})
+        assert len(deferred) == 1                 # still ONE chain
+        assert deckcfg._state['cfg']['tag'] == 'second'
+        # when the retry finally lands, it writes the LATEST cache, not the
+        # stale value the chain started with.
+        deckcfg.fenced_write = lambda fn: (fn(), True)[1]
+        deferred[0](None)
+        with open(deckcfg.PATH) as f:
+            assert json.load(f)['tag'] == 'second'
+        assert deckcfg._state['write_chain'] is False
+    finally:
+        sys.modules['time'] = rt
+
+
+def test_deckcfg_write_retry_cap_writes_after_60(deck):
+    import json, os
+    deckcfg, _ = deck
+    tulip = sys.modules['tulip']
+    rt, clock = _install_fake_ticks(1000)
+    deferred = []
+    try:
+        deckcfg.fenced_write = lambda fn: False   # never "safe" -> always defer
+        tulip.defer = lambda fn, arg, ms: deferred.append(fn)
+        deckcfg.save({'tag': 'capped'})
+        fires = 0
+        while deferred and fires < 500:
+            deferred.pop()(None)
+            fires += 1
+        # the chain deferred exactly 60 times, then wrote anyway (cap reached)
+        assert fires == 60
+        assert os.path.exists(deckcfg.PATH)
+        with open(deckcfg.PATH) as f:
+            assert json.load(f)['tag'] == 'capped'
+        assert deckcfg._state['write_chain'] is False
+    finally:
+        sys.modules['time'] = rt
+
+
+def test_deckcfg_write_self_heals_stale_chain_after_5s(deck):
+    import json, os
+    deckcfg, _ = deck
+    rt, clock = _install_fake_ticks(1000)
+    try:
+        deckcfg.fenced_write = lambda fn: (fn(), True)[1]   # writes if reached
+        # pretend a chain is live and started at t=1000.
+        deckcfg._state['write_chain'] = True
+        deckcfg._state['write_chain_since'] = 1000
+        # a save 0s later coalesces into the (young) live chain -> NO write.
+        clock['now'] = 1000
+        deckcfg.save({'tag': 'young'})
+        assert not os.path.exists(deckcfg.PATH)
+        # a save 6s later: the chain is implausibly old, so it is RECLAIMED and
+        # the write goes through.
+        clock['now'] = 7000
+        deckcfg.save({'tag': 'old'})
+        with open(deckcfg.PATH) as f:
+            assert json.load(f)['tag'] == 'old'
+        assert deckcfg._state['write_chain'] is False
+    finally:
+        sys.modules['time'] = rt
+
+
+# ---------------------------------------------------------------------------
+# decklog: log rollover -- one previous generation kept, size counter reset.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def decklog_mod(tmp_path):
+    _install_hw_mocks()
+    for m in ('decklog', 'deckcfg'):
+        sys.modules.pop(m, None)
+    import decklog
+    decklog._LOGFILE = str(tmp_path / 'deck.log')   # skip _logfile() probing
+    decklog._state.update({'size': None, 'pend': 0, 'armed': False})
+    del decklog._PENDING[:]
+    return decklog
+
+
+def test_decklog_write_pending_rolls_over_keeping_one_generation(decklog_mod):
+    import os
+    decklog = decklog_mod
+    p = decklog._LOGFILE
+    decklog._MAX = 100                    # tiny cap so a couple lines roll over
+    with open(p, 'w') as f:
+        f.write('X' * 90)
+    decklog._state['size'] = 90
+
+    # under the cap: appends in place, no rollover, buffer + counter cleared.
+    decklog._PENDING[:] = ['hello']
+    decklog._state['pend'] = 6
+    decklog._write_pending()
+    assert decklog._PENDING == [] and decklog._state['pend'] == 0
+    assert decklog._state['size'] == 96
+    assert not os.path.exists(p + '.old')
+    assert open(p).read() == 'X' * 90 + 'hello\n'
+
+    # crossing the cap: current log renamed to .old, a fresh log holds the new
+    # line, and the size counter resets to just that line.
+    decklog._PENDING[:] = ['world']
+    decklog._write_pending()
+    assert open(p).read() == 'world\n'
+    assert open(p + '.old').read() == 'X' * 90 + 'hello\n'
+    assert decklog._state['size'] == 6
+
+    # a SECOND rollover drops the oldest generation (only one .old kept).
+    decklog._PENDING[:] = ['Z' * 200]
+    decklog._write_pending()
+    assert open(p + '.old').read() == 'world\n'      # previous .old overwritten
+    assert 'hello' not in open(p + '.old').read()
+
+
+def test_decklog_flush_triggers_rollover_end_to_end(decklog_mod):
+    import os
+    decklog = decklog_mod
+    p = decklog._LOGFILE
+    decklog._MAX = 200
+    with open(p, 'w') as f:
+        f.write('x' * 180)
+    decklog._state['size'] = 180
+    # log() buffers; flush() commits through fenced_write and rolls over.
+    decklog.log('hello world this is a log line')
+    decklog.flush()
+    assert os.path.exists(p + '.old')
+    assert open(p + '.old').read() == 'x' * 180
+    body = open(p).read()
+    assert 'hello world this is a log line' in body
+    assert decklog._state['size'] == len(body)
