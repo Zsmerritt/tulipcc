@@ -505,7 +505,8 @@ def apply():
     # monkeypatches FROZEN firmware attributes -- a firmware bump that
     # renames any of them must degrade VISIBLY in the log, not silently
     # lose Home-as-root / keyboard behavior.
-    for owner, attrs in ((ui, ('UIScreen', 'running_apps', 'repl_screen')),
+    for owner, attrs in ((ui, ('UIScreen', 'running_apps', 'repl_screen',
+                               'keyboard', 'lv_soft_kb_cb')),
                          (ui.UIScreen, ('draw_task_bar',
                                         'screen_quit_callback'))):
         for a in attrs:

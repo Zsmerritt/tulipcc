@@ -39,6 +39,13 @@ def panel(parent, shell=None, footer=None):
     """The instruments rack. As of the S1 rework this is also the HOME ROOT
     (home._build_root wraps it); `footer(body)` lets the root append its
     Devices/System entries under the Add button."""
+    # Panel builders share the module-level _s; a prior editor/sound/kit build
+    # leaves widget handles behind that now point at deleted LVGL objects. Drop
+    # only those stale handles -- list_parent/shell/footer are re-set just below
+    # (and _refresh_list needs list_parent), and kitgen is an async guard, so a
+    # blanket _s.clear() would be wrong.
+    for _k in ('edit_parent', 'kitbtns', 'kitcur', 'vlabel'):
+        _s.pop(_k, None)
     _s['shell'] = shell
     _s['list_parent'] = parent
     _s['footer'] = footer

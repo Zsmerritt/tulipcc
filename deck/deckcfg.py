@@ -528,7 +528,9 @@ def get_instrument_param(iid, name, default=None):
     try:
         import amyparams
         return amyparams.PARAM_BY_NAME[name]['default']
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: param default lookup %r failed: %r" % (name, e))
         return default
 
 
@@ -586,7 +588,9 @@ def device_list(cfg=None):
     try:
         import tulip
         n = tulip.num_midi_devices()
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: num_midi_devices failed: %r" % e)
         n = 0
     devs = [{'device': 'internal', 'name': 'Tulip', 'kind': 'internal',
              'connected': True, 'capacity': DEVICE_CAPACITY,
@@ -658,7 +662,9 @@ def sync_time():
     try:
         import ntptime
         ntptime.settime()               # RTC := UTC
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: ntp settime failed: %r" % e)
         return False
     off = None
     try:
@@ -671,7 +677,9 @@ def sync_time():
         if j.get('status') == 'success':
             off = int(j.get('offset', 0))
             set_value('tz_offset_s', off)
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: geo-IP tz lookup failed: %r" % e)
         pass
     if off is None:
         off = get('tz_offset_s')        # cached from a previous success
@@ -682,7 +690,9 @@ def sync_time():
             tm = time.localtime(time.time() + off)
             machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1,
                                     tm[3], tm[4], tm[5], 0))
-        except Exception:
+        except Exception as e:
+            import decklog
+            decklog.dbg("deckcfg: RTC localize set failed: %r" % e)
             pass
     return True
 
@@ -711,5 +721,7 @@ def apply(cfg=None):
                lambda: tulip.display_partial(1 if cfg.get('render_partial', False) else 0)):
         try:
             fn()
-        except Exception:
+        except Exception as e:
+            import decklog
+            decklog.dbg("deckcfg: apply device setting failed: %r" % e)
             pass

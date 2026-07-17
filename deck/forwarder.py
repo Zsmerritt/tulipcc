@@ -452,7 +452,9 @@ def refresh_room():
         import amy
         fx = deckcfg.device_fx('internal')
         amy.send(reverb=_room_string(fx, _state.get('fx_targets') or ()))
-    except Exception:
+    except Exception as e:
+        import decklog
+        decklog.dbg("router: refresh_room failed: %r" % e)
         pass
 
 
@@ -535,7 +537,9 @@ class _AmyBatch:
             return
         try:
             self._tulip.amy_send_batch('\n'.join(batch))
-        except Exception:
+        except Exception as e:
+            import decklog
+            decklog.dbg("router: batch send failed, per-message fallback: %r" % e)
             for m in batch:                   # never lose the rebuild
                 try:
                     self._orig(m)
@@ -599,7 +603,10 @@ def _start_once():
             # channel so Tulip's default handler doesn't double-play the note.
             try:
                 midi.config.release_synth_for_channel(ch)
-            except Exception:
+            except Exception as e:
+                import decklog
+                decklog.dbg("router: release_synth_for_channel(%s) failed: %r"
+                            % (ch, e))
                 pass
             syn = None
             # C-OWN the channel when this is its only internal instrument (or
@@ -633,11 +640,16 @@ def _start_once():
                     import amy as _amy
                     _amy.send(synth=ch, midi_note_cmd='255')
                     _amy.send(synth=ch, num_voices=0)
-                except Exception:
+                except Exception as e:
+                    import decklog
+                    decklog.dbg("router: ch%s C-layer scrub failed: %r" % (ch, e))
                     pass
                 try:
                     midi.config.arpeggiator_per_channel.pop(ch, None)
-                except Exception:
+                except Exception as e:
+                    import decklog
+                    decklog.dbg("router: arpeggiator pop ch%s failed: %r"
+                                % (ch, e))
                     pass
             try:
                 if instr.get('type') == 'drums':
