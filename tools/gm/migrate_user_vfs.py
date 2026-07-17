@@ -33,9 +33,15 @@ DISK_VERSION = 0x00020000
 
 
 def mount_image(data, block_size=BLOCK_SIZE):
+    # Do NOT pin disk_version when READING. fs_create.py stamps 0x00020000 at
+    # build time, but the running firmware rewrites the superblock, and a live
+    # /user pulled off the deck then fails to mount with a pinned version:
+    #   disk_version=0x20000 -> LFS_ERR_INVAL;  unpinned -> mounts, 42 entries.
+    # Unpinned accepts whatever is actually on disk, which is the only correct
+    # thing to do to an image someone else wrote. build() still pins, because
+    # there we are the writer and must match fs_create.py.
     fs = LittleFS(block_size=block_size,
                   block_count=len(data) // block_size,
-                  disk_version=DISK_VERSION,
                   mount=False)
     fs.context.buffer = bytearray(data)
     fs.mount()
@@ -76,9 +82,20 @@ def main():
     ap.add_argument("--new-size", type=lambda s: int(s, 0), default=NEW_VFS_SIZE)
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--extract", metavar="DIR")
-    ap.add_argument("--from-dir", metavar="DIR")
+    ap.add_argument("--from-dir", metavar="DIR",
+                    help="UNSAFE for migration: images whatever is in DIR, "
+                         "including a stale/partial extract. Use --migrate.")
+    ap.add_argument("--migrate", action="store_true",
+                    help="backup -> --out image in one step, verified against "
+                         "the backup itself. The safe path.")
     ap.add_argument("--out", metavar="FILE")
     args = ap.parse_args()
+
+    if args.migrate:
+        if not (args.backup and args.out):
+            raise SystemExit("--migrate needs --backup and --out")
+        migrate(args.backup, args.offset, args.size, args.out, args.new_size)
+        return
 
     if args.from_dir:
         if not args.out:
@@ -113,6 +130,69 @@ def main():
                 with open(dst, "wb") as f:
                     f.write(b)
         print("extracted to %s" % args.extract)
+
+
+def migrate(backup, offset, size, out, new_size):
+    """Backup -> new-size image in ONE step, verified against the SOURCE.
+
+    This exists because the two-step (--extract DIR, then --from-dir DIR) path
+    is unsafe by construction: the steps are joined by a directory on disk, so
+    a failed/skipped extract leaves --from-dir to image whatever was already
+    there. That is not hypothetical -- it imaged a leftover 4-file test fixture
+    and reported "round-trip verified", because build()'s round-trip only
+    proves the image reads back what it wrote. Fed the wrong input it verifies
+    the wrong thing perfectly. Here the source fs is the oracle and never
+    leaves memory, so there is nothing to go stale.
+    """
+    src = mount_image(read_backup(backup, offset, size))
+    entries = walk(src)
+    files = [(p, b) for p, b in entries if b is not None]
+    used = sum(len(b) for _, b in files)
+    print("source /user: %d files, %d B (%.2f MB)" % (len(files), used, used / 1048576.0))
+    if used >= new_size:
+        raise SystemExit("/user holds %d B; will not fit 0x%X" % (used, new_size))
+
+    img = _image_from(entries, new_size)
+
+    # Verify against the SOURCE, not against ourselves.
+    back = mount_image(img)
+    got = {p: b for p, b in walk(back) if b is not None}
+    want = dict(files)
+    missing = sorted(set(want) - set(got))
+    extra = sorted(set(got) - set(want))
+    differs = sorted(p for p in want if p in got and want[p] != got[p])
+    if missing or extra or differs:
+        raise SystemExit("MIGRATION VERIFY FAILED\n  missing: %s\n  extra: %s\n"
+                         "  differs: %s" % (missing[:5], extra[:5], differs[:5]))
+    if not want:
+        raise SystemExit("source /user is EMPTY -- refusing to write a blank image")
+    with open(out, "wb") as f:
+        f.write(img)
+    print("wrote %s: %d B, all %d files verified byte-for-byte against the backup"
+          % (out, new_size, len(want)))
+
+
+def _image_from(entries, size):
+    """Build a littlefs image of `size` from (path, bytes|None) entries."""
+    if size % BLOCK_SIZE:
+        raise SystemExit("size 0x%X is not a multiple of the 4096 block size" % size)
+    # PIN disk_version here: we are the writer, and fs_create.py -- the
+    # generator whose images the firmware has always mounted -- pins it.
+    fs = LittleFS(block_size=BLOCK_SIZE, block_count=size // BLOCK_SIZE,
+                  disk_version=DISK_VERSION)
+    for path, data in entries:
+        if data is None:
+            fs.makedirs(path, exist_ok=True)
+    for path, data in entries:
+        if data is not None:
+            parent = os.path.dirname(path)
+            if parent not in ("", "/"):
+                fs.makedirs(parent, exist_ok=True)
+            with fs.open(path, "wb") as f:
+                f.write(data)
+    img = bytes(fs.context.buffer)
+    assert len(img) == size
+    return img
 
 
 def build(src_dir, out, size):
