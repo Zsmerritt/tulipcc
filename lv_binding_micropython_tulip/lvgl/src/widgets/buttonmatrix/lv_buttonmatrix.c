@@ -394,14 +394,35 @@ static void lv_buttonmatrix_event(const lv_obj_class_t * class_p, lv_event_t * e
 
     lv_result_t res;
 
-    /*Call the ancestor's event handler*/
-    res = lv_obj_event_base(MY_CLASS, e);
-    if(res != LV_RESULT_OK) return;
-
     lv_event_code_t code = lv_event_get_code(e);
     lv_obj_t * obj = lv_event_get_current_target(e);
     lv_buttonmatrix_t * btnm = (lv_buttonmatrix_t *)obj;
     lv_point_t p;
+
+    /*Tulip deck patch (kb-partial-redraw): the ancestor object handler toggles
+     *LV_STATE_PRESSED on the WHOLE widget for every press/release, and
+     *update_obj_state() then invalidates the entire button matrix even though
+     *only the selected button's fill actually changes. On the on-screen soft
+     *keyboard that repaints all ~40 keys on every keystroke (the visible
+     *"whole keyboard flashes" defect). This widget already issues precise
+     *invalidate_button_area() calls below for the pressed/released button, so
+     *suppress the ancestor's redundant whole-object invalidation for these
+     *transient press states -- the per-button invalidation stands and only the
+     *touched key redraws, in both PARTIAL and DIRECT/FULL render modes. State
+     *bookkeeping (obj->state, layer type) still runs; only the invalidate is
+     *gated. Mode switches (map changes via LV_EVENT_VALUE_CHANGED/STYLE_CHANGED)
+     *are NOT press events, so a real full redraw still happens when it should.*/
+    bool press_evt = (code == LV_EVENT_PRESSED || code == LV_EVENT_RELEASED ||
+                      code == LV_EVENT_PRESS_LOST);
+    lv_display_t * inv_disp = press_evt ? lv_obj_get_display(obj) : NULL;
+    if(inv_disp) lv_display_enable_invalidation(inv_disp, false);
+
+    /*Call the ancestor's event handler*/
+    res = lv_obj_event_base(MY_CLASS, e);
+
+    if(inv_disp) lv_display_enable_invalidation(inv_disp, true);
+
+    if(res != LV_RESULT_OK) return;
 
     if(code == LV_EVENT_REFR_EXT_DRAW_SIZE) {
         if(has_popovers_in_top_row(obj)) {
