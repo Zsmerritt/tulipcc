@@ -560,13 +560,23 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_drops_obj, 0, 0, tulip_
 //       => L,R,L,R...), AMY_BLOCK_SIZE frames/block, at AMY_SAMPLE_RATE. Read
 //       once audio_tap()[1] (armed) is False. Capture logic + the audio-task
 //       memcpy live in amy_connector.c.
+// The tap implementation (amy_connector.c) is compiled only when AMY runs in
+// this module -- it reads amy's output_block and allocs PSRAM. On the web /
+// external builds (amyboardweb, tulip/web, amyrepl all -DAMY_IS_EXTERNAL) AMY
+// is a SEPARATE module, so the tap symbols aren't linked. Guard on the SAME
+// AMY_IS_EXTERNAL the implementation uses: keep the bindings present (the
+// module table must stay valid) but degrade to None/(0, False)/b'' there, the
+// same way eq_silent_skip / render_cyc degrade off-device.
+#ifndef AMY_IS_EXTERNAL
 extern int tulip_audio_tap_arm(uint16_t n_blocks);
 extern uint16_t tulip_audio_tap_got_blocks(void);
 extern uint8_t tulip_audio_tap_is_armed(void);
 extern const uint8_t *tulip_audio_tap_data(void);
 extern uint32_t tulip_audio_tap_bytes(void);
+#endif
 
 STATIC mp_obj_t tulip_audio_tap_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
     if (n_args == 0) {
         mp_obj_t items[2] = {
             mp_obj_new_int_from_uint(tulip_audio_tap_got_blocks()),
@@ -580,10 +590,21 @@ STATIC mp_obj_t tulip_audio_tap_fn(size_t n_args, const mp_obj_t *args) {
     if (r == -1) mp_raise_ValueError(MP_ERROR_TEXT("audio_tap: n_blocks over cap (max 256)"));
     if (r == -2) mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("audio_tap: PSRAM alloc failed"));
     return mp_const_none;
+#else
+    // No connector-side tap on external-AMY builds: audio_tap() -> (0, False),
+    // audio_tap(n) -> None.
+    (void)args;
+    if (n_args == 0) {
+        mp_obj_t items[2] = { mp_obj_new_int(0), mp_const_false };
+        return mp_obj_new_tuple(2, items);
+    }
+    return mp_const_none;
+#endif
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_obj, 0, 1, tulip_audio_tap_fn);
 
 STATIC mp_obj_t tulip_audio_tap_read_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
     uint32_t total = tulip_audio_tap_bytes();
     const uint8_t *data = tulip_audio_tap_data();
     if (data == NULL || total == 0)
@@ -602,6 +623,10 @@ STATIC mp_obj_t tulip_audio_tap_read_fn(size_t n_args, const mp_obj_t *args) {
         if (n > avail) n = avail;
     }
     return mp_obj_new_bytes(data + off, n);
+#else
+    (void)n_args; (void)args;
+    return mp_obj_new_bytes((const byte *)"", 0);
+#endif
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_read_obj, 0, 2, tulip_audio_tap_read_fn);
 
