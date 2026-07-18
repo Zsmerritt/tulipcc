@@ -97,6 +97,69 @@ def reset_worst(tulip_mod):
         pass
 
 
+
+# --- Debug > Profiler BAR helpers (horizontal fill bars next to the text
+# readouts). Kept here, not in profiler.py, so the threshold/percent math
+# is host-testable without lvgl -- same split as the percent math above.
+
+BAR_GREEN = 'green'
+BAR_AMBER = 'amber'
+BAR_RED = 'red'
+
+
+def bar_fill_pct(pct):
+    """Clamp a (possibly >100, over-budget) percent to what a 0..100-wide
+    bar can physically draw. The real, unclamped number still goes in the
+    text label next to it -- this clamp is ONLY for the bar's fill width."""
+    if pct <= 0:
+        return 0.0
+    return 100.0 if pct > 100.0 else pct
+
+
+def load_bar_color(pct):
+    """Core-load bar color, tri-state: green under 80% of the per-block
+    budget, amber from 80-100%, red once a core has actually missed its
+    render deadline (over 100%) -- the exact condition behind the audible
+    crackle (see piano-clips-master finding). Unmistakable is the point: a
+    core showing red is dropping frames RIGHT NOW, not just running hot."""
+    if pct > 100.0:
+        return BAR_RED
+    if pct >= 80.0:
+        return BAR_AMBER
+    return BAR_GREEN
+
+
+def mem_pct_free(free_bytes, total_bytes):
+    """`free_bytes` as a percent of `total_bytes`, for a memory fill bar.
+    Returns 0.0 when either input is missing/non-positive (a guard against
+    a divide-by-zero or an unavailable reading, not a real 0% signal) so a
+    memory source this build doesn't have just draws an empty bar instead
+    of raising and blanking the whole panel."""
+    if free_bytes is None or not total_bytes or total_bytes <= 0:
+        return 0.0
+    v = (free_bytes * 100.0) / total_bytes
+    if v < 0.0:
+        return 0.0
+    return 100.0 if v > 100.0 else v
+
+
+def internal_sram_total(regions):
+    """Sum of TOTAL bytes (not free) over the internal-SRAM regions only --
+    the denominator internal_sram_summary()'s free_total needs in order to
+    become a percent for the Memory bar. Same PSRAM-exclusion rule as
+    internal_sram_summary, kept as a separate function rather than
+    widening that one's return shape, since profiler.py and its existing
+    tests already depend on its (free_total, largest_free) 2-tuple."""
+    total = 0
+    for r in regions or ():
+        if not r:
+            continue
+        if r[0] >= INTERNAL_MAX_BYTES:
+            continue          # PSRAM region, not internal SRAM
+        total += r[0]
+    return total
+
+
 def internal_sram_summary(regions):
     """`regions`: an iterable of esp32.idf_heap_info(esp32.HEAP_DATA)
     per-region tuples, shaped (total, free, largest_free_block, min_free)

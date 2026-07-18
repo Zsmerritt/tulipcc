@@ -3826,6 +3826,66 @@ def test_internal_sram_summary_empty_regions():
     assert pfd.internal_sram_summary([]) == (0, 0)
 
 
+# --- profilerdata: Debug > Profiler BAR helpers (threshold/percent math
+# behind the new horizontal bars, kept host-testable like the rest of this
+# module) ---
+def test_bar_fill_pct_clamps_over_100_but_not_below():
+    import profilerdata as pfd
+    assert pfd.bar_fill_pct(45.0) == 45.0
+    assert pfd.bar_fill_pct(100.0) == 100.0
+    # an over-budget core (>100%) must still draw a FULL bar, not overflow it
+    assert pfd.bar_fill_pct(310.0) == 100.0
+    assert pfd.bar_fill_pct(0.0) == 0.0
+    assert pfd.bar_fill_pct(-5.0) == 0.0
+
+
+def test_load_bar_color_thresholds():
+    import profilerdata as pfd
+    assert pfd.load_bar_color(0.0) == pfd.BAR_GREEN
+    assert pfd.load_bar_color(79.9) == pfd.BAR_GREEN
+    assert pfd.load_bar_color(80.0) == pfd.BAR_AMBER
+    assert pfd.load_bar_color(100.0) == pfd.BAR_AMBER
+    # over budget (missed the render deadline) must be unmistakably red
+    assert pfd.load_bar_color(100.1) == pfd.BAR_RED
+    assert pfd.load_bar_color(300.0) == pfd.BAR_RED
+
+
+def test_mem_pct_free_basic():
+    import profilerdata as pfd
+    assert pfd.mem_pct_free(50, 200) == 25.0
+    assert pfd.mem_pct_free(200, 200) == 100.0
+
+
+def test_mem_pct_free_guards_missing_or_zero_total():
+    import profilerdata as pfd
+    # a source this build doesn't have (None) or a zero/unknown total must
+    # draw an empty bar, not raise
+    assert pfd.mem_pct_free(None, 1000) == 0.0
+    assert pfd.mem_pct_free(500, 0) == 0.0
+    assert pfd.mem_pct_free(500, None) == 0.0
+
+
+def test_mem_pct_free_never_exceeds_100():
+    import profilerdata as pfd
+    # free > total shouldn't happen, but a bar can't physically draw >100%
+    assert pfd.mem_pct_free(300, 200) == 100.0
+
+
+def test_internal_sram_total_excludes_psram_region():
+    import profilerdata as pfd
+    regions = [
+        (8 * 1024 * 1024, 6 * 1024 * 1024, 5 * 1024 * 1024, 4 * 1024 * 1024),  # PSRAM
+        (100 * 1024, 40 * 1024, 31 * 1024, 20 * 1024),                        # internal A
+        (30 * 1024, 10 * 1024, 8 * 1024, 5 * 1024),                           # internal B
+    ]
+    assert pfd.internal_sram_total(regions) == 130 * 1024   # 100K + 30K, no PSRAM
+
+
+def test_internal_sram_total_empty_regions():
+    import profilerdata as pfd
+    assert pfd.internal_sram_total([]) == 0
+
+
 # --- logtail: pure tail-reading logic behind the Debug > Logs screen ---
 def test_read_tail_bytes_missing_file(tmp_path):
     import logtail
