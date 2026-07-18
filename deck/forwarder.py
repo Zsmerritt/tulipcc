@@ -690,8 +690,10 @@ def _start_once():
                 else:
                     # the piano engine claims ~25 oscs per voice internally
                     # (interp_partials) -- 10 voices would want 250 of AMY's
-                    # 120 oscs, and the failed allocations played as SKIPPED
-                    # NOTES. 4 voices is the engine's practical ceiling.
+                    # 250 oscs (amy/src/api.c: max_oscs), leaving zero
+                    # headroom for anything else and the failed allocations
+                    # played as SKIPPED NOTES. 4 voices is the engine's
+                    # practical ceiling.
                     nv = instr.get('num_voices')
                     if instr.get('type') == 'piano':
                         nv = min(nv or 4, 4)

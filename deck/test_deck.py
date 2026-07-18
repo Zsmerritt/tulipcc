@@ -2146,6 +2146,57 @@ def test_synthkit_skips_unresolvable_hit_no_leak():
     assert all(s.released for s in synth.PatchSynth.instances)   # no leaked number
 
 
+# --- P0: resync one-voice sampled kits -- a sampled kit patch (384-390, and
+# amy's own 258) is now ONE voice with N voice-specific oscs baked in
+# (patches.h patch_oscs[]: 38/42/32), not N identical voices. make_synth()
+# must force num_voices=1 for these regardless of what a saved config or the
+# rack.py voices slider asks for -- 6-10 voices x 38-42 oscs blew past AMY's
+# 250-osc pool and starved allocation for every drum instrument.
+def test_make_synth_clamps_sampled_kit_to_one_voice():
+    _install_hw_mocks()
+    for m in ('synthkits', 'drums_kit'):
+        sys.modules.pop(m, None)
+    import drums_kit
+    # every id drums_kit knows as a sampled kit (384-390) plus amy's own
+    # MIDI-channel-10 default kit (258), which bakes the identical one-voice
+    # format even though the deck's kit selector never offers it
+    for kit in sorted(drums_kit.SAMPLED_KIT_IDS):
+        s = drums_kit.make_synth(kit, num_voices=10)
+        assert s.num_voices == 1, "kit %r got %r voices" % (kit, s.num_voices)
+    # a stale saved config's num_voices (6, 10, or the slider's 1..32) must
+    # never survive to the synth -- confirm the clamp actually overrides a
+    # non-default input rather than coincidentally matching a default
+    s = drums_kit.make_synth(384, num_voices=6)
+    assert s.num_voices == 1
+    s = drums_kit.make_synth(390, num_voices=32)
+    assert s.num_voices == 1
+
+
+def test_make_synth_synth_kit_path_unaffected_by_clamp():
+    """Our SynthKit path (patch RAM 1030+, 'synth:<key>' ids) uses per-hit
+    PatchSynths, not the one-voice DrumSynth model -- confirm it still builds
+    normally and num_voices= passed to make_synth is simply not read there."""
+    _install_hw_mocks()
+    for m in ('synthkits', 'drums_kit'):
+        sys.modules.pop(m, None)
+    import synthkits
+    import drums_kit
+    notes = {36: 'p/kick', 38: 'p/snare'}
+    synthkits.kit_notes = lambda k: dict(notes)
+    synthkits.store_patch = lambda slot, ps: slot
+    synthkits.hit_patch_string = lambda hit_key, ov=None: 'v0w0a1Z'
+
+    kit = drums_kit.make_synth('synth:somekit', num_voices=10)
+    assert isinstance(kit, drums_kit.SynthKit)
+    assert set(kit.hit_synths) == {36, 38}
+    # per-hit synths and the kit-owner synth are always built with 1 voice
+    # each (per-hit oscs) -- unrelated to and unaffected by the sampled-kit
+    # clamp above
+    assert all(hs.num_voices == 1 for hs in kit.hit_synths.values())
+    assert kit.kit_synth.num_voices == 1
+    kit.release()
+
+
 # --- E-1: patch-picker search debounce must not UAF a freed panel ----------
 def _import_instrument_with_fakes():
     """Import instrument.py against lightweight LVGL/deckui fakes so the

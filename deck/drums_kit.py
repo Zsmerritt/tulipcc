@@ -26,6 +26,20 @@ KITS = [
 KIT_NAMES = dict(KITS)
 DEFAULT_KIT = 384
 
+# Resync (amy/src/patches.h): a sampled drum kit is now ONE voice with N
+# voice-specific oscs baked in (patch_oscs[]: 38 for 384, 42 for 385-390),
+# not N identical voices -- upstream's amy_default_synths() creates the
+# built-in drums synth with num_voices=1 to match. Passing more (the deck
+# used to ask for 6-10) multiplies the osc count instead of adding polyphony
+# and can blow past AMY's 250-osc pool (amy/src/api.c), starving voice
+# allocation for every drum instrument. make_synth() below clamps any
+# sampled kit to 1 regardless of what a saved config or the voices slider
+# asks for. 258 is amy's own MIDI-channel-10 default kit -- not one of
+# drums_kit.KITS and not reachable through the deck's kit selector today,
+# but it bakes the identical if3iv1in.. one-voice format, so it is clamped
+# here too as a defensive no-op.
+SAMPLED_KIT_IDS = frozenset(KIT_NAMES) | {258}
+
 
 def synth_kits():
     """[(kit id, display name)] for the SYNTHESIZED kits (synthkits.json).
@@ -201,8 +215,14 @@ def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None, hit_overrides=None,
     then trigger its sounds. channel= binds the AMY synth number to the MIDI
     channel so AMY's C layer plays the notes directly (see forwarder's
     C-owned channels). slot_base = this instrument's RAM-patch slot window
-    (synthkits.SLOT_KITS + stride per drum instrument)."""
+    (synthkits.SLOT_KITS + stride per drum instrument).
+
+    num_voices is ignored (forced to 1) for a sampled kit (SAMPLED_KIT_IDS):
+    those patches are one voice with a fixed osc per drum, so "voices" here
+    would multiply the osc count, not add polyphony -- see SAMPLED_KIT_IDS."""
     if isinstance(kit, str) and kit.startswith('synth:'):
         return SynthKit(kit[6:], channel=channel, hit_overrides=hit_overrides,
                         slot_base=slot_base, hit_swaps=hit_swaps)
+    if kit in SAMPLED_KIT_IDS:
+        num_voices = 1
     return synth.DrumSynth(patch=kit, num_voices=num_voices, channel=channel)

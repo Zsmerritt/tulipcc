@@ -584,12 +584,20 @@ def _build_edit(parent, shell):
     dk.stepper(r, instr.get('channel', 1), 1, 16, _channel_cb, fmt="Channel %d",
                w=230)
 
-    # Voices
+    # Voices -- a sampled drum kit is one voice with a fixed osc per drum
+    # sound baked into the patch (drums_kit.SAMPLED_KIT_IDS forces 1
+    # regardless of this setting), so "voices" isn't polyphony for a drums
+    # instrument. Show a static readout instead of a slider that would just
+    # be silently ignored.
     r = dk.row(left, h=76)
-    _s['vlabel'] = dk.label(r, "%d voices" % instr.get('num_voices', 10),
-                            color=dk.TEXT)
-    dk.slider(r, instr.get('num_voices', 10), 1, 32, w=250, cb=_voices_cb,
-              color=dk.GREEN, on_release=_voices_done)
+    if instr.get('type') == 'drums':
+        dk.label(r, "Voices", color=dk.TEXT)
+        dk.label(r, "1 (fixed by kit)", color=dk.MUTED)
+    else:
+        _s['vlabel'] = dk.label(r, "%d voices" % instr.get('num_voices', 10),
+                                color=dk.TEXT)
+        dk.slider(r, instr.get('num_voices', 10), 1, 32, w=250, cb=_voices_cb,
+                  color=dk.GREEN, on_release=_voices_done)
 
     # Reset patch: clear this instrument's sound-design overrides (params,
     # reverb send, per-pad tweaks) back to what the patch itself defines.

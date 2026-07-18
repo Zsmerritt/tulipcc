@@ -201,9 +201,11 @@ class DrumSynth(PatchSynth):
     def __init__(self, num_voices=4, channel=None, patch=384):
         # The GM note->sample mapping lives in the drum kit patches (384 TR-808,
         # 385 TR-909, 386 Linn 9000, 387 MR-12, 388 Tokyo Synthetics, 389 Power,
-        # 390 Percussion); the patch also bakes in the x5 PCM level scaling.
-        # synth_flags 3 = route notes through the patch's MIDI note map and
-        # ignore note offs.
+        # 390 Percussion); each patch is ONE voice with a fixed osc per drum
+        # sound baked in (num_voices should be 1 -- see deck/drums_kit.py's
+        # SAMPLED_KIT_IDS clamp, which callers on the deck rely on instead of
+        # this default). synth_flags 3 = route notes through the patch's MIDI
+        # note map and ignore note offs.
         super().__init__(num_voices=num_voices, channel=channel, patch=patch, synth_flags=3)
 
 

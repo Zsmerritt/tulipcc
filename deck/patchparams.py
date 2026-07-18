@@ -146,14 +146,6 @@ PARAMS = {
     126: {'amp_attack': 0, 'amp_decay': 0, 'amp_release': 0, 'amp_sustain': 1, 'filt_attack': 6, 'filt_decay': 0, 'filt_release': 0, 'filt_sustain': 0, 'filter_env': -3.724, 'filter_freq': 781.14, 'filter_kbd': 1, 'level': 0.024, 'lfo_freq': 5.116, 'lfo_wave': 4, 'oscA_freq': 220, 'oscA_wave': 1, 'oscB_freq': 220, 'oscB_level': 0, 'oscB_wave': 3, 'resonance': 11.2},  # Juno B87 Froggy
     127: {'amp_attack': 6, 'amp_decay': 1355, 'amp_release': 0, 'amp_sustain': 0.433, 'filter_freq': 258.65, 'filter_kbd': 1, 'level': 0.032, 'lfo_freq': 2.3, 'lfo_wave': 4, 'oscA_duty': 0.677, 'oscA_freq': 220, 'oscA_wave': 1, 'oscB_freq': 220, 'oscB_wave': 3, 'resonance': 4.381},  # Juno B88 Owgan
     257: {'filt_attack': 0, 'filt_decay': 1000, 'filt_release': 1000, 'filt_sustain': 0.2, 'lfo_wave': 4, 'oscA_wave': 1, 'oscB_wave': 2},  # amyboard default
-    258: {'level': 5},  # MIDI drums (gamma808 ROM)
-    384: {'level': 5},  # drum kit 0 TR-808 (Gamma9001)
-    385: {'level': 5},  # drum kit 1 TR-909 (Gamma9001)
-    386: {'level': 5},  # drum kit 2 Linn 9000 (Gamma9001)
-    387: {'level': 5},  # drum kit 3 MR-12 (Gamma9001)
-    388: {'level': 5},  # drum kit 4 Tokyo Synthetics (Gamma9001)
-    389: {'level': 5},  # drum kit 5 Power (Gamma9001)
-    390: {'level': 5},  # drum kit 6 Percussion (Gamma9001)
 }
 
 
