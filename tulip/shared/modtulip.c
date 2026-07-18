@@ -398,6 +398,50 @@ STATIC mp_obj_t tulip_midi_local(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_local_obj, 1, 1, tulip_midi_local);
 
 
+// tulip.render_cyc([reset]): per-core AMY render-cost readout for a UI CPU
+// meter. AMY splits each 256-sample block statically across the two cores;
+// voices allocate from low osc numbers, so core 0 (which also drives the
+// display) loads up first while core 1 may idle. AMY keeps, per core, the
+// worst (max) and most recent CCOUNT delta around that core's amy_render().
+//
+// tulip.render_cyc()   -> (core0_worst, core1_worst, core0_last, core1_last)
+// tulip.render_cyc(1)   -> same snapshot, then zeroes BOTH worst counters
+//                          (read-and-reset; last-block values refresh every
+//                          block so they are left alone)
+//
+// Block budget is ~1.39M cycles/core (256 samples / 44100Hz at 240MHz).
+//
+// CROSS-REPO DEPENDENCY: the counters amy_render_worst_cyc[]/amy_render_last_cyc[]
+// are defined AMY-side (amy/src/i2s.c) and are shipped in a separate AMY PR.
+// This binding is ESP-only (other platforms return None) and link-references
+// those externs directly, so the AMY-side counters must be present in the AMY
+// this firmware links against. If they are not yet available, keep this commit
+// out of the build or stub the two arrays.
+#ifdef ESP_PLATFORM
+extern volatile uint32_t amy_render_worst_cyc[2];  // defined in amy/src/i2s.c
+extern volatile uint32_t amy_render_last_cyc[2];
+#endif
+STATIC mp_obj_t tulip_render_cyc(size_t n_args, const mp_obj_t *args) {
+#ifdef ESP_PLATFORM
+    mp_obj_t items[4] = {
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[1]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[1]),
+    };
+    if (n_args == 1 && mp_obj_is_true(args[0])) {
+        amy_render_worst_cyc[0] = 0;
+        amy_render_worst_cyc[1] = 0;
+    }
+    return mp_obj_new_tuple(4, items);
+#else
+    (void)n_args; (void)args;
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_render_cyc_obj, 0, 1, tulip_render_cyc);
+
+
 #ifndef __EMSCRIPTEN__
 STATIC mp_obj_t tulip_amy_send(size_t n_args, const mp_obj_t *args) {
     amy_add_message((char*)mp_obj_str_get_str(args[0]));
@@ -1869,6 +1913,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
+    { MP_ROM_QSTR(MP_QSTR_render_cyc), MP_ROM_PTR(&tulip_render_cyc_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
