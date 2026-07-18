@@ -405,6 +405,36 @@ STATIC mp_obj_t tulip_amy_send(size_t n_args, const mp_obj_t *args) {
 }
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_obj, 1, 1, tulip_amy_send);
 
+// tulip.amy_send_batch("msg1\nmsg2\n...") -> count. One MP call + one string
+// object instead of N of each: instrument switches / kit loads / FX
+// re-baselines emit dozens of wire messages back-to-back, and each
+// tulip.amy_send() round-trip costs an MP call + arg marshal. Splits on '\n'
+// into a stack copy per line (skips empty lines), so a UI can hand the whole
+// burst across the Python->C boundary at once. Lines longer than
+// MAX_MESSAGE_LEN-1 are truncated (same bound amy_add_message parses to).
+STATIC mp_obj_t tulip_amy_send_batch(size_t n_args, const mp_obj_t *args) {
+    size_t len;
+    const char *s = mp_obj_str_get_data(args[0], &len);
+    int count = 0;
+    char line[MAX_MESSAGE_LEN];
+    size_t li = 0;
+    for (size_t i = 0; i <= len; i++) {
+        char c = (i < len) ? s[i] : '\n';
+        if (c == '\n') {
+            if (li > 0) {
+                line[li] = '\0';
+                amy_add_message(line);
+                count++;
+            }
+            li = 0;
+        } else if (li < sizeof(line) - 1) {
+            line[li++] = c;
+        }
+    }
+    return mp_obj_new_int(count);
+}
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_batch_obj, 1, 1, tulip_amy_send_batch);
+
 STATIC mp_obj_t tulip_amy_send_sysex(size_t n_args, const mp_obj_t *args) {
 #if SYSEX_COPY_SLOTS > 0
     // Read from the next slot in the sysex ring buffer. parse_sysex() writes
@@ -1883,6 +1913,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
 
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_amy_send), MP_ROM_PTR(&tulip_amy_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_send_batch), MP_ROM_PTR(&tulip_amy_send_batch_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_send_sysex), MP_ROM_PTR(&tulip_amy_send_sysex_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_ticks_ms), MP_ROM_PTR(&tulip_amy_ticks_ms_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_render_load), MP_ROM_PTR(&tulip_amy_render_load_obj) },
