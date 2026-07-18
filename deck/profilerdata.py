@@ -11,7 +11,10 @@
 # audio block before it's running late. Named constant so callers that
 # can't query the clock (older firmware, or a host running these tests)
 # still have a sane denominator.
-CYCLES_PER_BLOCK = 240_000_000 * 256 // 44100   # = 1,393,197 (~1.39M)
+# NOTE: no digit-separator underscores in the literal below -- no other
+# on-device deck module uses that PEP-515 syntax, and MicroPython's numeric
+# literal support for it isn't something to gamble the build on.
+CYCLES_PER_BLOCK = 240000000 * 256 // 44100   # = 1,393,197 (~1.39M)
 
 BLOCK_SAMPLES = 256
 SAMPLE_RATE_HZ = 44100

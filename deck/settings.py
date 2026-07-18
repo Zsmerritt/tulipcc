@@ -392,8 +392,11 @@ def _open_debug_panel(shell, key, title, module_name):
     the top panel in place if the same one is already open (mirrors
     deckui._open_settings / devices.open_fx's rebuild-vs-push choice)."""
     def cb(e):
-        import importlib
-        mod = importlib.import_module(module_name)
+        # MicroPython has no importlib -- __import__(name) is the portable
+        # form and, for a bare top-level module name, returns the module
+        # object directly (confirmed on-device; importlib.import_module
+        # raised ImportError there and silently swallowed the tap).
+        mod = __import__(module_name)
         if sm.open_panel_action(shell.top_key(), key) == 'rebuild':
             shell.rebuild_top(mod.panel, title, key=key)
         else:
