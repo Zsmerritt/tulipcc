@@ -55,6 +55,38 @@ extern mp_obj_t amy_overload_callback;
 int16_t midi_queue_head = 0;
 int16_t midi_queue_tail = 0;
 
+// ---- C-side MIDI channel router (see midi_router.h) ----
+// A UI uploads which boards each channel forwards to and whether Python still
+// needs the message (tulip.midi_routes); the input hook below then forwards
+// board bytes and drops Python entirely for channels C fully owns, so an MPE
+// controller streaming CC/bend no longer costs an MP schedule + heap allocs
+// per message.
+#include "midi_router.h"
+void tulip_send_midi_out_device(uint8_t* buf, uint16_t len, int device);  // defined below
+tulip_midi_route_t tulip_midi_routes[17];      // index by channel 1..16
+volatile uint8_t  tulip_midi_route_active = 0;  // table uploaded at least once
+volatile uint8_t  tulip_midi_notify_all = 1;    // schedule Python per message
+                                                // (legacy default: Python sees all)
+volatile uint32_t tulip_midi_activity = 0;      // messages seen (meter/UI poll)
+// Messages the last_midi ring dropped (drop-oldest on full) -- exposed via
+// tulip.midi_in_drops() so a stalled Python drain shows up as numbers instead
+// of mystery-missing notes.
+volatile uint32_t tulip_midi_ring_drops = 0;
+
+// Called from the port soft-reset path (main.c) as MicroPython state is
+// reinitialised. The route table lives in C globals that outlive a soft reset,
+// so a table a previous Python session uploaded would otherwise keep the router
+// armed -- silently owning C channels and dropping their messages before Python
+// re-runs -- leaving the fresh session blind on those channels until it happens
+// to re-upload. Drop back to the cold-boot default (route_active = 0,
+// notify_all = 1): the router releases every channel to Python until Python
+// re-arms it with tulip.midi_routes(). The table contents can stay; only the
+// active flag must fall for the router to let go.
+void tulip_midi_router_reset(void) {
+    tulip_midi_route_active = 0;
+    tulip_midi_notify_all = 1;
+}
+
 // AMY calls this from its render task when the CPU overload failsafe trips
 // (it has already reset the synth and played its bleep). Hand off to Python
 // with the load as a percent -- a small int, so no cross-task heap allocation.
@@ -224,6 +256,31 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         }
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_true);
     } else {
+        tulip_midi_activity++;
+        // C-side router (see midi_router.h): board forwarding + Python-skip.
+        // Channels a UI fully owns (board bits set, no Python bit, notify_all
+        // off) are handled here without ever waking the Python scheduler.
+        if (len >= 1 && data[0] >= 0x80 && data[0] < 0xF0) {
+            tulip_midi_route_t *r = &tulip_midi_routes[(data[0] & 0x0F) + 1];
+            // Forward board bytes BEFORE the route_active gate: during the
+            // microsecond table rewrite route_active is 0 (see
+            // tulip.midi_routes), but board_mask is a single 16-bit store, so a
+            // mid-rewrite read yields the old or new mask, never a torn value --
+            // a board-directed message in that window is still delivered.
+            // Before the first upload board_mask is 0, so this forwards nothing:
+            // identical to the pre-router path.
+            uint16_t bm = r->board_mask;
+            for (int d = 0; bm; ++d, bm >>= 1) {
+                if (bm & 1) tulip_send_midi_out_device(data, len, d);
+            }
+            // The Python-skip decision gates on route_active: only once the
+            // table is fully published do we trust flags/notify_all to drop
+            // Python entirely.
+            if (tulip_midi_route_active
+                    && !(r->flags & TULIP_MIDI_ROUTE_PY) && !tulip_midi_notify_all) {
+                return;   // fully handled in C: no queue, no scheduler
+            }
+        }
         for(uint32_t i = 0; i < (uint32_t)len; i++) {
             if(i < MAX_MIDI_BYTES_PER_MESSAGE) {
                 //fprintf(stderr, "%02x ", data[i]);
@@ -233,9 +290,9 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
         last_midi_len[midi_queue_tail] = (uint16_t)len;
         midi_queue_tail = (midi_queue_tail + 1) % MIDI_QUEUE_DEPTH;
         if (midi_queue_tail == midi_queue_head) {
-            // Queue wrap, drop oldest item.
+            // Queue wrap, drop oldest item -- count it (tulip.midi_in_drops()).
             midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
-            //fprintf(stderr, "dropped midi message\n");
+            tulip_midi_ring_drops++;
         }
 
         // We tell Python that a MIDI message has been received
@@ -260,7 +317,13 @@ void midi_local(uint8_t * bytes, uint16_t len) {
 extern bool midi_has_out;
 extern void send_usb_midi_out(uint8_t * data, uint16_t len);
 
-void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
+// device: -1 = broadcast to the USB-MIDI OUT + AMY (default, back-compatible);
+//          0.. = a specific output device only. A targeted send does NOT also
+// go to AMY, so routing a channel to a board doesn't double-play it on the
+// Tulip's own synth. The stock host is single-device, so it reaches its one
+// OUT device regardless of index; per-device fan-out (device >= 1) needs a
+// multi-device USB host layer.
+void tulip_send_midi_out_device(uint8_t* buf, uint16_t len, int device) {
     // check if we have USB HOST midi, which is handled by Tulip only - not AMYBOARD or TDECK
 #ifdef ESP_PLATFORM
 #ifndef TDECK
@@ -272,9 +335,14 @@ void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
 #endif
 #endif
 #ifndef AMY_IS_EXTERNAL
-    // Also send out via AMY
-    amy_external_midi_output(buf, len);
+    // Also send out via AMY, but only for a broadcast (untargeted) send.
+    if(device < 0) amy_external_midi_output(buf, len);
 #endif
+}
+
+// Back-compatible entry point (broadcast + AMY), used by existing callers.
+void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
+    tulip_send_midi_out_device(buf, len, -1);
 }
 
 #ifndef AMY_IS_EXTERNAL

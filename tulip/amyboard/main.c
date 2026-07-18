@@ -59,6 +59,7 @@
 #include "mpthreadport.h"
 
 #include "tsequencer.h"
+#include "midi_router.h"
 
 
 #if MICROPY_BLUETOOTH_NIMBLE
@@ -236,7 +237,13 @@ soft_reset:
     readline_init0();
 
     MP_STATE_PORT(native_code_pointers) = MP_OBJ_NULL;
-    
+
+    // The C-side MIDI router (amy_connector.c) keeps its route table in globals
+    // that outlive a soft reset. Drop it back to its cold-boot default here, as
+    // MicroPython state reinitialises, so the fresh Python session isn't blind
+    // on channels a previous session handed to C until it re-uploads routes.
+    tulip_midi_router_reset();
+
     // initialise peripherals
     machine_pins_init();
     #if MICROPY_PY_MACHINE_I2S

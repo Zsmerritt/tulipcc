@@ -16,6 +16,7 @@
 #include "amy_midi.h"
 #endif
 #include "amy_connector.h"
+#include "midi_router.h"
 #include "tsequencer.h"
 #if !defined(AMYBOARD) && !defined(AMYBOARD_WEB) && !defined(AMYBOARD_VCV)
 #include "ui.h"
@@ -351,13 +352,18 @@ STATIC mp_obj_t tulip_sysex_in(size_t n_args, const mp_obj_t *args) {
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_sysex_in_obj, 0, 0, tulip_sysex_in);
 
-extern void tulip_send_midi_out(uint8_t *, uint16_t);
+extern void tulip_send_midi_out_device(uint8_t *, uint16_t, int);
 
+// tulip.midi_out(bytes_or_list, [device]) -- device: omit/-1 = broadcast to the
+// USB-MIDI OUT (+ AMY); 0.. = a specific output device only (for addressing an
+// individual board in a fleet; see tulip.num_midi_devices()).
 STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
+    int device = -1;
+    if(n_args > 1) device = mp_obj_get_int(args[1]);
     if(mp_obj_get_type(args[0]) == &mp_type_bytes) {
         mp_buffer_info_t bufinfo;
         mp_get_buffer(args[0], &bufinfo, MP_BUFFER_READ);
-        tulip_send_midi_out((uint8_t*)bufinfo.buf, bufinfo.len);
+        tulip_send_midi_out_device((uint8_t*)bufinfo.buf, bufinfo.len, device);
     } else {
         mp_obj_t *items;
         size_t len;
@@ -366,13 +372,13 @@ STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
         for(uint16_t i=0;i<(uint16_t)len;i++) {
             b[i] = mp_obj_get_int(items[i]);
         }
-        tulip_send_midi_out(b, len);
+        tulip_send_midi_out_device(b, len, device);
         free_caps(b);
     }
     return mp_const_none;
 }
 
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 1, tulip_midi_out);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 2, tulip_midi_out);
 
 
 // Send a message on the "local bus", as if it was received from physical midi in
@@ -396,6 +402,63 @@ STATIC mp_obj_t tulip_midi_local(size_t n_args, const mp_obj_t *args) {
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_local_obj, 1, 1, tulip_midi_local);
+
+
+// ---- C-side MIDI router upload (see midi_router.h; consumed by the input
+// hook in amy_connector.c) ----
+
+// tulip.midi_routes(board_masks, python_mask, [notify_all])
+//   board_masks: up to 16 ints (channels 1..16), bit d = forward to device d
+//   python_mask: bit (ch-1) = Python routing still needed on that channel
+//   notify_all:  schedule the Python drain for EVERY message (a MIDI monitor,
+//                or any Python consumer that wants the full stream)
+// Channels with no board bits, no python bit and notify_all=0 never touch
+// Python at all -- the input hook handles them entirely in C.
+//
+// CONCURRENCY INVARIANT (deactivate-around-rewrite): the input hook runs on
+// the AMY MIDI task and reads this table concurrently. We drop
+// tulip_midi_route_active to 0 for the duration of the rewrite; while it is 0
+// the hook falls back to notifying Python (it never trusts a half-written
+// flags/notify_all decision), and it re-reads route_active AFTER forwarding
+// board bytes so a message mid-rewrite is still forwarded (board_mask is a
+// single 16-bit store, so it is read atomically -- old mask or new, never
+// torn). The compiler barrier + volatile store ordering publishes the whole
+// table before route_active goes back to 1.
+STATIC mp_obj_t tulip_midi_routes_fn(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t *items;
+    size_t alen;
+    mp_obj_get_array(args[0], &alen, &items);
+    uint32_t py_mask = mp_obj_get_int(args[1]);
+    tulip_midi_route_active = 0;
+    for (int ch = 1; ch <= 16; ch++) {
+        uint16_t bm = (ch - 1 < (int)alen) ? (uint16_t)mp_obj_get_int(items[ch - 1]) : 0;
+        tulip_midi_routes[ch].board_mask = bm;
+        tulip_midi_routes[ch].flags = (py_mask >> (ch - 1)) & 1;
+    }
+    tulip_midi_notify_all = (n_args > 2 && mp_obj_is_true(args[2])) ? 1 : 0;
+    __asm__ volatile("" ::: "memory");   // publish the table before re-arming
+    tulip_midi_route_active = 1;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_routes_obj, 2, 3, tulip_midi_routes_fn);
+
+// tulip.midi_activity() -- monotonic count of MIDI messages seen by the C
+// layer, for a UI activity meter (poll it instead of tapping the stream in
+// Python).
+STATIC mp_obj_t tulip_midi_activity_fn(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(tulip_midi_activity);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_activity_obj, 0, 0, tulip_midi_activity_fn);
+
+// tulip.midi_in_drops() -- cumulative count of parsed messages the last_midi
+// ring dropped because Python wasn't draining tulip.midi_in() fast enough.
+// Nonzero is the difference between "debuggable" and "the note just never
+// happened".
+extern volatile uint32_t tulip_midi_ring_drops;
+STATIC mp_obj_t tulip_midi_in_drops(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(tulip_midi_ring_drops);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_drops_obj, 0, 0, tulip_midi_in_drops);
 
 
 #ifndef __EMSCRIPTEN__
@@ -1869,6 +1932,9 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_routes), MP_ROM_PTR(&tulip_midi_routes_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_activity), MP_ROM_PTR(&tulip_midi_activity_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_in_drops), MP_ROM_PTR(&tulip_midi_in_drops_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
