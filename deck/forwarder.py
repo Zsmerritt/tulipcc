@@ -288,9 +288,15 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
 def reapply_params(iid):
     """Re-send one instrument's params to its EXISTING synth (no rebuild), for
     live audition while editing. Falls back to a full start() if it has no synth
-    yet."""
+    yet -- UNLESS it's a board instrument, which never has one: board params
+    aren't pushed over MIDI here (that's a separate feature), so calling
+    start() on every parameditor slider tick would pay a full ~80-200ms router
+    rebuild for zero effect. Just no-op instead."""
     syn = _state['synths'].get(iid)
     if syn is None:
+        instr = deckcfg.get_instrument(iid) or {}
+        if instr.get('device') != 'internal':
+            return
         start()
         return
     instr = deckcfg.get_instrument(iid) or {}
@@ -560,6 +566,11 @@ def _start_once():
     _state['has_device_arg'] = None    # re-probe (firmware can't change, but
                                        # tests swap the tulip module)
     internal_synths = []
+    board_instrs = []      # (iid, channel) for the MPE-member-channel warning
+                           # pass below -- board notes route in _route()
+                           # BEFORE mpe_members is checked, so a board on a
+                           # member channel is muted just like a layered
+                           # internal instrument would be.
 
     # Pre-pass: channels with exactly ONE enabled internal instrument get a
     # synth whose number == the channel, so AMY's C layer grabs and plays the
@@ -780,6 +791,24 @@ def _start_once():
             except Exception:
                 pass
             route[1].append(dev)
+            board_instrs.append((instr['id'], ch))
+
+    # A board instrument on an MPE MEMBER channel is muted the same way a
+    # layered internal instrument is (_route returns early for member
+    # channels before it ever looks at `boards`) -- but silently, since
+    # unlike the layered-internal case above there was no warning for it.
+    # Checked here, after the full pass, because a zone's member channels
+    # are only known once its master instrument has been processed.
+    if _state['mpe_members']:
+        for iid, ch in board_instrs:
+            if ch in _state['mpe_members']:
+                try:
+                    import decklog
+                    decklog.log(
+                        "forwarder: ch%d is an MPE member channel; the board "
+                        "instrument there will not sound" % ch)
+                except Exception:
+                    pass
 
     # Tear down MPE zones that are no longer configured (toggle turned off,
     # instrument disabled, or master channel moved).
