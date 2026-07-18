@@ -135,6 +135,7 @@ list(APPEND MICROPY_SOURCE_PORT
     ${MICROPY_PORT_DIR}/modsocket.c
     ${MICROPY_PORT_DIR}/mphalport.c
     ${MICROPY_PORT_DIR}/usb.c
+    ${MICROPY_PORT_DIR}/flash_fence_wrap.c
 
     ${MICROPY_ESP32_DIR}/panichandler.c
     ${MICROPY_ESP32_DIR}/adc.c
@@ -386,6 +387,18 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
 
 target_link_options(${MICROPY_TARGET} PUBLIC
      ${MICROPY_LINK_TINYUSB}
+     # Route EVERY partition write/erase (littlefs, OTA, NVS, and any future
+     # write path) through the AMY flash fence -- see flash_fence_wrap.c. This
+     # is what makes "flash write during an mmap'd-PCM render crashes the S3"
+     # structurally impossible instead of opt-in Python discipline.
+     -Wl,--wrap=esp_partition_write
+     -Wl,--wrap=esp_partition_write_raw
+     -Wl,--wrap=esp_partition_erase_range
+     # ... and the chip-level API beneath it: MicroPython's legacy
+     # esp.flash_write/flash_erase bypass the partition layer. Recursion is
+     # safe -- the fence is a depth counter.
+     -Wl,--wrap=esp_flash_write
+     -Wl,--wrap=esp_flash_erase_region
 )
 
 # Add additional extmod and usermod components.

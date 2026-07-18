@@ -8,6 +8,11 @@
 #define MIDI_QUEUE_DEPTH 1024
 #define MAX_SYSEX_BYTES (16384)
 extern uint8_t * sysex_buffer;
+#ifdef ESP_PLATFORM
+// Extend AMY's flash-fence window to cover a mmap'd PCM region (see
+// amy_connector.c / flash_fence_wrap.c). Call once per mapped sample bank.
+void tulip_widen_flash_fence(const void *map, uint32_t size);
+#endif
 #ifdef __EMSCRIPTEN__
 void midi_out(uint8_t * bytes, uint16_t len) ;
 

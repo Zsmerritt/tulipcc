@@ -59,6 +59,52 @@ STATIC mp_obj_t tulip_ticks_ms(size_t n_args, const mp_obj_t *args) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_ticks_ms_obj, 0, 0, tulip_ticks_ms);
 
+#ifdef ESP_PLATFORM
+// tulip.flash_fence(1/0): raise/drop AMY's flash fence around filesystem
+// writes. While up, PCM renders whose samples live in memory-mapped flash emit
+// silence (phase held) -- a flash program/erase suspends the cache those
+// fetches go through while the render task keeps running from PSRAM, and one
+// mapped fetch inside the write window hard-crashes the chip (dual-core
+// TG1WDT). Everything else (computed voices, PSRAM banks) keeps sounding.
+//
+// Normally you do NOT need to call this: flash_fence_wrap.c fences every
+// partition write/erase in C automatically (see flash_fence_auto()). This
+// remains as a manual override for a write path that bypasses the wrapped API.
+//
+// CROSS-REPO DEPENDENCY: amy_flash_fence (and the render-time PCM-fetch skip
+// keyed on it) is provided AMY-side; this binding and flash_fence_wrap.c need
+// that AMY support present.
+#if !defined(AMYBOARD)
+// The C storage layer only lowers the fence when no wrapped write is active; a
+// manual drop rides out on the wrapper's own deferred drop so it can't reopen
+// the crash window mid-write.
+extern void tulip_flash_fence_manual_drop(void);
+#endif
+STATIC mp_obj_t tulip_flash_fence(size_t n_args, const mp_obj_t *args) {
+    uint8_t v = (uint8_t)mp_obj_get_int(args[0]);
+    if(v) {
+        amy_flash_fence = 1;
+    } else {
+#if !defined(AMYBOARD)
+        tulip_flash_fence_manual_drop();
+#else
+        amy_flash_fence = 0;   // no wrap layer on amyboard: nothing to defer to
+#endif
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_obj, 1, 1, tulip_flash_fence);
+
+// tulip.flash_fence_auto(): True -- marker that this firmware fences EVERY
+// partition write/erase in C (flash_fence_wrap.c linker wraps), so Python
+// write paths need no fence machinery of their own. Probe with hasattr();
+// manual flash_fence() remains as an override.
+STATIC mp_obj_t tulip_flash_fence_auto(size_t n_args, const mp_obj_t *args) {
+    return mp_const_true;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_auto_obj, 0, 0, tulip_flash_fence_auto);
+#endif
+
 STATIC mp_obj_t tulip_stderr_write(size_t n_args, const mp_obj_t *args) {
     const char *msg = mp_obj_str_get_str(args[0]);
     fprintf(stderr, "%s\n", msg);
@@ -1848,6 +1894,10 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_set_screen_as_repl_obj, 1,1, tu
 STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR__tulip) },
     { MP_ROM_QSTR(MP_QSTR_ticks_ms), MP_ROM_PTR(&tulip_ticks_ms_obj) },
+#ifdef ESP_PLATFORM
+    { MP_ROM_QSTR(MP_QSTR_flash_fence), MP_ROM_PTR(&tulip_flash_fence_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence_auto), MP_ROM_PTR(&tulip_flash_fence_auto_obj) },
+#endif
     { MP_ROM_QSTR(MP_QSTR_stderr_write), MP_ROM_PTR(&tulip_stderr_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_defer), MP_ROM_PTR(&tulip_defer_obj) },
     { MP_ROM_QSTR(MP_QSTR_seq_add_callback), MP_ROM_PTR(&tulip_seq_add_callback_obj) },

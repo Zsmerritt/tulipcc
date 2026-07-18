@@ -473,6 +473,26 @@ void mp_reboot_hook(uint8_t mode) {
 #endif
 }
 
+#ifdef ESP_PLATFORM
+// Grow AMY's flash-fence window to cover a memory-mapped PCM region. Renders
+// that fetch samples from [amy_flash_fence_lo, amy_flash_fence_hi) emit silence
+// while the fence is up (see flash_fence_wrap.c / tulip.flash_fence()), so a
+// flash program/erase can never race a mapped sample fetch. Any board that
+// mmaps a flash partition into AMY as a PCM/sample bank should call this once
+// per mapped region so that region is covered; PSRAM-fallback banks land
+// outside the window and keep sounding through writes.
+//
+// CROSS-REPO DEPENDENCY: amy_flash_fence_lo / amy_flash_fence_hi are the
+// AMY-side fence-window bounds (same AMY support as amy_flash_fence).
+void tulip_widen_flash_fence(const void *map, uint32_t size) {
+    if (amy_flash_fence_lo == NULL || map < amy_flash_fence_lo)
+        amy_flash_fence_lo = map;
+    const void *end = (const void *)((const uint8_t *)map + size);
+    if (end > amy_flash_fence_hi)
+        amy_flash_fence_hi = end;
+}
+#endif
+
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
 // Map the `drums` flash partition (raw drums.bin from the amy repo, flashed by
 // fs_create.py) into the data address space and hand it to AMY, which serves
