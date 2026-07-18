@@ -174,7 +174,7 @@ extern uint8_t tfb_font;
 extern uint8_t tfb_active;
 extern uint8_t tfb_y_row; 
 extern uint8_t tfb_x_col; 
-extern int32_t vsync_count;
+extern volatile int32_t vsync_count;
 extern uint8_t brightness;
 extern float reported_fps;
 extern float reported_gpu_usage;

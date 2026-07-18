@@ -398,6 +398,47 @@ STATIC mp_obj_t tulip_midi_local(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_local_obj, 1, 1, tulip_midi_local);
 
 
+// --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
+// display.c provides these only on boards with the main LVGL LCD -- not on
+// AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
+// display.c. Keep the Python functions defined everywhere (so the module table
+// is valid) but no-op where the display backend is absent.
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
+extern void display_set_partial(int);
+extern void display_set_vsync(int);
+extern int display_get_partial(void);
+extern int display_get_vsync(void);
+#endif
+
+// tulip.display_partial([on]) -- buffered partial rendering: LVGL renders each
+// dirty region into a scratch buffer and the flush copies it into the live
+// framebuffer, so single-element (touch) updates land cleanly instead of
+// tearing. Returns the current state.
+STATIC mp_obj_t tulip_display_partial(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
+    if(n_args > 0) display_set_partial(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_partial());
+#else
+    (void)n_args; (void)args;
+    return mp_obj_new_int(0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_partial_obj, 0, 1, tulip_display_partial);
+
+// tulip.display_vsync([on]) -- gate the partial-mode copy to vsync (tear-free
+// vs lower latency). Only has an effect when display_partial is on.
+STATIC mp_obj_t tulip_display_vsync(size_t n_args, const mp_obj_t *args) {
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
+    if(n_args > 0) display_set_vsync(mp_obj_get_int(args[0]));
+    return mp_obj_new_int(display_get_vsync());
+#else
+    (void)n_args; (void)args;
+    return mp_obj_new_int(0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_vsync_obj, 0, 1, tulip_display_vsync);
+
+
 #ifndef __EMSCRIPTEN__
 STATIC mp_obj_t tulip_amy_send(size_t n_args, const mp_obj_t *args) {
     amy_add_message((char*)mp_obj_str_get_str(args[0]));
@@ -1869,6 +1910,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
