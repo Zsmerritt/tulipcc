@@ -3947,3 +3947,138 @@ def test_decklog_logfile_accessor(decklog_mod):
     decklog = decklog_mod
     assert decklog.logfile() == decklog._LOGFILE
     assert decklog.logfile() == decklog._lf()
+
+
+# ---------------------------------------------------------------------------
+# boardlink: deck <-> AMYboard transport (pure logic -- codec + framing only;
+# UsbMidiLink/UartLink touch tulip/machine and aren't exercised on the host).
+# ---------------------------------------------------------------------------
+
+def test_encode7_decode7_round_trip_empty_and_one_byte():
+    import boardlink as bl
+    assert bl.decode7(bl.encode7(b'')) == b''
+    for b in (0x00, 0x01, 0x7f, 0x80, 0xff):
+        one = bytes([b])
+        assert bl.decode7(bl.encode7(one)) == one
+
+
+def test_encode7_decode7_round_trip_all_256_byte_values():
+    import boardlink as bl
+    data = bytes(range(256))
+    encoded = bl.encode7(data)
+    assert bl.decode7(encoded) == data
+
+
+def test_encode7_output_is_7bit_sysex_safe():
+    import boardlink as bl
+    # every byte of a base64 encoding must be a legal SysEx data byte
+    # (0x00-0x7F) since encode7's whole job is getting 8-bit data across a
+    # link that reserves 0xF0/0xF7 as framing bytes.
+    data = bytes(range(256)) * 4
+    encoded = bl.encode7(data)
+    assert all(0x00 <= b <= 0x7F for b in encoded)
+    # and it must not itself contain a literal SysEx delimiter
+    assert 0xF0 not in encoded and 0xF7 not in encoded
+
+
+def test_encode7_decode7_round_trip_a_few_kb_random():
+    import boardlink as bl
+    import os
+    for size in (0, 1, 3, 4096, 5000):
+        data = os.urandom(size) if size else b''
+        assert bl.decode7(bl.encode7(data)) == data
+
+
+def test_encode7_has_no_trailing_newline():
+    import boardlink as bl
+    # binascii.b2a_base64 appends a trailing newline by default on both
+    # MicroPython and CPython; encode7 must strip it (matches the
+    # binascii.b2a_base64(...).rstrip() idiom already used in
+    # tulip/shared/amyboard-py/amyboard.py for the same reason).
+    assert not bl.encode7(b'hello world').endswith(b'\n')
+
+
+def test_pack_unpack_frame_round_trip():
+    import boardlink as bl
+    for opcode, payload in ((bl.OP_PING, b''),
+                             (bl.OP_VERSION, b'ping'),
+                             (bl.OP_OTA_BEGIN, bytes(range(50))),
+                             (0x7f, b'x')):
+        frame = bl.pack_frame(opcode, payload)
+        assert bl.unpack_frame(frame) == (opcode, payload)
+
+
+def test_pack_frame_default_empty_payload():
+    import boardlink as bl
+    frame = bl.pack_frame(bl.OP_STATE_PUSH)
+    assert frame == bytes([bl.OP_STATE_PUSH])
+    assert bl.unpack_frame(frame) == (bl.OP_STATE_PUSH, b'')
+
+
+def test_pack_frame_rejects_opcode_out_of_range():
+    import boardlink as bl
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        bl.pack_frame(-1, b'')
+    with _pytest.raises(ValueError):
+        bl.pack_frame(0x80, b'')
+
+
+def test_unpack_frame_empty_is_none():
+    import boardlink as bl
+    assert bl.unpack_frame(b'') is None
+    assert bl.unpack_frame(None) is None
+
+
+def test_build_parse_envelope_round_trip():
+    import boardlink as bl
+    for payload in (b'', b'zIZ', bytes(range(0, 0x80))):
+        raw = bl.build_envelope(payload)
+        assert raw[0] == 0xF0 and raw[-1] == 0xF7
+        assert raw[1:4] == bytes(bl.MFR[1:4])
+        assert bl.parse_envelope(raw) == payload
+
+
+def test_parse_envelope_rejects_malformed_or_foreign_frames():
+    import boardlink as bl
+    assert bl.parse_envelope(None) is None
+    assert bl.parse_envelope(b'') is None
+    assert bl.parse_envelope(bytes([0xF0, 0x00, 0x03, 0x45, 0xF7])) == b''
+    # too short to even hold the manufacturer id
+    assert bl.parse_envelope(bytes([0xF0, 0xF7])) is None
+    # missing F0/F7 delimiters
+    assert bl.parse_envelope(bytes([0x00, 0x03, 0x45, 0x41, 0x4B])) is None
+    # right length, wrong manufacturer id (some other device's SysEx)
+    other = bytes([0xF0, 0x00, 0x00, 0x0E, 0x01, 0xF7])
+    assert bl.parse_envelope(other) is None
+
+
+def test_open_factory_selects_transport_class():
+    import boardlink as bl
+    usb = bl.open(0)
+    assert isinstance(usb, bl.UsbMidiLink) and usb.device == 0
+    uart = bl.open(0, transport='uart')
+    assert isinstance(uart, bl.UartLink) and uart.device == 0
+    with pytest.raises(ValueError):
+        bl.open(0, transport='carrier-pigeon')
+
+
+def test_usbmidi_send_wraps_envelope_and_uses_tulip_midi_out(deck):
+    # `deck` fixture installs the tulip mock (records midi_out calls).
+    import boardlink as bl
+    link = bl.open(3)   # USB device index 3
+    link.send(b'zIZ')
+    sent = sys.modules['tulip']._sent
+    assert len(sent) == 1
+    data, device = sent[0]
+    assert device == 3
+    assert data == bl.build_envelope(b'zIZ')
+
+
+def test_uartlink_send_recv_are_unimplemented_stubs():
+    import boardlink as bl
+    uart = bl.UartLink(0)
+    with pytest.raises(NotImplementedError):
+        uart.send(b'zIZ')
+    with pytest.raises(NotImplementedError):
+        uart.recv()
