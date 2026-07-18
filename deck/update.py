@@ -250,10 +250,13 @@ def _sum_sizes(files):
 
 # --------------------------------------------------------------------- writer
 
-def _default_writer(dest_path, data):
-    """Device writer: atomic write-beside-rename, fenced against AMY's PCM
-    rendering via deckcfg.fenced_write (do NOT hand-roll a flash-write path).
-    Imported lazily so the engine stays host-importable."""
+def _default_writer(dest_path, src_path):
+    """Device writer: streams `src_path` into `dest_path` in _CHUNK-sized
+    read/write pieces -- never holds a whole file in RAM, matching the
+    verify path's (_sha256_file) memory safety -- then completes with an
+    atomic write-beside-rename, fenced against AMY's PCM rendering via
+    deckcfg.fenced_write (do NOT hand-roll a flash-write path). Imported
+    lazily so the engine stays host-importable."""
     import os
     import deckcfg
 
@@ -266,11 +269,19 @@ def _default_writer(dest_path, data):
     tmp = dest_path + '.new'
 
     def do():
-        f = open(tmp, 'wb')
+        fin = open(src_path, 'rb')
         try:
-            f.write(data)
+            fout = open(tmp, 'wb')
+            try:
+                while True:
+                    chunk = fin.read(_CHUNK)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+            finally:
+                fout.close()
         finally:
-            f.close()
+            fin.close()
         try:
             os.rename(tmp, dest_path)         # atomic clobber on littlefs
         except OSError:
@@ -317,8 +328,9 @@ def apply_bundle(bundle_dir, progress=None, writer=None,
 
     Reads the manifest, enforces the format guard, VERIFIES every file's sha256
     (aborting the WHOLE bundle if any fail -- writes nothing), then writes each
-    verified file atomically via `writer(dest_path, data)` (default:
-    deckcfg.fenced_write). Never writes under /var.
+    verified file atomically via `writer(dest_path, src_path)` (default:
+    deckcfg.fenced_write, streaming _CHUNK-sized pieces -- this engine never
+    reads a whole bundle file into RAM). Never writes under /var.
 
     Returns a result dict:
         {'ok': bool, 'fw_version': str|None, 'applied': [rel,...],
@@ -381,12 +393,11 @@ def apply_bundle(bundle_dir, progress=None, writer=None,
                          'item_done': 0, 'item_total': size,
                          'overall_done': overall, 'overall_total': overall_total})
         try:
-            f = open(ent['src'], 'rb')
-            try:
-                data = f.read()
-            finally:
-                f.close()
-            writer(dest, data)
+            # Hand the writer the SRC PATH, not the file's bytes: the writer
+            # streams src -> dest in _CHUNK-sized pieces (matching
+            # _sha256_file's memory safety), so a large bundle file is never
+            # held whole in RAM.
+            writer(dest, ent['src'])
         except OSError as e:
             # A verified file that won't write now is a real failure. The atomic
             # writer means no half-file was left behind.

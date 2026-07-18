@@ -53,7 +53,12 @@ def tail_lines(data, n=40, truncated=True):
         return []
     text = _decode(data) if isinstance(data, bytes) else data
     lines = text.split('\n')
-    if truncated and len(lines) > 1:
+    if truncated and lines:
+        # A truncated read always starts mid-line -- even when the whole
+        # window landed inside one long line (no '\n' at all, so `lines` has
+        # just that one cut-off fragment). Drop it unconditionally rather
+        # than only when len(lines) > 1, else the fragment gets shown as if
+        # it were a complete line.
         lines = lines[1:]            # drop the partial leading fragment
     lines = [l for l in lines if l]  # drop blank lines (trailing newline)
     return lines[-n:]

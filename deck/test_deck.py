@@ -1455,6 +1455,43 @@ def test_forwarder_reapply_params_reuses_synth(deck):
                for k in amy._sends)
 
 
+def test_forwarder_reapply_params_board_instrument_is_noop(deck):
+    # A board instrument never gets a local synth (_state['synths']), so the
+    # old code fell through to a full start() -- an ~80-200ms router rebuild
+    # -- on EVERY parameditor slider tick during a drag, for zero benefit
+    # (board params aren't pushed here; that's a separate feature). It must
+    # now no-op instead of rebuilding.
+    deckcfg, forwarder = deck
+    b = deckcfg.add_instrument(device=0, channel=2)['id']
+    forwarder.start()
+    assert b not in forwarder._state['synths']
+    calls = []
+    orig_start = forwarder.start
+    forwarder.start = lambda: calls.append(1)
+    try:
+        forwarder.reapply_params(b)
+        assert calls == []                      # no rebuild triggered
+    finally:
+        forwarder.start = orig_start
+
+
+def test_forwarder_reapply_params_internal_missing_synth_still_rebuilds(deck):
+    # Regression guard: an INTERNAL instrument with no synth yet (e.g. before
+    # the first start()) must still fall back to a full start() -- only
+    # board instruments get the no-op short-circuit.
+    deckcfg, forwarder = deck
+    iid = deckcfg.instruments()[0]['id']
+    assert iid not in forwarder._state['synths']
+    calls = []
+    orig_start = forwarder.start
+    forwarder.start = lambda: calls.append(1)
+    try:
+        forwarder.reapply_params(iid)
+        assert calls == [1]
+    finally:
+        forwarder.start = orig_start
+
+
 def test_forwarder_reapply_fx(deck):
     deckcfg, forwarder = deck
     forwarder.start()
@@ -3072,6 +3109,118 @@ def test_mpe_zone_layered_partner_is_warned(deck):
             sys.modules['decklog'] = prev
 
 
+# --- forwarder: a BOARD instrument on an MPE member channel is silently
+# muted (_route returns early for member channels before it ever looks at
+# `boards`) -- extend the layered-internal warning to cover this case too.
+def test_board_instrument_on_mpe_member_channel_is_warned(deck):
+    deckcfg, forwarder = deck
+    deckcfg.set_value('mpe_enabled', True)
+    a = deckcfg.load()['instruments'][0]['id']     # master on channel 1
+    deckcfg.set_instrument_mpe(a, 'enabled', True)
+    # board instrument sitting on ch2 -- a member channel of the ch1 zone
+    # (default members=15 spans channels 2-16)
+    b = deckcfg.add_instrument(device=0, channel=2)['id']
+    logs = []
+    fake = types.ModuleType('decklog')
+    fake.log = lambda m: logs.append(m)
+    fake.dbg = lambda *a, **k: None
+    fake.err = lambda *a, **k: None
+    prev = sys.modules.get('decklog')
+    sys.modules['decklog'] = fake
+    try:
+        forwarder.start()
+        assert 2 in forwarder._state['mpe_members']
+        # pinned CURRENT behaviour: _route mutes ch2 before it ever forwards
+        # to a board, but the mute is now logged.
+        assert any('ch2' in m and 'board' in m for m in logs)
+    finally:
+        if prev is None:
+            sys.modules.pop('decklog', None)
+        else:
+            sys.modules['decklog'] = prev
+
+
+def test_board_instrument_not_on_member_channel_no_warning(deck):
+    # A board instrument OUTSIDE the MPE zone's member-channel range must
+    # not trigger the warning.
+    deckcfg, forwarder = deck
+    a = deckcfg.load()['instruments'][0]['id']     # master on channel 1
+    deckcfg.set_value('mpe_enabled', True)
+    deckcfg.set_instrument_mpe(a, 'enabled', True)
+    deckcfg.set_instrument_mpe(a, 'members', 2)     # zone spans ch2-3 only
+    deckcfg.add_instrument(device=0, channel=10)    # well outside the zone
+    logs = []
+    fake = types.ModuleType('decklog')
+    fake.log = lambda m: logs.append(m)
+    fake.dbg = lambda *a, **k: None
+    fake.err = lambda *a, **k: None
+    prev = sys.modules.get('decklog')
+    sys.modules['decklog'] = fake
+    try:
+        forwarder.start()
+        assert 10 not in forwarder._state['mpe_members']
+        assert not any('board' in m for m in logs)
+    finally:
+        if prev is None:
+            sys.modules.pop('decklog', None)
+        else:
+            sys.modules['decklog'] = prev
+
+
+# --- amyfleet: enroll_from_config dedups by device -- a conflicting 2nd
+# instrument on the same board is silently never enrolled (its notes never
+# sound); that drop must be logged, not silent.
+def test_amyfleet_enroll_conflict_channel_is_warned(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    # two instruments routed to the SAME board (device 0) on DIFFERENT
+    # channels -- enroll_from_config dedups by device, so only the first is
+    # ever enrolled; the conflict must be logged, not dropped silently.
+    deckcfg.add_instrument(device=0, channel=2)
+    deckcfg.add_instrument(device=0, channel=5)
+    logs = []
+    fake = types.ModuleType('decklog')
+    fake.log = lambda m: logs.append(m)
+    fake.dbg = lambda *a, **k: None
+    fake.err = lambda *a, **k: None
+    prev = sys.modules.get('decklog')
+    sys.modules['decklog'] = fake
+    try:
+        n = amyfleet.enroll_from_config()
+        assert n == 1                              # dedup behaviour unchanged
+        assert any('ch2' in m and 'ch5' in m for m in logs)
+    finally:
+        if prev is None:
+            sys.modules.pop('decklog', None)
+        else:
+            sys.modules['decklog'] = prev
+
+
+def test_amyfleet_enroll_no_warning_when_channels_match(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    deckcfg.add_instrument(device=0, channel=2)
+    deckcfg.add_instrument(device=0, channel=2)   # same device+channel: no conflict
+    logs = []
+    fake = types.ModuleType('decklog')
+    fake.log = lambda m: logs.append(m)
+    fake.dbg = lambda *a, **k: None
+    fake.err = lambda *a, **k: None
+    prev = sys.modules.get('decklog')
+    sys.modules['decklog'] = fake
+    try:
+        n = amyfleet.enroll_from_config()
+        assert n == 1
+        assert logs == []
+    finally:
+        if prev is None:
+            sys.modules.pop('decklog', None)
+        else:
+            sys.modules['decklog'] = prev
+
+
 # --- update engine: manifest-driven /user apply (deck/UPGRADE.md Phase 1) ---
 #
 # The engine is pure stdlib (no tulip/lvgl/deckcfg), so these run straight on
@@ -3094,21 +3243,31 @@ def _mk_update():
 
 
 def _capture_writer():
-    """A writer that records (dest, data) instead of touching flash."""
+    """A writer that records (dest, data) instead of touching flash. The
+    engine now hands writers a SRC PATH (not bytes) so it never holds a
+    whole bundle file in RAM; this test writer reads the src itself just to
+    let assertions compare bytes -- that read is host-side test plumbing,
+    not part of the production memory-safety path."""
     calls = []
 
-    def w(dest, data):
-        calls.append((dest, data))
+    def w(dest, src):
+        with open(src, 'rb') as f:
+            calls.append((dest, f.read()))
     return calls, w
 
 
-def _fs_writer(dest, data):
-    """A writer that actually lays bytes down (for the round-trip test)."""
+def _fs_writer(dest, src):
+    """A writer that actually lays bytes down (for the round-trip test),
+    streaming src -> dest in chunks like the real default writer does."""
     parent = os.path.dirname(dest)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(dest, 'wb') as f:
-        f.write(data)
+    with open(src, 'rb') as fin, open(dest, 'wb') as fout:
+        while True:
+            chunk = fin.read(4096)
+            if not chunk:
+                break
+            fout.write(chunk)
 
 
 def _write_bundle(bundle_dir, files, fmt=1, min_engine=1, fw='2026.07.17',
@@ -3295,6 +3454,86 @@ def test_update_progress_callback_reports_two_tiers(tmp_path):
     # sub-bar carries per-file identity + counts
     v = [e for e in events if e['stage'] == 'writing' and e.get('path') == 'b.py']
     assert v and v[0]['item_total'] == 3000 and v[0]['file_count'] == 2
+
+
+def test_apply_bundle_never_reads_a_whole_file_into_one_buffer(tmp_path):
+    # apply_bundle used to do `data = f.read()` (whole file) then hand it to
+    # the writer -- a real OOM risk for a large bundle file on tight-RAM
+    # boards. It must now hand the writer the SRC PATH so streaming is
+    # possible, never a full-file bytes object.
+    update = _mk_update()
+    bdir = str(tmp_path / 'b')
+    _write_bundle(bdir, {'deckui.py': b'Z' * 50000})
+    seen = []
+
+    def w(dest, arg):
+        seen.append(arg)
+        assert isinstance(arg, str)             # a path, never a bytes blob
+        assert not isinstance(arg, (bytes, bytearray))
+
+    res = update.apply_bundle(bdir, writer=w, user_root=str(tmp_path / 'user'))
+    assert res['ok'] is True
+    assert len(seen) == 1
+    # the path handed to the writer is readable and matches the source bytes
+    with open(seen[0], 'rb') as f:
+        assert f.read() == b'Z' * 50000
+
+
+def test_default_writer_streams_source_in_chunks(tmp_path):
+    # Exercise the real on-device writer (update._default_writer): it must
+    # read+write src -> dest in _CHUNK-sized pieces (matching
+    # _sha256_file's memory safety), never the whole file in one read, and
+    # still land the exact bytes atomically.
+    update = _mk_update()
+    _install_hw_mocks()
+    sys.modules.pop('deckcfg', None)
+    deckcfg = importlib.import_module('deckcfg')
+    deckcfg.PATH = str(tmp_path / 'deck_config.json')
+    sys.modules['deckcfg'] = deckcfg
+
+    body = (b'X' * update._CHUNK) + (b'Y' * 1234)   # > 1 chunk, uneven remainder
+    src = tmp_path / 'src.py'
+    src.write_bytes(body)
+    # forward slashes -- like every real dest_path (built via update._join),
+    # so _default_writer's '/'-based _mkdirs split actually fires on Windows
+    root = str(tmp_path).replace(os.sep, '/')
+    dest = root + '/user/deckui.py'
+
+    real_open = open
+    read_sizes = []
+
+    class _TrackedFile(object):
+        def __init__(self, f):
+            self._f = f
+
+        def read(self, n=-1):
+            data = self._f.read(n)
+            read_sizes.append(len(data))
+            return data
+
+        def __getattr__(self, name):
+            return getattr(self._f, name)
+
+    def tracking_open(path, mode='r', *a, **k):
+        f = real_open(path, mode, *a, **k)
+        if path == str(src) and 'r' in mode:
+            return _TrackedFile(f)
+        return f
+
+    import builtins
+    builtins.open = tracking_open
+    try:
+        update._default_writer(dest, str(src))
+    finally:
+        builtins.open = real_open
+
+    assert os.path.exists(dest)
+    with open(dest, 'rb') as f:
+        assert f.read() == body
+    assert not os.path.exists(dest + '.new')          # tmp renamed away
+    # streamed: more than one read, none of them the whole file at once
+    assert len(read_sizes) > 1
+    assert all(n <= update._CHUNK for n in read_sizes)
 
 
 # ===========================================================================
@@ -3969,6 +4208,26 @@ def test_read_tail_bytes_seeks_near_end_when_large(tmp_path):
     # the last line is always intact; a leading partial fragment is dropped
     assert out[-1] == "[200] line 200"
     assert all(l.startswith('[') for l in out)
+
+
+def test_tail_lines_truncated_single_fragment_is_dropped():
+    import logtail
+    # The whole tail window landed inside one long line (no '\n' anywhere in
+    # the read) -- text.split('\n') then has exactly ONE element. A
+    # truncated read always starts mid-line, so that lone fragment is a
+    # cut-off partial, not a complete line, and must be dropped -- the old
+    # `len(lines) > 1` guard let it through and displayed it as if whole.
+    data = b"...cut off in the middle of one very long unterminated line"
+    assert logtail.tail_lines(data, n=40, truncated=True) == []
+
+
+def test_tail_lines_not_truncated_single_line_is_kept():
+    import logtail
+    # Same shape (one fragment, no '\n') but truncated=False -- a short file
+    # read from byte 0, so the single line IS complete and must be kept.
+    data = b"only line, no trailing newline"
+    assert logtail.tail_lines(data, n=40, truncated=False) == [
+        "only line, no trailing newline"]
 
 
 def test_tail_lines_newest_last_and_capped_to_n():
