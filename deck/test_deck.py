@@ -420,6 +420,189 @@ def test_note_on_velocity_zero_is_note_off(deck):
     assert forwarder._state['notes'] == {}
 
 
+# --- MIDI monitor tap engagement (router-tap-fix) ---
+def _add_c_router(tulip_mod):
+    """Attach a capturing tulip.midi_routes so the C-router path is live in a
+    test (the shared mock omits it, keeping other tests on the no-router path).
+    Returns the list of (masks, py_mask, notify_all) uploads."""
+    calls = []
+    tulip_mod.midi_routes = (lambda masks, py_mask, notify_all=False:
+                             calls.append((list(masks), py_mask, bool(notify_all))))
+    tulip_mod.midi_activity = lambda: 0
+    return calls
+
+
+def test_c_router_tap_preserved_across_rebuild(deck):
+    # H1 regression pin: an instrument rebuild re-uploads the route table, and
+    # it MUST carry the tap flag forward -- else an open monitor silently loses
+    # its tap on the next rebuild (the reported "sometimes blind" behavior).
+    deckcfg, forwarder = deck
+    calls = _add_c_router(sys.modules['tulip'])
+    forwarder.start()                          # first upload: tap off
+    assert calls and calls[-1][2] is False
+    assert forwarder.set_midi_tap(True) is True
+    assert calls[-1][2] is True                # tap now live in C
+    forwarder.start()                          # rebuild an instrument
+    assert calls[-1][2] is True                # tap SURVIVED the rebuild
+    assert forwarder.tap_engaged() is True
+
+
+def test_set_midi_tap_reports_upload_failure(deck):
+    # #85: a router present but a failed upload must be reported (returns
+    # False), not swallowed -- a stale table could be gating Python with the
+    # tap off, i.e. a silently blind monitor.
+    deckcfg, forwarder = deck
+
+    def _boom(*a, **k):
+        raise RuntimeError('upload failed')
+    tulip = sys.modules['tulip']
+    tulip.midi_routes = _boom
+    tulip.midi_activity = lambda: 0
+    assert forwarder.set_midi_tap(True) is False
+    assert forwarder.tap_engaged() is False
+
+
+def test_set_midi_tap_engaged_without_c_router(deck):
+    # No C router in firmware: nothing suppresses Python, so the tap is
+    # vacuously engaged (the monitor sees everything) and must not report a
+    # failure.
+    deckcfg, forwarder = deck
+    tulip = sys.modules['tulip']
+    if hasattr(tulip, 'midi_routes'):
+        delattr(tulip, 'midi_routes')
+    assert forwarder.set_midi_tap(True) is True
+    assert forwarder.tap_engaged() is True
+
+
+class _FakeLabel:
+    def __init__(self):
+        self.text = ''
+        self.color = None
+        self.deleted = False
+
+    def get_text(self):
+        if self.deleted:
+            raise RuntimeError('label deleted')
+        return self.text
+
+    def set_text(self, t):
+        if self.deleted:
+            raise RuntimeError('label deleted')
+        self.text = t
+
+    def set_style_text_color(self, color, sel):
+        self.color = color
+
+
+@pytest.fixture
+def midimon_env():
+    """Import midimon with lvgl/deckui/forwarder faked so the tick self-heal
+    and loud-banner logic can run under CPython (the real modules are LVGL)."""
+    names = ('tulip', 'deckui', 'lvgl', 'forwarder', 'midi', 'midimon')
+    saved = {n: sys.modules.get(n) for n in names}
+    _install_hw_mocks()
+
+    lv = types.ModuleType('lvgl')
+
+    class _EVENT:
+        CLICKED = 1
+        DELETE = 2
+    lv.EVENT = _EVENT
+    sys.modules['lvgl'] = lv
+
+    dk = types.ModuleType('deckui')
+    dk.c = lambda x: x
+    dk.RED = 'red'
+    dk.GREEN = 'green'
+    dk.ORANGE = 'orange'
+    dk.SURFACE = 'surface'
+    dk.SURFACE2 = 'surface2'
+    dk.MUTED = 'muted'
+    dk.FONT_S = 'font_s'
+
+    class _Font:
+        line_height = 17
+    dk.FONT_MONO = _Font()
+    sys.modules['deckui'] = dk
+
+    ff = types.ModuleType('forwarder')
+    ff._engaged = True
+    ff._ok = True
+    ff._calls = []
+    ff.tap_engaged = lambda: ff._engaged
+
+    def _set_tap(on):
+        ff._calls.append(bool(on))
+        if on:
+            ff._engaged = ff._ok
+        return ff._engaged if on else True
+    ff.set_midi_tap = _set_tap
+    sys.modules['forwarder'] = ff
+
+    sys.modules.pop('midimon', None)
+    midimon = importlib.import_module('midimon')
+    yield midimon, ff
+
+    for n, m in saved.items():
+        if m is None:
+            sys.modules.pop(n, None)
+        else:
+            sys.modules[n] = m
+    sys.modules.pop('midimon', None)
+
+
+def test_midimon_tick_selfheals_dropped_tap(midimon_env):
+    midimon, ff = midimon_env
+    lbl = _FakeLabel()
+    midimon._s.update({'open': True, 'lbl': lbl, 'cntlbl': None,
+                       'dirty': False, 'buf': [], 'count': 0, 'paused': False})
+    ff._engaged = False                        # a rebuild dropped the tap
+    midimon._tick()
+    assert ff._calls and ff._calls[-1] is True  # tick re-asserted it
+    assert midimon._s['tap_ok'] is True
+
+
+def test_midimon_tick_shows_loud_banner_when_tap_fails(midimon_env):
+    midimon, ff = midimon_env
+    lbl = _FakeLabel()
+    midimon._s.update({'open': True, 'lbl': lbl, 'cntlbl': None,
+                       'dirty': False, 'buf': [], 'count': 0, 'paused': False})
+    ff._engaged = False
+    ff._ok = False                             # cannot engage at all
+    midimon._tick()
+    assert 'FAILED' in lbl.text                # loud, not an empty log
+    assert lbl.color == 'red'
+
+
+def test_midimon_tick_render_error_does_not_disengage_tap(midimon_env):
+    midimon, ff = midimon_env
+    lbl = _FakeLabel()
+    midimon._s.update({'open': True, 'lbl': lbl, 'cntlbl': None,
+                       'dirty': True, 'buf': [], 'count': 0, 'paused': False,
+                       'tap_ok': True})
+
+    def _boom():
+        raise RuntimeError('render boom')
+    orig = midimon._render
+    midimon._render = _boom
+    try:
+        midimon._tick()
+    finally:
+        midimon._render = orig
+    assert midimon._s['open'] is True          # transient error != teardown
+    assert False not in ff._calls              # tap was never disengaged
+
+
+def test_midimon_tick_closes_when_label_deleted(midimon_env):
+    midimon, ff = midimon_env
+    lbl = _FakeLabel()
+    lbl.deleted = True
+    midimon._s.update({'open': True, 'lbl': lbl, 'cntlbl': None,
+                       'buf': [], 'count': 0})
+    midimon._tick()
+    assert midimon._s['open'] is False         # real teardown still works
+
+
 def test_board_note_off_forwarded_raw(deck):
     deckcfg, forwarder = deck
     deckcfg.add_instrument(device=0, channel=2)

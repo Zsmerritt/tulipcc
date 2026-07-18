@@ -77,6 +77,24 @@ def _synth_err(iid, e):
 
 
 def _route(m):
+    # Top-level guard (MIDI-7): this runs inside midi.c_fired_midi_event's
+    # drain loop. If it raises, the exception escapes the drain BEFORE the ring
+    # empties, so the C coalescing flag (tulip_midi_py_pending) is never
+    # cleared -- it latches at 1 and the C hook stops scheduling the drain
+    # entirely. The result is a permanently blind Python MIDI path (the monitor
+    # shows nothing while tulip.midi_activity() keeps climbing) until reboot.
+    # The deck must never be that trigger, so swallow here.
+    try:
+        _route_impl(m)
+    except Exception as e:
+        try:
+            import decklog
+            decklog.dbg("forwarder: _route swallowed %r" % e)
+        except Exception:
+            pass
+
+
+def _route_impl(m):
     # The per-MIDI-message hot path: no list/dict allocation for CC/bend/
     # pressure streams (MPE controllers send 100+ msgs/sec), which keeps
     # MicroPython GC pauses out of the note timing.
@@ -940,12 +958,42 @@ def activity():
     return _state['seen']
 
 
+def _has_c_router():
+    """True if this firmware carries the C MIDI router (tulip.midi_routes).
+    Only that firmware can suppress Python for C-owned channels, so only
+    there does a tap need engaging -- older firmware wakes Python for every
+    message unconditionally."""
+    try:
+        import tulip
+        return hasattr(tulip, 'midi_routes')
+    except Exception:
+        return False
+
+
 def set_midi_tap(on):
     """Full-stream Python notification toggle (midimon): with the C router
     active, C-owned channels never wake Python -- unless a tap asks for
-    every message."""
+    every message.
+
+    Returns True if the requested state is now IN EFFECT in the C router (or
+    there is no C router to gate, so Python already sees everything); returns
+    False only when the router IS present but the upload FAILED -- which means
+    a stale table may still be suppressing Python with the tap off, i.e. the
+    monitor would go silently blind. midimon surfaces that False loudly (#85)."""
     _state['py_tap'] = bool(on)
-    _upload_c_routes()
+    r = _upload_c_routes()
+    # None = no C router present (nothing to gate; monitor sees all).
+    return r is None or bool(r)
+
+
+def tap_engaged():
+    """True if the full MIDI stream currently reaches Python callbacks: either
+    there is no C router (all messages already come through), or the router is
+    live AND our tap flag is set. midimon polls this to SELF-HEAL a tap that a
+    rebuild or transient error dropped, instead of going silently blind."""
+    if not _has_c_router():
+        return True
+    return bool(_state.get('c_router')) and bool(_state.get('py_tap'))
 
 
 def _upload_c_routes():
@@ -953,11 +1001,16 @@ def _upload_c_routes():
     board masks + which channels still need Python (layered internals).
     After this, C-owned channels cost ZERO Python per message: the C layer
     plays the synth, forwards the boards, bumps the activity counter, and
-    never touches the scheduler. Fails soft on older firmware."""
+    never touches the scheduler.
+
+    Returns True on a successful upload, False if the router is present but the
+    upload raised (a genuine failure -- a prior table may still be gating
+    Python), or None if this firmware has no C router at all (fails soft)."""
+    if not _has_c_router():
+        _state['c_router'] = False
+        return None
     try:
         import tulip
-        if not hasattr(tulip, 'midi_routes'):
-            return
         masks = [0] * 16
         py_mask = 0
         for ch, (iids, boards) in _state['routes'].items():
@@ -973,5 +1026,15 @@ def _upload_c_routes():
                 py_mask |= 1 << (ch - 1)
         tulip.midi_routes(masks, py_mask, bool(_state.get('py_tap')))
         _state['c_router'] = True
-    except Exception:
+        return True
+    except Exception as e:
+        # The router exists but we could not push the table: it may be gating
+        # Python with a stale mask + the tap off. Report the failure so the
+        # caller (midimon) can warn on screen instead of showing an empty log.
         _state['c_router'] = False
+        try:
+            import decklog
+            decklog.dbg("forwarder: midi_routes upload FAILED %r" % e)
+        except Exception:
+            pass
+        return False

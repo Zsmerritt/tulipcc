@@ -50,18 +50,24 @@ def _ticks():
 
 def _cb(m):
     # HOT PATH (runs per MIDI message while the panel is open): store, no
-    # formatting, no prints.
-    if not _s['open'] or _s['paused'] or not m:
-        return
-    b0 = m[0]
-    if not _s['show_clock'] and (b0 == 0xF8 or b0 == 0xFE):
-        return
-    buf = _s['buf']
-    buf.append((_ticks(), bytes(m)))
-    if len(buf) > _MAX:
-        del buf[:len(buf) - _MAX]
-    _s['count'] += 1
-    _s['dirty'] = True
+    # formatting, no prints. Fully guarded: this runs inside
+    # midi.c_fired_midi_event's drain loop, and any exception escaping there
+    # latches the C coalescing flag (tulip_midi_py_pending) and permanently
+    # wedges the whole Python MIDI drain (blind monitor until reboot).
+    try:
+        if not _s['open'] or _s['paused'] or not m:
+            return
+        b0 = m[0]
+        if not _s['show_clock'] and (b0 == 0xF8 or b0 == 0xFE):
+            return
+        buf = _s['buf']
+        buf.append((_ticks(), bytes(m)))
+        if len(buf) > _MAX:
+            del buf[:len(buf) - _MAX]
+        _s['count'] += 1
+        _s['dirty'] = True
+    except Exception:
+        pass
 
 
 def _fmt(dt, m):
@@ -110,6 +116,12 @@ def _render():
         lines.append(_fmt(dt, m))
     if not lines:
         lines = ["waiting for MIDI..."]
+    # Restore the normal color: a prior tap-failure banner may have turned the
+    # label red, and the self-heal just recovered.
+    try:
+        lbl.set_style_text_color(dk.c(dk.GREEN), 0)
+    except Exception:
+        pass
     lbl.set_text("\n".join(lines))
     if _s['cntlbl'] is not None:
         _s['cntlbl'].set_text("%d msgs" % _s['count'])
@@ -133,21 +145,65 @@ def _close():
         pass
 
 
+def _show_tap_error():
+    # The C router is (or may be) suppressing MIDI and our tap did not engage:
+    # say so on screen in red instead of showing an empty "waiting" log. A
+    # silent blind monitor once had a user told "you must not have had it open"
+    # -- never again (pending task #85).
+    lbl = _s['lbl']
+    if lbl is None:
+        return
+    try:
+        lbl.set_text(
+            "MIDI TAP FAILED TO ENGAGE\n"
+            "\n"
+            "The C MIDI router is active but the monitor could not\n"
+            "register its tap, so C-owned channels are NOT reaching\n"
+            "this panel. Incoming MIDI is being played but hidden.\n"
+            "\n"
+            "Try: rebuild instruments, or reboot the deck. If it keeps\n"
+            "happening, report it -- this is a bug, not 'no MIDI'.")
+        try:
+            lbl.set_style_text_color(dk.c(dk.RED), 0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _tick(sid=None):
     if not _s['open']:
         _cancel()
         return
+    # Liveness probe FIRST, in isolation: a deleted label is the ONLY thing
+    # that tears the panel down from here. A render/format error must NOT --
+    # the old catch-all _close() disengaged the tap on any transient hiccup,
+    # leaving a still-open panel permanently blind (the intermittent failure).
     try:
-        if _s['dirty']:
-            _render()
-        else:
-            # unconditional liveness probe (E-7): with no MIDI traffic (or
-            # paused) 'dirty' never fires, so a closed panel used to leave
-            # this tick AND the per-message _cb running forever
-            _s['lbl'].get_text()
+        _s['lbl'].get_text()
     except Exception:
-        # the panel (and our label) was deleted: stop + unregister
         _close()
+        return
+    # SELF-HEAL the tap: an instrument rebuild, a transient error, or an app
+    # reload can drop it. Re-assert only when it actually dropped (idempotent;
+    # no per-tick route-table churn), so the monitor recovers on the next tick
+    # instead of going silently blind. Surface a hard failure loudly (#85).
+    try:
+        import forwarder
+        if not forwarder.tap_engaged():
+            _s['tap_ok'] = bool(forwarder.set_midi_tap(True))
+        else:
+            _s['tap_ok'] = True
+    except Exception:
+        pass
+    # Render (best-effort: errors here are swallowed, never a teardown).
+    try:
+        if not _s.get('tap_ok', True):
+            _show_tap_error()
+        elif _s['dirty']:
+            _render()
+    except Exception:
+        pass
 
 
 def _cancel():
@@ -230,10 +286,12 @@ def panel(parent, shell=None):
     try:
         import forwarder
         # the monitor wants EVERY message; with the C router active,
-        # C-owned channels otherwise never reach Python (O-2)
-        forwarder.set_midi_tap(True)
+        # C-owned channels otherwise never reach Python (O-2). Capture whether
+        # the tap actually engaged -- if not, the tick shows a loud banner
+        # instead of a silently empty log (#85).
+        _s['tap_ok'] = bool(forwarder.set_midi_tap(True))
     except Exception:
-        pass
+        _s['tap_ok'] = False
     try:
         import ticker
         ticker.every(_TICK_MS, _tick, key='midimon')   # shared tick (O-7)
