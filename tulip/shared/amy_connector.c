@@ -371,6 +371,90 @@ void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
 
 #ifndef AMY_IS_EXTERNAL
 
+// ---- Debug audio-capture tap (router-tap-fix follow-up) --------------------
+// Capture the final int16 output block(s) into PSRAM so the host can pull
+// rendered PCM off the device over serial and diff it against the bit-clean
+// host render (chasing the ESP-only soft-note fold). amy_get_level() only
+// yields one peak per read; this yields the actual samples.
+//
+// Hook: amy_external_block_done_hook. It fires at the TOP of amy_fill_buffer,
+// at which point amy's `output_block` still points at the PREVIOUS, fully
+// mixed block that was already handed to I2S (the swap + new mix happen after
+// the hook returns) -- so we capture the true DAC output, one block late, and
+// touch amy not at all (it stays close to upstream). The hook runs ON THE
+// AUDIO TASK, which must never stall (we just fixed a bug caused by exactly
+// that): when armed it does a single memcpy of the block and nothing else, and
+// when unarmed it is one volatile read + branch.
+//
+// Output format (what the host reconstructs a WAV from): int16 little-endian,
+// AMY_NCHANS channels INTERLEAVED (stereo => L,R,L,R...), AMY_BLOCK_SIZE frames
+// per block, at AMY_SAMPLE_RATE (48000 on ESP). Note amy right-shifts the ESP
+// output by 1 bit before store (amy.c), so captured samples are that same
+// post-shift DAC value -- the host diff must account for it.
+#define TULIP_AUDIO_TAP_MAX_BLOCKS 256   // ~1.37 s @ 256 frames/block @ 48kHz.
+// PSRAM budget at the cap: 256 blocks * 256 frames * 2 ch * 2 B = 256 KB. This
+// MUST be PSRAM (MALLOC_CAP_SPIRAM): internal SRAM is critically full on this
+// device (largest free block ~31 KB), so a 256 KB internal alloc is impossible
+// and would brick the render task -- never allocate this internal.
+extern output_sample_type *output_block;   // amy.c: final DAC block, int16 LE
+static int16_t *tulip_audio_tap_buf = NULL;         // PSRAM: cap*frame int16
+static volatile uint16_t tulip_audio_tap_cap = 0;   // blocks allocated
+static volatile uint16_t tulip_audio_tap_want = 0;  // blocks still to capture
+static volatile uint16_t tulip_audio_tap_got = 0;   // blocks captured so far
+
+// AUDIO TASK. Zero cost unarmed (one volatile read + branch). Armed: one
+// memcpy of the block, no formatting, no printf, nothing that can stall.
+void tulip_audio_tap_block_done(void) {
+    if (tulip_audio_tap_want == 0) return;               // fast path: unarmed
+    int16_t *buf = tulip_audio_tap_buf;
+    uint16_t idx = tulip_audio_tap_got;
+    if (buf == NULL || idx >= tulip_audio_tap_cap) {     // safety: disarm
+        tulip_audio_tap_want = 0;
+        return;
+    }
+    const uint32_t block_int16 = (uint32_t)AMY_BLOCK_SIZE * AMY_NCHANS;
+    memcpy(buf + (uint32_t)idx * block_int16, output_block,
+           block_int16 * sizeof(int16_t));
+    tulip_audio_tap_got = (uint16_t)(idx + 1);
+    tulip_audio_tap_want = (uint16_t)(tulip_audio_tap_want - 1);
+}
+
+// MP TASK. Arm capture of the next n_blocks. Returns 0 ok, -1 over cap,
+// -2 PSRAM alloc failed. n_blocks==0 just disarms.
+int tulip_audio_tap_arm(uint16_t n_blocks) {
+    if (n_blocks == 0) { tulip_audio_tap_want = 0; return 0; }
+    if (n_blocks > TULIP_AUDIO_TAP_MAX_BLOCKS) return -1;   // reject, don't clamp
+    if (tulip_audio_tap_buf == NULL || tulip_audio_tap_cap < n_blocks) {
+        if (tulip_audio_tap_buf != NULL) {
+            free_caps(tulip_audio_tap_buf);
+            tulip_audio_tap_buf = NULL;
+            tulip_audio_tap_cap = 0;
+        }
+        size_t bytes = (size_t)n_blocks * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+#ifdef ESP_PLATFORM
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_SPIRAM);
+#else
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_INTERNAL);
+#endif
+        if (b == NULL) return -2;
+        tulip_audio_tap_buf = b;
+        tulip_audio_tap_cap = n_blocks;
+    }
+    tulip_audio_tap_got = 0;
+    // Publish buf/cap/got=0 before arming: the audio task reads `want` first
+    // and only touches the rest when want>0.
+    __asm__ volatile("" ::: "memory");
+    tulip_audio_tap_want = n_blocks;
+    return 0;
+}
+
+uint16_t tulip_audio_tap_got_blocks(void) { return tulip_audio_tap_got; }
+uint8_t  tulip_audio_tap_is_armed(void)   { return tulip_audio_tap_want > 0; }
+const uint8_t *tulip_audio_tap_data(void) { return (const uint8_t *)tulip_audio_tap_buf; }
+uint32_t tulip_audio_tap_bytes(void) {
+    return (uint32_t)tulip_audio_tap_got * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+}
+
 #if (defined AMYBOARD) || (defined TULIP)
 #include "tulip_helpers.h"
 // map the mp_obj_t to a file handle
@@ -703,6 +787,7 @@ void run_amy(uint8_t midi_out_pin) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
     amy_config.amy_external_render_hook = external_cv_render;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     amy_config.amy_external_fopen_hook = mp_fopen_hook;
     amy_config.amy_external_fseek_hook = mp_fseek_hook;
     amy_config.amy_external_fclose_hook = mp_fclose_hook;
@@ -794,6 +879,7 @@ void amyboard_set_midi_out(uint8_t midi_out_pin) {
 void run_amy(uint8_t capture_device_id, uint8_t playback_device_id) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     extern void tulip_amy_sequencer_hook(uint32_t tick_count);
     amy_config.amy_external_sequencer_hook = tulip_amy_sequencer_hook;
     amy_config.features.default_synths = 0; // midi.py does this for us
