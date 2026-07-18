@@ -1772,8 +1772,11 @@ def test_slot_map_fits_amy_pool():
     top = (synthkits.SLOT_KITS
            + synthkits.MAX_KIT_SLOTS * synthkits.SLOT_KIT_STRIDE)
     assert top <= synthkits.SLOT_LIMIT == 1024 + 128
-    # a kit's hits (base+1..) must fit its stride window
-    assert synthkits.SLOT_KIT_STRIDE >= 20   # 19 hits + kit patch
+    # container model: a kit needs its base slot (the whole-kit container
+    # patch) plus a little headroom for fallback pads (classify_hit None)
+    assert synthkits.SLOT_KIT_STRIDE >= 2    # container + >=1 fallback slot
+    # the migration's point: the kit cap is no longer 5
+    assert synthkits.MAX_KIT_SLOTS >= 20
 
 
 def test_forwarder_refuses_sixth_melodic_instrument(deck):
@@ -2167,18 +2170,19 @@ def test_synthkit_skips_unresolvable_hit_no_leak():
     notes = {36: 'p/kick', 38: 'p/missing', 40: 'p/snare'}
     synthkits.kit_notes = lambda k: dict(notes)
     synthkits.store_patch = lambda slot, ps: slot
-
-    def _hps(hit_key, ov=None):
-        if hit_key == 'p/missing':
-            raise KeyError(hit_key)            # partial deploy / index drift
-        return 'v0w0a1Z'
-    synthkits.hit_patch_string = _hps
+    # fake corpus: 'p/missing' resolves to nothing (partial deploy / index
+    # drift) -> its pad must be skipped without silencing the kit
+    synthkits._state['packs']['p'] = {
+        'p/kick': {'oscs': [{'wave': 0, 'amp': '1'}]},
+        'p/snare': {'oscs': [{'wave': 0, 'amp': '1'}]},
+    }
 
     kit = drums_kit.SynthKit('somekit')
-    assert set(kit.hit_synths) == {36, 40}     # bad pad skipped, rest audible
+    assert set(kit.pads) == {36, 40}           # bad pad skipped, rest audible
     assert 38 not in kit.note_hits
-    # no orphan: exactly 2 hit synths + 1 kit synth created, all tracked
-    assert len(synth.PatchSynth.instances) == 3
+    # container model: the whole kit is exactly ONE synth, no per-hit synths
+    assert len(synth.PatchSynth.instances) == 1
+    assert kit.hit_synths == {}
     kit.release()
     assert all(s.released for s in synth.PatchSynth.instances)   # no leaked number
 
@@ -2210,9 +2214,10 @@ def test_make_synth_clamps_sampled_kit_to_one_voice():
 
 
 def test_make_synth_synth_kit_path_unaffected_by_clamp():
-    """Our SynthKit path (patch RAM 1030+, 'synth:<key>' ids) uses per-hit
-    PatchSynths, not the one-voice DrumSynth model -- confirm it still builds
-    normally and num_voices= passed to make_synth is simply not read there."""
+    """Our SynthKit path (patch RAM 1030+, 'synth:<key>' ids) is its own
+    one-voice container synth (same model as the sampled kits) -- confirm it
+    still builds normally and num_voices= passed to make_synth is simply not
+    read there."""
     _install_hw_mocks()
     for m in ('synthkits', 'drums_kit'):
         sys.modules.pop(m, None)
@@ -2221,15 +2226,16 @@ def test_make_synth_synth_kit_path_unaffected_by_clamp():
     notes = {36: 'p/kick', 38: 'p/snare'}
     synthkits.kit_notes = lambda k: dict(notes)
     synthkits.store_patch = lambda slot, ps: slot
-    synthkits.hit_patch_string = lambda hit_key, ov=None: 'v0w0a1Z'
+    synthkits._state['packs']['p'] = {
+        'p/kick': {'oscs': [{'wave': 0, 'amp': '1'}]},
+        'p/snare': {'oscs': [{'wave': 0, 'amp': '1'}]},
+    }
 
     kit = drums_kit.make_synth('synth:somekit', num_voices=10)
     assert isinstance(kit, drums_kit.SynthKit)
-    assert set(kit.hit_synths) == {36, 38}
-    # per-hit synths and the kit-owner synth are always built with 1 voice
-    # each (per-hit oscs) -- unrelated to and unaffected by the sampled-kit
-    # clamp above
-    assert all(hs.num_voices == 1 for hs in kit.hit_synths.values())
+    assert set(kit.pads) == {36, 38}
+    # the container synth is always built with 1 voice (its oscs ARE the
+    # kit) -- unrelated to and unaffected by the sampled-kit clamp above
     assert kit.kit_synth.num_voices == 1
     kit.release()
 
@@ -2948,28 +2954,266 @@ def test_synthkit_registers_contiguous_note_maps():
     amy = sys.modules['amy']
     amy._sends.clear()
     kit = drums_kit.SynthKit('tr909')
-    home = sorted(kit.hit_synths)                 # [36, 38, 39, 42, 46]
+    home = sorted(kit.pads)                        # [36, 38, 39, 42, 46]
     assert home == [36, 38, 39, 42, 46]
+    assert kit.hit_synths == {}                   # tr909 is fully container
     anchor = home[0]
     maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
     # pack_fill: N maps for N hits, contiguous keys anchor..anchor+N-1
     assert len(maps) == len(home)                 # one map per DISTINCT hit
     keys = sorted(int(m.split(',', 1)[0]) for m in maps)
     assert keys == list(range(anchor, anchor + len(home)))   # contiguous, anchored
-    # each key anchor+i fires the i-th sorted home-note's hit synth (packed order)
-    key_to_hsn = {int(m.split(',', 1)[0]): int(m.split(',i')[1].split('n')[0])
-                  for m in maps}
+    # each key anchor+i fires the i-th sorted home-note's container osc(s)
+    # via osc-targeted fragments (v<osc>n60l%vi%iiM%i), per-hit gain in the
+    # velocity-scale (max) field -- the sampled kits' baked io format
+    key_to_oscs = {}
+    for m in maps:
+        fields = m.split(',', 5)
+        assert fields[1] == '0' and fields[2] == '0' and fields[4] == '0'
+        assert float(fields[3]) == pytest.approx(2.5)     # KIT_GAIN, level 1
+        frags = fields[5].split('Z')
+        for t in frags:
+            assert t.startswith('v') and t.endswith('n60l%vi%iiM%i')
+        key_to_oscs[int(fields[0])] = [int(t[1:t.index('n')]) for t in frags]
     for i, hn in enumerate(home):
-        assert key_to_hsn[anchor + i] == kit.hit_synths[hn].synth, (i, hn)
-    # Python-routed path packs the same way: key anchor+1 (37) -> 2nd hit (pad 38)
+        assert key_to_oscs[anchor + i] == kit.pads[hn]['trig'], (i, hn)
+    # Python-routed path packs the same way: key anchor+1 (37) -> 2nd hit
+    # (pad 38), fired as direct osc-targeted note-ons (one per trigger osc)
+    # with the map's gain applied to the velocity and the already-mapped
+    # marker set
+    amy._sends.clear()
     kit.note_on(anchor + 1, 1.0)
-    assert kit.hit_synths[home[1]].on == [60]
+    on = [k for k in amy._sends if 'vel' in k]
+    assert [k['osc'] for k in on] == kit.pads[home[1]]['trig']
+    for k in on:
+        assert k['note'] == 60
+        assert k['vel'] == pytest.approx(2.5)     # vel 1.0 * velscale
+        assert k['note_source_channel'] == kit.synth
     # keys outside [anchor, anchor+len) are unmapped -> silent (no nearest-pad grab)
     off = anchor + len(home) + 2                   # 43: beyond the packed block
     assert off not in kit.note_alias
+    amy._sends.clear()
     kit.note_on(off, 1.0)
-    for hs in kit.hit_synths.values():
-        assert hs.on == ([60] if hs is kit.hit_synths[home[1]] else [])
+    assert [k for k in amy._sends if 'vel' in k] == []
+
+
+# ---------------------------------------------------------------------------
+# Container kits: one patch per kit, osc-targeted note maps, gain in the
+# velocity-scale field (the upstream 384-390 drum-kit model).
+# ---------------------------------------------------------------------------
+def _container_fixture():
+    """Fresh synthkits with a small fake corpus: a 1-osc tone, a 2-osc
+    tone+noise, and a 3-osc monster that must fall back."""
+    _install_hw_mocks()
+    for m in ('synthkits', 'drums_kit'):
+        sys.modules.pop(m, None)
+    import synthkits
+    synthkits._state['packs']['p'] = {
+        'p/one': {'oscs': [{'wave': 0, 'freq': '80,0,0,0,1', 'amp': '1.2',
+                            'bp0': '0,1,90,0'}]},
+        'p/two': {'oscs': [
+            {'wave': 0, 'freq': '100', 'amp': '0.8', 'bp0': '0,1,50,0'},
+            {'wave': 5, 'amp': '0.5', 'bp0': '0,1,30,0',
+             'filter_type': 1, 'filter_freq': 4000}]},
+        'p/big': {'oscs': [{'wave': 0, 'amp': '1'}, {'wave': 5, 'amp': '1'},
+                           {'wave': 0, 'amp': '1'}]},
+    }
+    return synthkits
+
+
+def test_kit_container_shape_and_triggers():
+    s = _container_fixture()
+    s.kit_notes = lambda k: {36: 'p/two', 38: 'p/one'}
+    patch, pads, fallback = s.kit_container('anykit')
+    assert fallback == {}
+    # note order: pad 36 (2 oscs) at osc 0, pad 38 (1 osc) at osc 2; a wire
+    # hit's note map must fire EVERY osc (trig) -- chained pairs are NOT
+    # equivalent (AMY stacks a chained osc into its parent's render buffer
+    # and filters the sum)
+    assert pads[36] == {'osc': 0, 'nosc': 2, 'trig': [0, 1],
+                        'velscale': 2.5, 'hit': 'p/two'}
+    assert pads[38] == {'osc': 2, 'nosc': 1, 'trig': [2],
+                        'velscale': 2.5, 'hit': 'p/one'}
+    # design amps preserved (no KIT_GAIN bake -- gain rides in velscale),
+    # except p/one's 1.2 which trims to _AMP_CAP/velscale = 1.0 (reproducing
+    # the legacy min(2.5, 1.2*2.5) render-time cap)
+    assert patch == ('v0w0f100A0,1,50,0a0.8G0F0R0.7Z'
+                     'v1w5A0,1,30,0a0.5G1F4000R0.7Z'
+                     'v2w0f80,0,0,0,1A0,1,90,0a1G0F0R0.7Z')
+    # the 2-osc template is two Z-separated osc-targeted fragments, each
+    # tagged i%i (this synth) + iM%i (already-mapped marker)
+    assert s.container_note_cmd(36, pads[36]['trig'], 2.5) == \
+        '36,0,0,2.5,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i'
+    assert s.container_note_cmd(38, pads[38]['trig'], 2.5) == \
+        '38,0,0,2.5,0,v2n60l%vi%iiM%i'
+
+
+def test_kit_container_gain_in_velscale_and_cap():
+    s = _container_fixture()
+    s.kit_notes = lambda k: {36: 'p/one'}
+    # level 2 -> velscale 5.0; the stored amp is trimmed to _AMP_CAP/G so the
+    # render-time amp*velscale product lands exactly on the legacy 2.5 cap
+    patch, pads, _ = s.kit_container('k', hit_overrides={36: {'level': 2.0}})
+    assert pads[36]['velscale'] == pytest.approx(5.0)
+    assert 'a0.5' in patch                        # min(1.2, 2.5/5.0)
+    # level 0.4 -> velscale exactly 1.0; amp under the cap stays the design amp
+    patch, pads, _ = s.kit_container('k', hit_overrides={36: {'level': 0.4}})
+    assert pads[36]['velscale'] == pytest.approx(1.0)
+    assert 'a1.2' in patch
+    # default: velscale KIT_GAIN, design amp 1.2 <= 2.5/2.5 is FALSE -> trims
+    # to 1.0 (2.5/2.5), reproducing legacy min(2.5, 1.2*2.5)=2.5 at render
+    patch, pads, _ = s.kit_container('k')
+    assert pads[36]['velscale'] == pytest.approx(2.5)
+    assert 'a1' in patch and 'a1.2' not in patch
+    # snap stays an amp bake on the noise osc only (it's per-osc, velscale
+    # is per-hit)
+    s.kit_notes = lambda k: {36: 'p/two'}
+    patch, pads, _ = s.kit_container('k', hit_overrides={36: {'snap': 2.0}})
+    assert 'a0.8' in patch                        # tone untouched
+    assert 'a1' in patch.split('Z')[1]            # noise 0.5*2
+
+    # tune/decay transforms match the legacy per-hit path
+    patch, _, _ = s.kit_container('k', hit_overrides={36: {'tune': 12}})
+    assert 'f200' in patch and 'F8000' in patch   # freq + filter_freq doubled
+    patch, _, _ = s.kit_container('k', hit_overrides={36: {'decay': 2}})
+    assert 'A0,1,100,0' in patch and 'A0,1,60,0' in patch
+
+
+def test_classify_hit_shapes():
+    s = _container_fixture()
+    assert s.classify_hit({'oscs': [{'wave': 0}]}) == 'wire'
+    assert s.classify_hit({'oscs': [{'wave': 0}, {'wave': 5}]}) == 'wire'
+    # >2 wire oscs -> fallback
+    assert s.classify_hit(s._state['packs']['p']['p/big']) is None
+    # strict partials: w10 parent at v0 whose preset == child count, w9 kids
+    good = 'v0w10p2a1,0,1,1Zv1w9f100A0,1,20,0Zv2w9f200A0,1,20,0Z'
+    assert s.classify_hit({'patch_string': good}) == 'partials'
+    bad_preset = 'v0w10p3a1Zv1w9f100Zv2w9f200Z'
+    assert s.classify_hit({'patch_string': bad_preset}) is None
+    bad_child = 'v0w10p2a1Zv1w9f100Zv2w0f200Z'
+    assert s.classify_hit({'patch_string': bad_child}) is None
+    bad_parent = 'v0w9p2a1Zv1w9f100Zv2w9f200Z'
+    assert s.classify_hit({'patch_string': bad_parent}) is None
+    assert s.classify_hit(None) is None
+
+
+def test_kit_container_partials_block():
+    s = _container_fixture()
+    s._state['packs']['p']['p/part'] = {'patch_string':
+        'v0w10p2a1,0,1,1Zv1w9f100A0,1,20,0Zv2w9f200A0,1,20,0Z'}
+    s.kit_notes = lambda k: {36: 'p/one', 49: 'p/part'}
+    patch, pads, fallback = s.kit_container('k')
+    assert fallback == {}
+    # partials hit renumbered to its base (osc 1..3 after the 1-osc pad 36);
+    # trigger target is ONLY the w10 parent -- its children ride behind it
+    assert pads[49] == {'osc': 1, 'nosc': 3, 'trig': [1],
+                        'velscale': 2.5, 'hit': 'p/part'}
+    frags = {f[:2]: f for f in patch.split('Z') if f}
+    assert 'w10' in frags['v1'] and 'p2' in frags['v1']
+    assert 'w9' in frags['v2'] and 'f100' in frags['v2']
+    assert 'w9' in frags['v3'] and 'f200' in frags['v3']
+    # parent amp survives the cap (min(1, 2.5/2.5) == 1), children untouched
+    assert 'a1,0,1,1' in frags['v1']
+
+
+def test_whole_corpus_classifies_container():
+    """Every hit of every kit in the shipped data must place in the
+    container (the fallback path is defensive headroom, not a dependency);
+    also pins each kit's container osc budget."""
+    import json
+    s = _fresh_synthkits()
+    idx = s._load()
+    assert idx['kits']
+    packs = {}
+    worst = 0
+    for kit_key, kit in idx['kits'].items():
+        total = 0
+        for n, hit_key in kit['notes'].items():
+            pack = hit_key.split('/', 1)[0]
+            if pack not in packs:
+                with open(os.path.join(_HERE, 'synthkits_data',
+                                       pack + '.json')) as f:
+                    packs[pack] = json.load(f)
+            hit = packs[pack].get(hit_key)
+            kind = s.classify_hit(hit)
+            assert kind in ('wire', 'partials'), (kit_key, hit_key)
+            if kind == 'wire':
+                total += len(hit['oscs'][:2])
+            else:
+                total += len([x for x in hit['patch_string'].split('Z') if x])
+        worst = max(worst, total)
+    # a kit's container must fit comfortably in AMY's 250-osc pool alongside
+    # other instruments (partials808 is the largest at 44 oscs today)
+    assert worst <= 60
+
+
+def test_synthkit_fallback_pad_coexists_with_container():
+    s = _container_fixture()
+    s.kit_notes = lambda k: {36: 'p/one', 38: 'p/big'}
+    s.store_patch = lambda slot, ps: slot
+    sys.modules.pop('drums_kit', None)
+    import drums_kit
+    synth = sys.modules['synth']
+    amy = sys.modules['amy']
+    amy._sends.clear()
+    kit = drums_kit.SynthKit('k', slot_base=1030)
+    # container synth + ONE fallback synth for the unclassifiable hit
+    assert set(kit.pads) == {36}
+    assert set(kit.hit_synths) == {38}
+    assert kit.hit_slots[38] == 1031              # base+1: first fallback slot
+    assert len(synth.PatchSynth.instances) == 2
+    maps = {int(m['midi_note_cmd'].split(',', 1)[0]): m['midi_note_cmd']
+            for m in amy._sends if 'midi_note_cmd' in m}
+    # pack_fill lays both pads out; 36 -> container osc, 37 -> hit synth
+    assert maps[36].endswith('v0n60l%vi%iiM%i')
+    assert maps[37].endswith('i%dn60l%%v' % kit.hit_synths[38].synth)
+    assert ',1,0,i' in maps[37]                   # fallback velscale stays 1
+    # python path: container pad direct-osc, fallback pad via its synth
+    amy._sends.clear()
+    kit.note_on(37, 0.5)
+    assert kit.hit_synths[38].on == [60]
+    kit.release()
+    assert all(x.released for x in synth.PatchSynth.instances)
+
+
+def test_synthkit_retweak_inplace_vs_swap():
+    s = _container_fixture()
+    s.kit_notes = lambda k: {36: 'p/two', 38: 'p/one'}
+    s.store_patch = lambda slot, ps: slot
+    sys.modules.pop('drums_kit', None)
+    import drums_kit
+    synth = sys.modules['synth']
+    amy = sys.modules['amy']
+    kit = drums_kit.SynthKit('k')
+    n_synths = len(synth.PatchSynth.instances)
+    assert n_synths == 1
+    # ---- slider hot path: same hit, new overrides -> live osc params only,
+    # no synth churn, other pads' tails keep ringing
+    amy._sends.clear()
+    kit.retweak(36, {'decay': 2.0})
+    assert len(synth.PatchSynth.instances) == n_synths        # no rebuild
+    osc_sends = [k for k in amy._sends if 'osc' in k and 'bp0' in k]
+    assert [k['osc'] for k in osc_sends] == [0, 1]            # both hit oscs
+    assert osc_sends[0]['bp0'] == '0,1,100,0'                 # 50 * 2
+    assert all(k['synth'] == kit.synth for k in osc_sends)
+    # velscale unchanged -> no map re-registration
+    assert not any('midi_note_cmd' in k for k in amy._sends)
+    # ---- level change -> same-osc update PLUS map refresh with new velscale
+    amy._sends.clear()
+    kit.retweak(36, {'level': 2.0})
+    maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
+    assert maps and all(
+        ',5,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i' in m for m in maps)
+    assert kit.pads[36]['velscale'] == pytest.approx(5.0)
+    # ---- swap (different hit key) -> full rebuild: maps cleared + relaid
+    amy._sends.clear()
+    kit.retweak(38, None, hit_key='p/two')
+    clears = [k for k in amy._sends if k.get('midi_note_cmd') == '255']
+    assert clears                                             # old maps gone
+    assert kit.note_hits[38] == 'p/two'
+    assert kit.pads[38]['nosc'] == 2                          # new shape live
+    assert kit.hit_swaps[38] == 'p/two'                       # survives rebuild
+    kit.release()
 
 
 def test_piano_gets_no_special_level_injection():

@@ -63,14 +63,22 @@ def kit_name(kit):
 
 
 class SynthKit:
-    """A synthesized drum kit: one 2-osc mini-synth per hit plus a KIT synth
-    whose patch carries io note-map templates dispatching each GM note to its
-    hit synth -- the same mechanism as the sampled DrumSynth kits (patch 384's
-    baked io entries), so AMY's C layer plays the notes with zero added
-    latency when the kit synth owns the MIDI channel.
+    """A synthesized drum kit as ONE container synth (upstream drum-kit
+    model, amy patches.h 384-390): a single 1-voice patch whose oscs are the
+    kit's hits laid out as consecutive blocks, plus osc-targeted note maps
+    (io entries) carrying each hit's gain in the velocity-scale field -- the
+    exact mechanism of the sampled DrumSynth kits, so AMY's C layer plays
+    the notes with zero added latency when the kit synth owns the MIDI
+    channel. One synth number + one RAM patch slot per kit (the per-hit
+    mini-synth model needed ~19 of each).
+
+    Hits synthkits.classify_hit() can't place in the container (none in the
+    current corpus) keep the legacy per-hit PatchSynth as a FALLBACK; their
+    note maps target the hit synth instead of a container osc, so container
+    and fallback pads coexist on the same kit.
 
     hit_overrides: {midi_note: {'tune','decay','level','snap'}} sound-design
-    tweaks applied when each hit synth is built (the pad editor's model).
+    tweaks applied when the container is built (the pad editor's model).
     hit_swaps: {midi_note: hit_key} replaces a pad's hit with ANY corpus hit
     (the pad editor's alternates picker)."""
 
@@ -79,34 +87,66 @@ class SynthKit:
         import synthkits
         self.kit_key = kit_key
         self.slot_base = synthkits.SLOT_KITS if slot_base is None else slot_base
-        self.hit_synths = {}       # midi_note -> PatchSynth
-        self.hit_slots = {}        # midi_note -> RAM patch slot
+        self.channel = channel
+        # normalize override/swap keys to int so retweak can update records
+        self.hit_overrides = {int(k): v for k, v in
+                              (hit_overrides or {}).items()}
+        self.hit_swaps = {int(k): v for k, v in (hit_swaps or {}).items()}
+        self.hit_synths = {}       # midi_note -> PatchSynth (FALLBACK pads)
+        self.hit_slots = {}        # midi_note -> RAM patch slot (fallback)
+        self.pads = {}             # midi_note -> container pad record
         self.note_hits = {}        # midi_note -> hit key actually loaded
-        ov = hit_overrides or {}
-        sw = hit_swaps or {}
-        self.note_alias = {}       # every GM note 35-81 -> the pad that owns it
-        slot = self.slot_base + 1  # base slot holds the kit patch itself
+        self.note_alias = {}       # played note -> the pad that owns it
+        self.kit_synth = None
+        self.synth = None
+        self._build()
+
+    def _build(self):
+        import synthkits
+        import amy
         try:
             from time import sleep_ms as _yield
         except ImportError:
             _yield = lambda ms: None
-        notes = synthkits.kit_notes(kit_key)
-        for note in sorted(notes):
-            hit_key = sw.get(note) or sw.get(str(note)) or notes[note]
-            _yield(2)   # ~20 store+create bursts starve the UI task otherwise
-            # Per-hit guard (KITS-1): an unresolvable hit key (partial qput
-            # deploy, index/pack drift) used to raise KeyError out of the whole
-            # loop -- silencing the ENTIRE kit and ORPHANING every hit synth
-            # already created (they were never tracked, so never released ->
-            # leaked AMY synth numbers). Now a bad pad is SKIPPED (left silent
-            # and unmapped), the rest of the kit stays audible, and any synth
-            # created before a mid-build failure is released so it can't leak.
+        # One container patch for the whole kit. Unresolvable hit keys are
+        # skipped inside kit_container (KITS-1: bad pad silent, kit lives).
+        patch, pads, fallback = synthkits.kit_container(
+            self.kit_key, self.hit_overrides, self.hit_swaps)
+        self.pads = pads
+        self.note_hits = {n: p['hit'] for n, p in pads.items()}
+        # Store the container at the kit's base slot (overwrites on rebuild;
+        # the pool is finite and slots never free). All-fallback/empty kit
+        # keeps a silent placeholder osc so the synth still allocates.
+        synthkits.store_patch(self.slot_base, patch or 'v0w0a0,0,0Z')
+        _yield(2)
+        # flags 3 = route notes via the note maps + ignore note-offs
+        # (one-shots self-terminate)
+        self.kit_synth = synth.PatchSynth(num_voices=1, channel=self.channel,
+                                          patch=self.slot_base,
+                                          synth_flags=3)
+        self.kit_synth.deferred_init()
+        self.synth = self.kit_synth.synth
+        # FALLBACK pads: legacy per-hit mini-synths at slot_base+1.. (per-pad
+        # guard as before -- a failing pad is skipped and never leaks a
+        # partially-built synth). The slot window is the kit's stride; pads
+        # beyond it are dropped loudly rather than corrupting a neighbour.
+        slot = self.slot_base + 1
+        slot_top = self.slot_base + synthkits.SLOT_KIT_STRIDE
+        for note in sorted(fallback):
+            hit_key = fallback[note]
+            if slot >= slot_top:
+                try:
+                    import decklog
+                    decklog.log("synthkit %s: out of fallback slots, pad %d "
+                                "dropped" % (self.kit_key, note))
+                except Exception:
+                    pass
+                break
+            _yield(2)
             hs = None
             try:
-                # deterministic slot: store (overwrites on rebuild -- the pool
-                # is finite and slots never free), then load by number
                 synthkits.store_patch(slot, synthkits.hit_patch_string(
-                    hit_key, ov.get(note) or ov.get(str(note))))
+                    hit_key, self.hit_overrides.get(note)))
                 hs = synth.PatchSynth(num_voices=1, patch=slot)
                 hs.deferred_init()
             except Exception:
@@ -126,18 +166,10 @@ class SynthKit:
         # the keyboard on a sparse kit (TR808 -> all cowbell); pack_fill keeps
         # hits compact so each key plays a DISTINCT hit. Hit patches have a 0
         # note-coefficient on freq, so every mapped key fires its hit's sound.
-        # Built from hit_synths, not kit_notes, so a skipped pad is never a
+        # Built from the pads actually built, so a skipped pad is never a
         # map target.
-        fill = synthkits.pack_fill(self.hit_synths.keys())
+        fill = synthkits.pack_fill(list(self.pads) + list(self.hit_synths))
         self.note_alias = fill
-        # silent placeholder osc; flags 3 = route notes via the note maps +
-        # ignore note-offs (one-shots self-terminate)
-        synthkits.store_patch(self.slot_base, 'v0w0a0,0,0Z')
-        self.kit_synth = synth.PatchSynth(num_voices=1, channel=channel,
-                                          patch=self.slot_base,
-                                          synth_flags=3)
-        self.kit_synth.deferred_init()
-        self.synth = self.kit_synth.synth
         # Register the note maps DIRECTLY on the live kit synth. They cannot
         # ride inside the stored patch: AMY registers io entries at
         # patch-STRING parse time keyed on that message's synth -- a store
@@ -145,14 +177,23 @@ class SynthKit:
         # pre-parsed deltas, which skip mapping registration entirely. (This
         # is how MIDI kits went silent when patches moved to store-then-load
         # slots.) Field layout matches kit 384's baked entries:
-        # note,is_log,min,max,offset,<template>; the template fires the hit
-        # synth's fixed root note with the played velocity.
-        import amy
+        # note,is_log,min,max,offset,<template>. Container pads: the template
+        # fires the hit's trigger osc(s) inside this synth's voice with the
+        # played velocity scaled by the per-hit gain (max field) -- one
+        # fragment per wire osc, just the parent for a partials hit (see the
+        # synthkits container contract). Fallback pads: the template fires
+        # the hit synth's fixed root note, gain baked in its amp.
         n = 0
         for note in sorted(fill):
-            hsn = self.hit_synths[fill[note]].synth
-            amy.send(synth=self.kit_synth.synth,
-                     midi_note_cmd='%d,0,0,1,0,i%dn60l%%v' % (note, hsn))
+            home = fill[note]
+            pad = self.pads.get(home)
+            if pad is not None:
+                cmd = synthkits.container_note_cmd(note, pad['trig'],
+                                                   pad['velscale'])
+            else:
+                cmd = '%d,0,0,1,0,i%dn60l%%v' % (
+                    note, self.hit_synths[home].synth)
+            amy.send(synth=self.synth, midi_note_cmd=cmd)
             n += 1
             if n % 8 == 0:
                 _yield(1)   # ~47 sends in a row starve the UI task
@@ -161,26 +202,83 @@ class SynthKit:
         pass                       # everything initialized in __init__
 
     def retweak(self, note, overrides, hit_key=None):
-        """Live per-hit sound design: rebuild ONE hit synth's patch.
-        hit_key swaps the pad to a different corpus hit (alternates picker)."""
+        """Live per-hit sound design. Same hit + new overrides (the slider
+        hot path) re-sends just that hit's osc params to the live container
+        (and refreshes its note maps' velocity scale), so other pads' tails
+        keep ringing. A hit SWAP (hit_key differs) changes the container
+        layout -> full kit rebuild. Fallback pads keep the legacy per-hit
+        reload."""
         import synthkits
-        hs = self.hit_synths.get(note)
-        if hit_key is not None:
-            self.note_hits[note] = hit_key
+        note = int(note)
+        if overrides:
+            self.hit_overrides[note] = dict(overrides)
         else:
-            hit_key = self.note_hits.get(note)
-        if hs is None or hit_key is None:
+            self.hit_overrides.pop(note, None)
+        cur = self.note_hits.get(note)
+        if hit_key is not None and cur is not None and hit_key != cur:
+            # swap: record it and relayout the whole kit (rare user action)
+            self.hit_swaps[note] = hit_key
+            self._rebuild()
+            return
+        if hit_key is None:
+            hit_key = cur
+        if hit_key is None:
+            return
+        hs = self.hit_synths.get(note)
+        if hs is not None:
+            # fallback pad: legacy per-hit reload
+            import amy
+            slot = self.hit_slots[note]
+            synthkits.store_patch(slot,
+                                  synthkits.hit_patch_string(hit_key,
+                                                             overrides))
+            amy.send(synth=hs.synth, num_voices=0)
+            amy.send(synth=hs.synth, num_voices=1, patch=slot)
+            return
+        pad = self.pads.get(note)
+        if pad is None:
+            return
+        built = synthkits.hit_container_oscs(hit_key, overrides, pad['osc'])
+        if built is None or len(built[0]) != pad['nosc']:
+            self._rebuild()        # shape changed: relayout (corpus-rare)
             return
         import amy
-        slot = self.hit_slots[note]
-        synthkits.store_patch(slot, synthkits.hit_patch_string(hit_key, overrides))
-        amy.send(synth=hs.synth, num_voices=0)
-        amy.send(synth=hs.synth, num_voices=1, patch=slot)
+        updates, g, trig = built
+        for osc, kw in updates:
+            # events with synth+osc are voice-relative in AMY, matching the
+            # patch-string semantics at load
+            amy.send(synth=self.synth, osc=osc, **kw)
+        if g != pad['velscale']:
+            pad['velscale'] = g    # level moved: refresh this pad's maps
+            for played, home in self.note_alias.items():
+                if home == note:
+                    amy.send(synth=self.synth,
+                             midi_note_cmd=synthkits.container_note_cmd(
+                                 played, trig, g))
+
+    def _rebuild(self):
+        """Full teardown + rebuild (hit swap changed the container layout).
+        Synth numbers are recycled through PatchSynth's free list; a C-owned
+        kit keeps its channel number."""
+        self.release()
+        self._build()
 
     def note_on(self, note, vel, **kw):
-        # Python-routed path (kit not C-owned): resolve through the same alias
-        # map the C note maps use, so off-pad keys sound here too.
+        # Python-routed path (kit not C-owned, or pad-editor audition):
+        # resolve through the same alias map the C note maps use, so off-pad
+        # keys sound here too. Container pads fire their hit's trigger
+        # osc(s) directly with the map's gain applied to the velocity;
+        # note_source_channel marks the event as already-mapped so the
+        # flags-3 synth doesn't loop it back through the MIDI note maps.
         base = self.note_alias.get(note, note)
+        pad = self.pads.get(base)
+        if pad is not None:
+            import amy
+            for osc in pad['trig']:
+                amy.send(synth=self.synth, osc=osc, note=60,
+                         vel=vel * pad['velscale'],
+                         note_source_channel=self.synth)
+            return
         hs = self.hit_synths.get(base)
         if hs is not None:
             hs.note_on(60, vel)
@@ -194,7 +292,7 @@ class SynthKit:
         # on the same channel kept playing the drums. 255 = clear-all.
         try:
             import amy
-            amy.send(synth=self.kit_synth.synth, midi_note_cmd='255')
+            amy.send(synth=self.synth, midi_note_cmd='255')
         except Exception:
             pass
         for hs in self.hit_synths.values():
@@ -207,6 +305,10 @@ class SynthKit:
         except Exception:
             pass
         self.hit_synths = {}
+        self.hit_slots = {}
+        self.pads = {}
+        self.note_hits = {}
+        self.note_alias = {}
 
 
 def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None, hit_overrides=None,
