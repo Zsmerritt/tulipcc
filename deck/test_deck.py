@@ -529,7 +529,11 @@ def midimon_env():
     ff._engaged = True
     ff._ok = True
     ff._calls = []
+    ff._reg_ok = True
+    ff._stalls = 0
     ff.tap_engaged = lambda: ff._engaged
+    ff.register_ok = lambda: ff._reg_ok
+    ff.midi_stalls = lambda: ff._stalls
 
     def _set_tap(on):
         ff._calls.append(bool(on))
@@ -601,6 +605,56 @@ def test_midimon_tick_closes_when_label_deleted(midimon_env):
                        'buf': [], 'count': 0})
     midimon._tick()
     assert midimon._s['open'] is False         # real teardown still works
+
+
+def test_midimon_tick_shows_routing_disabled_banner(midimon_env):
+    midimon, ff = midimon_env
+    lbl = _FakeLabel()
+    midimon._s.update({'open': True, 'lbl': lbl, 'cntlbl': None,
+                       'dirty': False, 'buf': [], 'count': 0, 'paused': False})
+    ff._reg_ok = False                         # add_callback(_route) failed
+    midimon._tick()
+    assert 'ROUTING DISABLED' in lbl.text
+    assert lbl.color == 'red'
+
+
+# --- MIDI drain watchdog (the lost-wakeup recovery) ---
+def test_watchdog_force_drains_on_ring_overflow(deck):
+    deckcfg, forwarder = deck
+    tulip = sys.modules['tulip']
+    st = {'ring': 0, 'backlog': 0}
+    tulip.midi_in_drops = lambda: (0, st['ring'])
+
+    def _midi_in():
+        if st['backlog'] > 0:
+            st['backlog'] -= 1
+            return b'\x93\x37\x06'             # ch4 note-on vel 6 (the live one)
+        return None
+    tulip.midi_in = _midi_in
+    forwarder._wd.update({'last_ring_drops': None, 'stalls': 0, 'started': False})
+
+    forwarder._watchdog()                      # baseline sample: no stall yet
+    assert forwarder.midi_stalls() == 0
+    st['ring'] = 1024                          # ring overflowed since baseline
+    st['backlog'] = 1023                       # 1023 stale messages wedged
+    forwarder._watchdog()
+    assert forwarder.midi_stalls() == 1        # detected + recovered
+    assert st['backlog'] == 0                  # force-drained to empty
+    forwarder._watchdog()                      # steady state: no new drops
+    assert forwarder.midi_stalls() == 1        # no false re-trigger
+
+
+def test_register_ok_reports_add_callback_failure(deck):
+    deckcfg, forwarder = deck
+    midi = sys.modules['midi']
+
+    def _boom(fn):
+        raise RuntimeError('no callback slot')
+    midi.add_callback = _boom
+    forwarder._state['registered'] = False
+    forwarder._state.pop('register_failed', None)
+    forwarder.start()
+    assert forwarder.register_ok() is False
 
 
 def test_board_note_off_forwarded_raw(deck):

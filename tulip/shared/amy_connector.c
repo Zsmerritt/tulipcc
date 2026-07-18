@@ -95,6 +95,11 @@ volatile uint8_t tulip_midi_route_active = 0;  // table uploaded at least once
 volatile uint8_t tulip_midi_notify_all = 1;    // schedule Python per message
                                                // (legacy default; midimon)
 volatile uint8_t tulip_midi_py_pending = 0;    // outstanding scheduler entry
+// Ring backlog at which the input hook re-drives a possibly-lost Python wakeup
+// even though py_pending is set (a reload can discard the queued callback while
+// this C global stays latched). Small: the healthy drain keeps occupancy ~0, so
+// reaching this many undrained messages means the wakeup was lost.
+#define TULIP_MIDI_PENDING_REDRIVE 8
 volatile uint32_t tulip_midi_activity = 0;     // messages seen (meter/UI poll)
 
 
@@ -259,22 +264,47 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
 #ifdef AMY_MIDI_MPSC
         int pushed = midi_in_ring_push_mpsc(last_midi, last_midi_len,
                 &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_mpsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
 #else
         int pushed = midi_in_ring_push_spsc(last_midi, last_midi_len,
                 &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_spsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
 #endif
         if (!pushed) {
-            uint32_t n = ++tulip_midi_ring_drops;
-            if ((n & (n - 1)) == 0)
-                fprintf(stderr, "tulip midi ring full -- %u messages dropped so far "
-                        "(is Python draining midi_in?)\n", (unsigned)n);
+            // Drop-newest by contract (S4). COUNT it -- tulip.midi_in_drops()
+            // exposes tulip_midi_ring_drops -- but do NOT fprintf here. This
+            // runs on the AMY MIDI task; a console write can stall it for
+            // ~milliseconds, and with the ring wedged full (see below) that
+            // stall fired on EVERY dropped message, glitching the render while
+            // a keyboard played (soft notes exposed it, loud ones masked it --
+            // reproduced live). The counter is the signal; a stall is surfaced
+            // by the Python watchdog (deck/forwarder _watchdog) with one loud
+            // decklog line instead.
+            ++tulip_midi_ring_drops;
         }
 
-        // Tell Python -- COALESCED: one outstanding scheduler entry serves
-        // the whole backlog (the drain loops until midi_in empties, which
-        // clears the flag). A CC storm used to enqueue one scheduler entry
-        // per message.
-        if (midi_callback != NULL && !tulip_midi_py_pending) {
+        // Tell Python -- COALESCED: one outstanding scheduler entry serves the
+        // whole backlog (the drain loops until midi_in empties, which clears
+        // the flag). A CC storm used to enqueue one scheduler entry per message.
+        //
+        // SELF-HEAL a LOST WAKEUP. tulip_midi_py_pending is a C global that
+        // SURVIVES a MicroPython soft-reset; the scheduler queue it refers to
+        // does NOT. If the app crashes/reloads between "schedule succeeded
+        // (pending=1)" and c_fired_midi_event running, the queued callback is
+        // discarded but pending stays latched at 1 -- and this hook, gating
+        // solely on !pending, would then NEVER schedule again: the ring fills
+        // and the Python MIDI path stays dead until reboot (reproduced live:
+        // ring full, 1023 stale messages, midi_in_drops climbing). Note the set
+        // below only latches pending when the schedule SUCCEEDS, so a transient
+        // full-scheduler-queue does NOT leak pending -- the discarded-callback
+        // reload window is the sole leak. Recover by force-scheduling whenever
+        // the ring has backed up past a small threshold even though pending is
+        // set: that can only mean the earlier wakeup was lost. A duplicate
+        // drain is harmless (it finds an empty ring and clears pending), and
+        // MIDI is ~1 msg/ms so at most a couple of extra entries queue before
+        // the drain runs.
+        if (midi_callback != NULL
+                && (!tulip_midi_py_pending || occ >= TULIP_MIDI_PENDING_REDRIVE)) {
             if (mp_sched_schedule(midi_callback, mp_const_false)) {
                 tulip_midi_py_pending = 1;
             }

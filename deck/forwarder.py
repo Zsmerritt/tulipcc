@@ -858,8 +858,21 @@ def _start_once():
         try:
             midi.add_callback(_route)
             _state['registered'] = True
+            _state['register_failed'] = False
         except Exception as e:
-            print("forwarder: add_callback failed:", e)
+            # If this fails the forwarder never sees a single MIDI message: no
+            # notes, no layering, no board forwarding, no monitor. That is a
+            # total MIDI outage and must be LOUD -- a lone print scrolls away
+            # unseen. Record it (register_ok() surfaces it in the UI) and log
+            # it where the user actually looks.
+            _state['register_failed'] = True
+            try:
+                import decklog
+                decklog.log_exc("forwarder: midi.add_callback(_route) FAILED -- "
+                                "MIDI routing is DISABLED (no notes will play)", e)
+            except Exception:
+                print("forwarder: add_callback failed:", e)
+    _ensure_watchdog()
     _state['on'] = True
     try:
         import decklog
@@ -994,6 +1007,83 @@ def tap_engaged():
     if not _has_c_router():
         return True
     return bool(_state.get('c_router')) and bool(_state.get('py_tap'))
+
+
+def register_ok():
+    """False if midi.add_callback(_route) failed at build time -- a total MIDI
+    outage the UI must surface (not just a scrolled-away print)."""
+    return not _state.get('register_failed', False)
+
+
+# --- MIDI drain watchdog (router-tap-fix) ---------------------------------
+# The C input hook wakes Python by scheduling a drain callback and coalescing
+# on a C-global flag (tulip_midi_py_pending, amy_connector.c). That flag
+# SURVIVES a MicroPython soft-reset but the scheduled callback it refers to
+# does NOT, so a crash/reload can leave the flag latched with no callback
+# queued -- after which the C hook never re-schedules and the last_midi ring
+# fills forever, killing ALL Python MIDI (observed live: ring full, 1023 stale
+# messages, midi_in_drops climbing). The firmware now self-heals on the next
+# burst, but this watchdog is belt-and-suspenders that ALSO recovers on
+# firmware without that fix: when the ring-drop counter climbs (ring
+# overflowing => Python not draining), force-drain to clear the flag and log
+# loudly. Runs on the shared deck ticker, ~1 Hz, essentially free when idle.
+_wd = {'last_ring_drops': None, 'stalls': 0, 'started': False}
+
+
+def midi_stalls():
+    """Count of MIDI-drain stalls the watchdog has detected and recovered."""
+    return _wd['stalls']
+
+
+def _watchdog(sid=None):
+    try:
+        import tulip
+        if not hasattr(tulip, 'midi_in_drops'):
+            return
+        drops = tulip.midi_in_drops()
+        ring = (drops[1] if isinstance(drops, (tuple, list)) and len(drops) > 1
+                else 0)
+    except Exception:
+        return
+    last = _wd['last_ring_drops']
+    _wd['last_ring_drops'] = ring
+    if last is None or ring <= last:
+        return
+    # The ring-drop counter climbed since the last check: the ring is
+    # overflowing, i.e. Python is not draining it. Force a drain to pop the
+    # ring empty -- which clears tulip_midi_py_pending (modtulip.c clears it on
+    # an empty read) and unwedges the MIDI path. A stall means the backlog is
+    # stale, so discard rather than replay (replaying old note-ons without
+    # their note-offs would strand voices).
+    drained = 0
+    try:
+        import tulip
+        for _ in range(4096):
+            m = tulip.midi_in()
+            if not m:
+                break
+            drained += 1
+    except Exception:
+        pass
+    _wd['stalls'] += 1
+    try:
+        import decklog
+        decklog.log("MIDI DRAIN STALLED: ring overflowing (+%d drops); "
+                    "force-drained %d stale messages to recover (stall #%d)"
+                    % (ring - last, drained, _wd['stalls']))
+    except Exception:
+        pass
+
+
+def _ensure_watchdog():
+    if _wd['started']:
+        return
+    try:
+        import ticker
+        ticker.every(1000, _watchdog, key='midiwd')
+        _wd['started'] = True
+    except Exception:
+        pass
 
 
 def _upload_c_routes():

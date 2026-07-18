@@ -124,7 +124,15 @@ def _render():
         pass
     lbl.set_text("\n".join(lines))
     if _s['cntlbl'] is not None:
-        _s['cntlbl'].set_text("%d msgs" % _s['count'])
+        stalls = _s.get('stalls', 0)
+        if stalls:
+            # A recovered drain stall is worth showing: it means MIDI briefly
+            # wedged and the watchdog force-drained it (see decklog).
+            _s['cntlbl'].set_text("%d msgs  (%d MIDI stall%s recovered)"
+                                  % (_s['count'], stalls,
+                                     '' if stalls == 1 else 's'))
+        else:
+            _s['cntlbl'].set_text("%d msgs" % _s['count'])
     _s['dirty'] = False
 
 
@@ -145,30 +153,33 @@ def _close():
         pass
 
 
-def _show_tap_error():
-    # The C router is (or may be) suppressing MIDI and our tap did not engage:
-    # say so on screen in red instead of showing an empty "waiting" log. A
-    # silent blind monitor once had a user told "you must not have had it open"
-    # -- never again (pending task #85).
+def _show_error(text):
+    # Paint a loud red banner in the log instead of a silently empty pane. A
+    # blind monitor once had a user told "you must not have had it open" -- the
+    # panel must always SAY what is wrong (pending task #85).
     lbl = _s['lbl']
     if lbl is None:
         return
     try:
-        lbl.set_text(
-            "MIDI TAP FAILED TO ENGAGE\n"
-            "\n"
-            "The C MIDI router is active but the monitor could not\n"
-            "register its tap, so C-owned channels are NOT reaching\n"
-            "this panel. Incoming MIDI is being played but hidden.\n"
-            "\n"
-            "Try: rebuild instruments, or reboot the deck. If it keeps\n"
-            "happening, report it -- this is a bug, not 'no MIDI'.")
+        lbl.set_text(text)
         try:
             lbl.set_style_text_color(dk.c(dk.RED), 0)
         except Exception:
             pass
     except Exception:
         pass
+
+
+def _show_tap_error():
+    _show_error(
+        "MIDI TAP FAILED TO ENGAGE\n"
+        "\n"
+        "The C MIDI router is active but the monitor could not\n"
+        "register its tap, so C-owned channels are NOT reaching\n"
+        "this panel. Incoming MIDI is being played but hidden.\n"
+        "\n"
+        "Try: rebuild instruments, or reboot the deck. If it keeps\n"
+        "happening, report it -- this is a bug, not 'no MIDI'.")
 
 
 def _tick(sid=None):
@@ -188,17 +199,29 @@ def _tick(sid=None):
     # reload can drop it. Re-assert only when it actually dropped (idempotent;
     # no per-tick route-table churn), so the monitor recovers on the next tick
     # instead of going silently blind. Surface a hard failure loudly (#85).
+    reg_ok = True
     try:
         import forwarder
+        reg_ok = forwarder.register_ok()
         if not forwarder.tap_engaged():
             _s['tap_ok'] = bool(forwarder.set_midi_tap(True))
         else:
             _s['tap_ok'] = True
+        _s['stalls'] = forwarder.midi_stalls()
     except Exception:
         pass
-    # Render (best-effort: errors here are swallowed, never a teardown).
+    # Render (best-effort: errors here are swallowed, never a teardown). Show
+    # the most severe fault first: routing disabled > tap not engaged > log.
     try:
-        if not _s.get('tap_ok', True):
+        if not reg_ok:
+            _show_error(
+                "MIDI ROUTING DISABLED\n"
+                "\n"
+                "The forwarder could not register its MIDI callback, so NO\n"
+                "MIDI reaches the deck at all (no notes, no monitor).\n"
+                "\n"
+                "Reboot the deck; if it persists, report it -- see the log.")
+        elif not _s.get('tap_ok', True):
             _show_tap_error()
         elif _s['dirty']:
             _render()
