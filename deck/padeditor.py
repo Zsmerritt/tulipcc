@@ -154,6 +154,26 @@ def _open_swap():
         sh.push(swap_panel, "Swap hit", key='padswap', slow=True)
 
 
+def _set_swap_use_enabled(on):
+    """Enable/dim the swap picker's "Use selected" button (Files action-bar
+    pattern): it opens disabled so it never looks tappable before a hit is
+    chosen (UX11-3), then enables on the first selection."""
+    b = _s.get('swap_use_btn')
+    if b is None:
+        return
+    try:
+        if on:
+            b.set_style_bg_color(dk.c(dk.GREEN), 0)
+            b.get_child(0).set_style_text_color(dk.c(dk.WHITE), 0)
+            b.remove_state(lv.STATE.DISABLED)
+        else:
+            b.set_style_bg_color(dk.c(dk.SURFACE2), 0)
+            b.get_child(0).set_style_text_color(dk.c(dk.MUTED), 0)
+            b.add_state(lv.STATE.DISABLED)
+    except Exception:
+        pass
+
+
 def swap_panel(parent, shell=None):
     """Alternates picker: browse the whole hit corpus by pack, tap to
     audition (with this pad's current overrides), then Use. The pad keeps
@@ -180,6 +200,8 @@ def swap_panel(parent, shell=None):
                    font=dk.FONT_S)
     db = dk.button(top, "Kit default", w=180, h=52, bg=dk.SURFACE2,
                    font=dk.FONT_S)
+    _s['swap_use_btn'] = ub
+    _set_swap_use_enabled(False)    # nothing selected yet (UX11-3)
 
     body = dk.row(parent, h=H - 96)
     body.set_pos(0, 72)
@@ -201,6 +223,7 @@ def swap_panel(parent, shell=None):
                 pass
         _s['swap_btn'] = btn
         btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
+        _set_swap_use_enabled(True)     # a hit is now chosen (UX11-3)
         try:
             synthkits.audition(key, _overrides(note))
         except Exception:
@@ -219,6 +242,9 @@ def swap_panel(parent, shell=None):
             pbtn.set_style_bg_color(dk.c(dk.ACCENT), 0)
         hits.clean()
         _s['swap_btn'] = None
+        # mark the pad's CURRENT effective hit with the same accent the patch
+        # and kit pickers use for the current row (UX11-4)
+        cur_hit = _hit_key_for(note)
         keys = synthkits.pack_hits(pack)
         seen = {}
         for key in keys[:150]:
@@ -228,12 +254,18 @@ def swap_panel(parent, shell=None):
             seen[nm] = seen.get(nm, 0) + 1
             if seen[nm] > 1:
                 nm = "%s (%d)" % (nm, seen[nm])
+            is_cur = (key == cur_hit)
             b = dk.button(hits, nm, w=lv.pct(96), h=52,
-                          bg=dk.SURFACE, font=dk.FONT_S)
+                          bg=(dk.ACCENT if is_cur else dk.SURFACE),
+                          font=dk.FONT_S)
             b.add_event_cb(
                 (lambda k: (lambda e: _pick(k, e.get_target_obj())
                             if e.get_code() == lv.EVENT.CLICKED else None))(key),
                 lv.EVENT.CLICKED, None)
+            if is_cur:
+                # track it so the first real pick de-highlights it, like the
+                # pickers do; Use stays disabled until an actual tap (UX11-3)
+                _s['swap_btn'] = b
         if len(keys) > 150:
             dk.label(hits, "(+%d more in this pack)" % (len(keys) - 150),
                      color=dk.MUTED, font=dk.FONT_S)
@@ -283,8 +315,10 @@ def _select(note):
     dk.label(card, "%s  (note %d)" % (_NOTE_NAMES.get(note, 'Pad'), note),
              color=dk.WHITE, font=dk.FONT_M)
     r = dk.row(card, h=56, bg=dk.SURFACE2)
+    # the hit NAME is a real value, not a placeholder -- TEXT, not MUTED (UX11-6,
+    # the UX-REVIEW-7 NEW-4 class the search fields already fixed)
     nl = dk.label(r, synthkits.hit_name(key) + (' *' if swapped else ''),
-                  color=dk.MUTED, font=dk.FONT_S, w=_s['cw'] - 220)
+                  color=dk.TEXT, font=dk.FONT_S, w=_s['cw'] - 220)
     try:
         nl.set_long_mode(lv.label.LONG.DOT)
     except Exception:
@@ -300,10 +334,12 @@ def _select(note):
         cur = ov.get(pkey)
         cur = dflt if cur is None else (cur / scale if scale != 1.0 else cur)
         # live numeric readout (X-2): every other slider in the app shows
-        # its value; these four were tune-by-ear-only
+        # its value; these four were tune-by-ear-only. WHITE + FONT_MONO to
+        # match the app's readable value/LED style -- the dim TEAL/FONT_S was
+        # tiny and low-contrast on the row (UX11-6).
         unit = '' if pkey == 'tune' else '%'
-        vl = dk.label(r, "%d%s" % (int(round(cur)), unit), color=dk.TEAL,
-                      font=dk.FONT_S)
+        vl = dk.label(r, "%d%s" % (int(round(cur)), unit), color=dk.WHITE,
+                      font=dk.FONT_MONO)
 
         # dk.slider callbacks receive the LVGL EVENT, not the value --
         # treating it as a number made every tick throw and the sliders dead
@@ -330,7 +366,7 @@ def panel(parent, shell=None):
     # returns early without rebuilding pads/card, and swap_btn/swap_packbtn
     # (set inside the pushed swap panel) are never re-set here -- all would
     # otherwise point at deleted LVGL objects on the next rebuild.
-    for _k in ('pads', 'card', 'swap_btn', 'swap_packbtn'):
+    for _k in ('pads', 'card', 'swap_btn', 'swap_packbtn', 'swap_use_btn'):
         _s.pop(_k, None)
     import synthkits
     kit_key = _kit_key()

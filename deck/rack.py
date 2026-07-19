@@ -1057,14 +1057,14 @@ def _build_preset_detail(parent):
                  font=dk.FONT_M)
         return
     dk.label(body, rec.get('name', '?'), color=dk.WHITE, font=dk.FONT_L)
-    # a short summary of what recalling will apply
-    if rec.get('type') == 'drums':
-        import drums_kit
-        summ = "Drums - kit %s" % drums_kit.kit_name(rec.get('kit', 384))
-    else:
-        summ = "%s - patch %s" % (_TYPE_NAMES.get(rec.get('type', ''),
-                                                  rec.get('type', '?')),
-                                  rec.get('patch', 0))
+    # a short summary of what recalling will apply. catalog.sound_label gives
+    # the real sound NAME ("A11 Brass Set 1", "TR-808 kit") -- the old branch
+    # printed a raw "patch 0" number instead (UX11-5); same helper the Home
+    # footer/chip already use (E-8).
+    import catalog
+    summ = "%s - %s" % (_TYPE_NAMES.get(rec.get('type', ''),
+                                        rec.get('type', '?')),
+                        catalog.sound_label(rec))
     dk.label(body, summ, color=dk.MUTED, font=dk.FONT_S)
     dk.label(body, "Recall applies this sound to the current instrument "
              "(and may change its type). Device FX are not affected.",

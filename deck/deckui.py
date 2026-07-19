@@ -298,6 +298,16 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     b.set_size(w, h)
     _flat(b, radius=radius, bg=bg)
     pressable(b)
+    # Kill the LVGL default-theme drop-shadow: on this dark RGB332 palette it
+    # renders as a dark triangular tail off the button's bottom-left corner,
+    # glaringly on the narrow kit/swap/pad rows (the full-width patch rows hide
+    # it). This is a flat design -- elevation is dk.edge borders, never shadows
+    # (see edge()) -- so there is nothing to lose (UX11-7).
+    try:
+        b.set_style_shadow_width(0, 0)
+        b.set_style_shadow_opa(0, 0)
+    except Exception:
+        pass
     b.set_style_bg_color(c(SURFACE2), lv.PART.MAIN | lv.STATE.DISABLED)  # NEW-3
     # zero the theme's DISABLED color-filter (khaki tint on RGB332) --
     # same treatment the sliders got for fresh-eyes F-4

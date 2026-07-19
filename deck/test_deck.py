@@ -365,6 +365,28 @@ def test_device_load_and_on_channel(deck):
     assert len(deckcfg.instruments_on_channel(2)) == 1
 
 
+def test_device_load_counts_drums_as_one_voice(deck):
+    # UX11-2: a drums instrument is a single fixed voice regardless of its stale
+    # num_voices, so the top-bar voice chip stops over-counting after a
+    # melodic->drums type change (it was stuck at "20/32").
+    deckcfg, _ = deck
+    iid0 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid0, 'num_voices', 10)
+    j = deckcfg.add_instrument(device='internal', channel=2, num_voices=20)
+    assert deckcfg.device_load('internal') == 30    # 10 + 20 (both melodic)
+    deckcfg.set_instrument(j['id'], 'type', 'drums')
+    assert deckcfg.device_load('internal') == 11    # 10 + 1 (drums = 1 voice)
+
+
+def test_sound_label_drums_dispatches_on_type_not_patch(deck):
+    # UX11-5: the preset-detail subtitle now reuses catalog.sound_label, which
+    # dispatches on TYPE -- a drums record names the kit, never "patch 0".
+    import catalog
+    label = catalog.sound_label({'type': 'drums', 'kit': 384})
+    assert 'patch' not in label
+    assert label.endswith('kit')
+
+
 def test_device_list_reports_internal_and_boards(deck):
     deckcfg, _ = deck
     sys.modules['tulip'].num_midi_devices = lambda: 2

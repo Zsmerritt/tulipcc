@@ -123,13 +123,16 @@ def _bar_row(parent, y, title, bar_w):
     track = lv.obj(parent)
     track.set_size(bar_w, _BAR_H)
     track.set_pos(_BAR_X, y + 3)
-    dk._flat(track, radius=_BAR_H // 2, bg=dk.BG)
+    # bg=SURFACE2 (was BG): a BG track on the BG page was invisible, so a low
+    # fill had no bar context to read against (UX11-1). radius 4 (was _BAR_H//2)
+    # so even a short fill draws as a small bar, never a circle.
+    dk._flat(track, radius=4, bg=dk.SURFACE2)
     track.remove_flag(lv.obj.FLAG.SCROLLABLE)
 
     bar = lv.obj(track)
     bar.set_size(1, _BAR_H)
     bar.align(lv.ALIGN.LEFT_MID, 0, 0)
-    dk._flat(bar, radius=_BAR_H // 2, bg=dk.GREEN)
+    dk._flat(bar, radius=4, bg=dk.GREEN)
     bar.remove_flag(lv.obj.FLAG.SCROLLABLE)
 
     return {'title': title_lbl, 'value': val, 'bar': bar, 'track_w': bar_w}
@@ -143,17 +146,18 @@ def _bar_set(row, pct, text, color_key=pd.BAR_GREEN):
     the over-budget-clamp case, profilerdata.mem_pct_free for memory);
     `text` is shown as-is and can carry the real, unclamped number."""
     frac = 0.0 if pct <= 0 else (1.0 if pct >= 100.0 else pct / 100.0)
-    # A nonzero-but-low fill (5-7% memory-free at boot) rendered as a CIRCLE:
-    # the fill was narrower than the bar's own corner radius (_BAR_H // 2), so a
-    # rounded rect collapsed to a dot that read as a bullet, not a bar (UX10-16).
-    # Clamp any nonzero fill to at least the bar height so it always draws as a
-    # short bar; the value TEXT still carries the true, unclamped number.
+    # A nonzero-but-low fill (3-7% core load) rendered as a CIRCLE: the round-1
+    # clamp of _BAR_H+2 (20px) was still ~ the bar diameter, so a 20x18 pill read
+    # as a dot (UX10-16 residual -> UX11-1). Clamp to 2.5*_BAR_H and pair with
+    # the radius-4 fill above so any nonzero load is an unmistakable short bar;
+    # the value TEXT still carries the true, unclamped number.
     if frac <= 0:
         fill = 1
     else:
         fill = int(row['track_w'] * frac)
-        if fill < _BAR_H + 2:
-            fill = _BAR_H + 2
+        min_fill = int(2.5 * _BAR_H)
+        if fill < min_fill:
+            fill = min_fill
         if fill > row['track_w']:
             fill = row['track_w']
     try:

@@ -716,9 +716,18 @@ def instruments_on_channel(ch, cfg=None):
 
 
 def device_load(device, cfg=None):
-    """Sum of num_voices for enabled instruments assigned to `device`."""
-    return sum(i.get('num_voices', 0) for i in instruments(cfg)
-               if i.get('enabled', True) and i.get('device') == device)
+    """Effective voices in use on `device`: sum of num_voices for enabled
+    instruments, EXCEPT a drums instrument counts as 1 -- a kit is a single
+    fixed voice (the editor shows "1 (fixed by kit)" and the synth forces
+    num_voices=1), so its stale num_voices must not inflate the chip. Without
+    this the top-bar voice chip stayed e.g. "20/32" after a Juno->Drums type
+    change even though refresh_chips ran (UX11-2)."""
+    total = 0
+    for i in instruments(cfg):
+        if not i.get('enabled', True) or i.get('device') != device:
+            continue
+        total += 1 if i.get('type') == 'drums' else i.get('num_voices', 0)
+    return total
 
 
 def device_list(cfg=None):
