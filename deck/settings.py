@@ -7,6 +7,7 @@ import tulip
 import amy
 import deckui as dk
 import deckcfg
+import kbmgr
 import shellmodel as sm
 import lvgl as lv
 
@@ -131,7 +132,7 @@ def panel(parent, shell=None):
     # keyboard left up over a hidden Wi-Fi field on tab switch = the known
     # textarea use-after-free crash family -- close it on every tab change
     try:
-        tv.add_event_cb(lambda e: dk.close_keyboard(),
+        tv.add_event_cb(lambda e: kbmgr.close(),
                         lv.EVENT.VALUE_CHANGED, None)
     except Exception:
         pass
@@ -286,7 +287,7 @@ def _build_wifi(body, screen):
         lv.EVENT.CLICKED, None)
     eyebtn.align(lv.ALIGN.TOP_RIGHT, -74, 118)
     dk.button(wcard, tulip.lv.SYMBOL.KEYBOARD, w=64, h=44, bg=dk.SURFACE2,
-        cb=lambda e: dk.toggle_keyboard_for(ssid.ta)).align(lv.ALIGN.TOP_RIGHT, 0, 118)
+        cb=lambda e: kbmgr.toggle(ssid.ta, echo=True)).align(lv.ALIGN.TOP_RIGHT, 0, 118)
 
 
 def _build_time(body, screen):

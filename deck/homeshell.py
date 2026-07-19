@@ -17,6 +17,7 @@
 
 import tulip
 import deckui as dk
+import kbmgr
 import shellmodel as sm
 import lvgl as lv
 
@@ -330,7 +331,7 @@ class HomeShell:
         slow=True paints a 'Loading...' placeholder first and runs the builder
         on the next tick -- long builds (Apps discovery scans /user) otherwise
         read as a frozen UI."""
-        dk.close_keyboard()     # panels never share the keyboard (see back())
+        kbmgr.close()           # panels never share the keyboard (see back())
         dk.close_confirm()      # a modal never outlives its panel (F-12)
         self._refill_gen += 1   # cancel any pending back()-refill
         panel = lv.obj(self.content)
@@ -373,7 +374,7 @@ class HomeShell:
         """Re-run `builder` on the current top panel in place (same handle, so
         Back still lands where it did) -- used when tapping a different chip
         while a panel of the same kind is already open."""
-        dk.close_keyboard()     # never tear a textarea out from under the
+        kbmgr.close()           # never tear a textarea out from under the
         dk.close_confirm()      # global keyboard/modal (F-12) -- match
                                 # push/back/reset_to_root before h.clean()
         self._refill_gen += 1   # cancel any pending back()-refill
@@ -410,7 +411,7 @@ class HomeShell:
         # to its target textarea -- leaving a panel with the keyboard up,
         # then tapping its close/checkmark, use-after-freed the deleted
         # field and hard-crashed the device (seen live on Wi-Fi settings).
-        dk.close_keyboard()
+        kbmgr.close()
         dk.close_confirm()      # a modal never outlives its panel (F-12)
         removed, revealed = self.stack.pop()
         if removed is None:
@@ -455,7 +456,7 @@ class HomeShell:
         self._sync_chrome()
 
     def reset_to_root(self):
-        dk.close_keyboard()     # same hazard as back(): don't strand the kb
+        kbmgr.close()           # same hazard as back(): don't strand the kb
         dk.close_confirm()      # F-12
         self._refill_gen += 1   # cancel any pending back()-refill
         for h in self.stack.reset_to_root():
