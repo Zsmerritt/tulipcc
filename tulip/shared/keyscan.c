@@ -447,8 +447,15 @@ void send_key_to_micropython(uint16_t c) {
         }
 
         // If something is taking in chars from LVGL (text area etc), don't send the char to MP
-        if (c==mp_interrupt_char) {
-            // Send a ctrl-C to Micropython if sent 
+        if (c==mp_interrupt_char && lvgl_is_repl) {
+            // Only raise a KeyboardInterrupt from a UI keystroke when the
+            // screen actually IS the REPL. Off the REPL this ^C would arrive
+            // while an LVGL event/draw/timer callback is on the MP task, and
+            // the exception nlr-unwinds straight through LVGL's C frames --
+            // leaving draw/timer state half-torn-down (WDT precursor #1). A
+            // soft-keyboard or USB ^C in an app is now simply swallowed here.
+            // Serial ^C is delivered via mphalport, not this path, so host
+            // tooling (mpremote, ctrl-C at the serial REPL) is unaffected.
             mp_sched_keyboard_interrupt();
         } else if (c==4) { // control-D
             tx_char(c );
