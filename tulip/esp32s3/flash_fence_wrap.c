@@ -85,7 +85,21 @@ static volatile int fence_depth = 0;
 static esp_timer_handle_t fence_drop_timer = NULL;
 
 #define FENCE_DROP_DELAY_US  20000   // burst window: writes this close share one handshake
-#define FENCE_WAIT_MAX_TICKS 25      // bound the handshake (AMY parked/not started)
+// Bound the handshake so a parked/never-started AMY can't wedge every write.
+// Was 25 (~25ms) -- only ~4 render blocks (5.8ms each) of margin, so a busy
+// render burst could time out routinely. Raised to 100 (~100ms); crucially the
+// timeout is now COUNTED (FENCE_BAILOUT below), so proceeding-anyway is loud and
+// rare instead of silent. We deliberately still proceed with the write on
+// timeout -- blocking forever on a genuinely stuck render would wedge all I/O,
+// which is strictly worse than the narrow both-CPU race this bounds.
+#define FENCE_WAIT_MAX_TICKS 100
+
+// FW-16 observability: on handshake timeout the wrapper writes anyway while a
+// render may still hold a pointer into the mmap'd bank -- the one surviving
+// path to the dual-core TG1WDT wedge. Count those bailouts and remember the
+// worst tick-wait actually observed, exported via tulip.flash_fence_stats().
+volatile uint32_t tulip_flash_fence_bailouts = 0;
+volatile uint32_t tulip_flash_fence_max_wait_ticks = 0;
 
 static void fence_drop_cb(void *arg) {
     (void)arg;
@@ -137,6 +151,15 @@ void tulip_flash_fence_acquire(void) {
             // fence was visible has finished. Bounded in case AMY parked.
             while (amy_global.total_blocks < b + 2 && guard++ < FENCE_WAIT_MAX_TICKS) {
                 vTaskDelay(1);
+            }
+            if (amy_global.total_blocks < b + 2) {
+                // Bailed: the render never advanced two blocks within the
+                // bound. We proceed with the write anyway (see FENCE_WAIT_MAX_TICKS
+                // note) -- record it so the residual race is observable.
+                tulip_flash_fence_bailouts++;
+                if ((uint32_t)guard > tulip_flash_fence_max_wait_ticks) {
+                    tulip_flash_fence_max_wait_ticks = (uint32_t)guard;
+                }
             }
         }
     }

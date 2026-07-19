@@ -204,6 +204,34 @@ STATIC mp_obj_t tulip_render_cyc(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_render_cyc_obj, 0, 1, tulip_render_cyc);
 
 
+// tulip.flash_fence_stats() -> (bailouts, max_wait_ticks): observability for
+// the flash-fence acquire handshake (flash_fence_wrap.c, FW-16).  `bailouts`
+// counts how many times the bounded handshake timed out and the write PROCEEDED
+// with a render possibly still fetching from the mmap'd bank -- the surviving
+// both-CPU TG1WDT path.  Nonzero means margin is being spent; a rising value
+// means the 100-tick bound is too low or a render is genuinely stuck.
+// `max_wait_ticks` is the worst tick-wait actually observed on a bailout.  Only
+// the C wrap layer (non-amyboard esp32s3) keeps these, so degrade to None
+// everywhere else the same way render_cyc / flash_freq do.
+#if defined(ESP_PLATFORM) && !defined(AMYBOARD)
+extern volatile uint32_t tulip_flash_fence_bailouts;        // flash_fence_wrap.c
+extern volatile uint32_t tulip_flash_fence_max_wait_ticks;
+#endif
+STATIC mp_obj_t tulip_flash_fence_stats(size_t n_args, const mp_obj_t *args) {
+    (void)n_args; (void)args;
+#if defined(ESP_PLATFORM) && !defined(AMYBOARD)
+    mp_obj_t items[2] = {
+        mp_obj_new_int_from_uint(tulip_flash_fence_bailouts),
+        mp_obj_new_int_from_uint(tulip_flash_fence_max_wait_ticks),
+    };
+    return mp_obj_new_tuple(2, items);
+#else
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_stats_obj, 0, 0, tulip_flash_fence_stats);
+
+
 // tulip.eq_silent_skip([0|1]): live A/B switch for AMY's EQ silent-bus skip
 // (amy eq-silent-skip-toggle branch: volatile uint8_t amy_eq_silent_skip,
 // default 1). With no arg, returns the current value. With an int arg, sets
@@ -2291,6 +2319,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
     { MP_ROM_QSTR(MP_QSTR_flash_freq), MP_ROM_PTR(&tulip_flash_freq_obj) },
     { MP_ROM_QSTR(MP_QSTR_render_cyc), MP_ROM_PTR(&tulip_render_cyc_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence_stats), MP_ROM_PTR(&tulip_flash_fence_stats_obj) },
     { MP_ROM_QSTR(MP_QSTR_eq_silent_skip), MP_ROM_PTR(&tulip_eq_silent_skip_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
 #if !defined(__EMSCRIPTEN__) && !defined(AMYBOARD)
