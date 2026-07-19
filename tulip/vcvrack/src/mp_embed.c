@@ -241,6 +241,22 @@ static MP_NOINLINE void *mp_thread_body(void *vargs) {
         usleep(2000);
     }
 
+    // Drop the C-held references to this session's Python MIDI-in and overload
+    // callbacks (tulip.midi_callback / tulip.amy_overload_callback). They are
+    // plain C globals in modtulip.c, scheduled from the audio/MIDI threads via
+    // mp_sched_schedule() in amy_connector.c, and they outlive the MicroPython
+    // session: after mp_deinit() + free(heap) below, a restart re-runs mp_init()
+    // on a fresh heap while these globals still point at the previous session's
+    // now-freed callback objects. A MIDI message (or an overload) arriving in
+    // the window before _boot.py re-registers them would schedule a dangling
+    // pointer -- a callback into freed memory. Clear them here, while the
+    // objects are still valid, so the next session starts with the callbacks
+    // unset (the schedulers guard on != NULL) until Python re-registers.
+    extern mp_obj_t midi_callback;
+    extern mp_obj_t amy_overload_callback;
+    midi_callback = NULL;
+    amy_overload_callback = NULL;
+
     #if MICROPY_PY_THREAD
     mp_thread_deinit();
     #endif
