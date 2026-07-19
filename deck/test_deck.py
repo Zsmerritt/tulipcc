@@ -2650,6 +2650,250 @@ def test_keyboard_ordinary_key_still_filtered(uipatch):
     assert _ORIG_KB_CB_CALLS == []
 
 
+# --- kbmgr: the keyboard-lifecycle state machine ---------------------------
+# UI geometry (scroll-to-clear, echo positioning) is device-only; these cover
+# the crash-relevant STATE machine: open/close idempotence, the textarea-DELETE
+# teardown hook that auto-closes a popped panel, deferred overlay teardown when
+# the close originates from a keyboard event, and password-echo masking.
+
+class _KbEvt:
+    def __init__(self, obj):
+        self._obj = obj
+
+    def get_target_obj(self):
+        return self._obj
+
+
+class _KbFake:
+    """Stands in for ui.lv_soft_kb: records attached callbacks so a test can
+    fire VALUE_CHANGED / DELETE, and no-ops every styling call."""
+    def __init__(self):
+        self.textarea = 'UNSET'
+        self.cbs = {}
+        self.height = 240
+
+    def add_event_cb(self, fn, ev, ud):
+        self.cbs.setdefault(ev, []).append(fn)
+
+    def remove_event_cb(self, fn):
+        for ev in list(self.cbs):
+            self.cbs[ev] = [c for c in self.cbs[ev] if c is not fn]
+
+    def set_textarea(self, ta):
+        self.textarea = ta
+
+    def get_height(self):
+        return self.height
+
+    def update_layout(self):
+        pass
+
+    def fire(self, ev):
+        for fn in list(self.cbs.get(ev, [])):
+            fn(_KbEvt(self))
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _TaFake:
+    """A textarea whose DELETE event can be fired (panel teardown) and whose
+    password mode / text are readable for the echo path."""
+    def __init__(self, text='', password=False):
+        self._text = text
+        self._pw = password
+        self.cbs = {}
+
+    def add_event_cb(self, fn, ev, ud):
+        self.cbs.setdefault(ev, []).append(fn)
+
+    def get_text(self):
+        return self._text
+
+    def get_password_mode(self):
+        return self._pw
+
+    def get_parent(self):
+        return None
+
+    def get_coords(self, area):
+        pass
+
+    def fire(self, ev):
+        for fn in list(self.cbs.get(ev, [])):
+            fn(_KbEvt(self))
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _EchoLabel:
+    def __init__(self):
+        self.text = ''
+
+    def set_text(self, t=None, *a):
+        self.text = t if t is not None else ''
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _import_kbmgr_with_fakes():
+    """kbmgr + deckui imported against permissive LVGL/ui fakes, with a
+    firmware-like tulip.keyboard() toggle and a defer that records (never runs)
+    so scheduling is observable."""
+    _install_hw_mocks()
+    tulip = sys.modules['tulip']
+    tulip.color = lambda r, g, b: (r, g, b)
+    tulip._deferred = []
+    tulip.defer = lambda fn, arg, ms: tulip._deferred.append((fn, arg, ms))
+
+    lv = _LvModuleAuto('lvgl')
+    lv.label = lambda parent=None: _EchoLabel()      # echo text inspectable
+    sys.modules['lvgl'] = lv
+
+    ui = types.ModuleType('ui')
+    ui.lv_soft_kb = None
+    ui.pal_to_lv = lambda pal: pal
+
+    def _toggle():
+        # Mirror the firmware: delete the overlay (firing DELETE) or create it.
+        if ui.lv_soft_kb is not None:
+            kb = ui.lv_soft_kb
+            ui.lv_soft_kb = None
+            try:
+                kb.fire(lv.EVENT.DELETE)
+            except Exception:
+                pass
+        else:
+            ui.lv_soft_kb = _KbFake()
+    ui.keyboard = _toggle
+    tulip.keyboard = _toggle
+    sys.modules['ui'] = ui
+
+    for m in ('deckui', 'kbmgr'):
+        sys.modules.pop(m, None)
+    importlib.import_module('deckui')
+    kbmgr = importlib.import_module('kbmgr')
+    kbmgr._reset_state()
+    return kbmgr, ui, tulip, lv
+
+
+def test_kbmgr_open_is_idempotent_and_does_not_recreate_the_overlay():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake()
+    kbmgr.open(ta)
+    assert ui.lv_soft_kb is not None
+    kb = ui.lv_soft_kb
+    assert kb.textarea is ta and kbmgr.bound_textarea() is ta
+    kbmgr.open(ta)                        # re-focus the SAME field
+    assert ui.lv_soft_kb is kb            # not torn down and rebuilt
+    assert kbmgr.is_open()
+
+
+def test_kbmgr_close_is_idempotent():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake()
+    kbmgr.open(ta)
+    kbmgr.close()
+    assert ui.lv_soft_kb is None
+    assert not kbmgr.is_open() and kbmgr.bound_textarea() is None
+    kbmgr.close()                         # already gone: must be a safe no-op
+    assert ui.lv_soft_kb is None
+
+
+def test_kbmgr_textarea_delete_auto_closes_the_keyboard():
+    # The structural close-crash guard: a panel popped out from under the
+    # keyboard deletes its textarea, which must auto-close so the outliving
+    # keyboard can't poke the freed field (the historic use-after-free).
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake()
+    kbmgr.open(ta)
+    assert ui.lv_soft_kb is not None
+    ta.fire(lv.EVENT.DELETE)              # panel teardown deletes the field
+    assert ui.lv_soft_kb is None
+    assert not kbmgr.is_open() and kbmgr.bound_textarea() is None
+
+
+def test_kbmgr_close_from_kb_event_defers_overlay_teardown():
+    # Deleting the keyboard from inside its own event handler is the crash
+    # class. close(from_kb_event=True) must detach the binding IMMEDIATELY but
+    # DEFER the overlay teardown to the next tick.
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake()
+    kbmgr.open(ta)
+    kb = ui.lv_soft_kb
+    tulip._deferred[:] = []
+    kbmgr.close(from_kb_event=True)
+    # binding detached now...
+    assert not kbmgr.is_open() and kbmgr.bound_textarea() is None
+    # ...but the overlay is still up, teardown scheduled for the next tick
+    assert ui.lv_soft_kb is kb
+    assert len(tulip._deferred) == 1
+    fn, arg, ms = tulip._deferred[0]
+    fn(arg)                               # run the deferred hide
+    assert ui.lv_soft_kb is None
+
+
+def test_kbmgr_keyboard_self_delete_syncs_state():
+    # The keyboard's own close key deletes the overlay without routing through
+    # kbmgr.close(); the DELETE hook must still clear our binding state.
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake()
+    kbmgr.open(ta)
+    kb = ui.lv_soft_kb
+    ui.lv_soft_kb = None                  # frozen ui.py: delete then null
+    kb.fire(lv.EVENT.DELETE)
+    assert not kbmgr.is_open() and kbmgr.bound_textarea() is None
+
+
+def test_kbmgr_password_field_forces_the_echo_strip():
+    # Echo is always on for password fields (fallback + confirmation), even
+    # when the caller did not ask for it.
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake(password=True)
+    kbmgr.open(ta)                        # echo defaults off
+    assert kbmgr._s.get('echo') is not None
+
+
+def test_kbmgr_non_password_echo_is_opt_in():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake(password=False)
+    kbmgr.open(ta)                        # echo defaults off
+    assert kbmgr._s.get('echo') is None
+    kbmgr.close()
+    kbmgr.open(ta, echo=True)
+    assert kbmgr._s.get('echo') is not None
+
+
+def test_kbmgr_echo_masks_password_with_last_char_reveal():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake(text='secret', password=True)
+    kbmgr.open(ta)
+    lbl = kbmgr._s['echo_lbl']
+    kbmgr._s['reveal_last'] = False
+    kbmgr._update_echo()
+    assert lbl.text == '•' * 6       # fully masked
+    kbmgr._s['reveal_last'] = True
+    kbmgr._update_echo()
+    assert lbl.text == '•' * 5 + 't'  # last char briefly revealed
+
+
+def test_kbmgr_echo_shows_plaintext_for_non_password():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    ta = _TaFake(text='hello', password=False)
+    kbmgr.open(ta, echo=True)
+    kbmgr._update_echo()
+    assert kbmgr._s['echo_lbl'].text == 'hello'
+
+
+def test_kbmgr_height_zero_when_no_keyboard():
+    kbmgr, ui, tulip, lv = _import_kbmgr_with_fakes()
+    assert kbmgr.height() == 0
+    kbmgr.open(_TaFake())
+    assert kbmgr.height() == 240          # _KbFake.get_height()
+
+
 # --- rename: deleting down to (and past) an empty name stays harmless -------
 def test_empty_instrument_name_shortens_to_a_placeholder():
     # Backspacing the rename field down to empty writes name='' through
