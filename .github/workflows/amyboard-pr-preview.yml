@@ -174,6 +174,7 @@ jobs:
             ! grep -qx CONFIG_ESPTOOLPY_FLASHFREQ_120M=y build-TULIP4_R11_FLASHER/sdkconfig &&
             mkdir -p dist &&
             cp build-TULIP4_R11_FLASHER/micropython.bin dist/tulip-flasher-TULIP4_R11_FLASHER.bin &&
+            cp build/micropython.elf dist/tulip-firmware-TULIP4_R11.elf &&
             cd ..
 
       - name: Upload AMYboard firmware artifact
@@ -203,6 +204,7 @@ jobs:
             tulip/esp32s3/dist/tulip-full-TULIP4_R11.bin
             tulip/esp32s3/dist/tulip-sys.bin
             tulip/esp32s3/dist/tulip-flasher-TULIP4_R11_FLASHER.bin
+            tulip/esp32s3/dist/tulip-firmware-TULIP4_R11.elf
 
       # The esp-idf firmware step above runs in a Docker container as root, so any
       # file it created or rewrote in the bind-mounted workspace is now owned by
