@@ -160,18 +160,40 @@ def gm_fill(notes):
 
 
 def pack_fill(notes):
-    """{played_note: home_note} packing distinct hits onto ADJACENT keys.
-    Sorted distinct home-notes anchor at min(home_notes): the lowest hit keeps
-    its own key, and each subsequent hit squishes up one key (anchor+i -> i-th
-    sorted home-note). Keys outside [anchor, anchor+len) are unmapped (silent).
-    Unlike gm_fill, which aliases every unmapped GM note to its NEAREST pad --
-    on a sparse kit (TR808) one pad beside a big gap wins half the keyboard --
-    this keeps a kit's hits compact and one-per-key. Empty input -> {}."""
+    """{played_note: (home_note, shift_semitones)} tiling the packed block of
+    distinct hits across the whole GM_LO..GM_HI percussion range.
+
+    The base block packs the sorted distinct home-notes onto ADJACENT keys from
+    the anchor (min home-note) up: anchor+i plays the i-th home-note, shift 0.
+    That block then REPEATS to fill the range: each repetition up the keyboard
+    adds +12 semitones (one octave) of pitch, and -- when the anchor sits above
+    GM_LO -- one -12 repetition fills the keys below the anchor. shift is
+    clamped to +/-24 (the container freq-rewrite range), so far-flung octaves
+    saturate rather than detune into noise.
+
+    Every GM percussion key now sounds (the sampled kits' whole-range contract),
+    one distinct hit per key, pitched by whole octaves away from home -- unlike
+    gm_fill's nearest-pad aliasing, where one pad beside a big gap wins half the
+    keyboard. The base block (shift 0) is bit-identical to the old compact map,
+    so an unshifted key renders exactly as before. Empty input -> {}."""
     home = sorted(set(notes))
     if not home:
         return {}
+    n = len(home)
     anchor = home[0]                    # == min(home_notes)
-    return {anchor + i: h for i, h in enumerate(home)}
+    out = {}
+    b = -1 if anchor > GM_LO else 0     # one octave-down block below the anchor
+    while True:
+        base = anchor + b * n
+        if base > GM_HI:
+            break
+        shift = max(-24, min(24, 12 * b))
+        for i, h in enumerate(home):
+            played = base + i
+            if GM_LO <= played <= GM_HI:
+                out[played] = (h, shift)
+        b += 1
+    return out
 
 
 def hit_name(hit_key):
@@ -229,13 +251,48 @@ def _scale_first(csv, factor):
     return ','.join(vals)
 
 
+# Container hits pitch by keyboard octave (pack_fill's shift): the note map
+# fires the hit at note 60+shift, so the hit's freq must track the note. AMY:
+#   logfreq = const + note_coef*(note-69)/12       (const in Hz, log-zero 440Hz)
+# Today container hits bake note_coef 0 (note-independent, every key same pitch).
+# Setting note_coef 1 and const *= 2**(9/12) keeps note 60 BIT-IDENTICAL to the
+# old value -- const*2**(9/12) * 2**((60-69)/12) == const -- while note 60+k
+# renders +k semitones. 9/12 because the map fires at 60, nine semitones below
+# the 69 log-zero.
+_PITCH_OCT = 2.0 ** (9.0 / 12.0)
+
+
+def _pitch_freq(csv):
+    """Rewrite a freq coef string so the played note drives pitch (see
+    _PITCH_OCT). const slot *= 2**(9/12); note-coef slot (1) := 1."""
+    vals = csv.split(',')
+    try:
+        vals[0] = _fmt(float(vals[0]) * _PITCH_OCT)
+    except (ValueError, IndexError):
+        return csv
+    while len(vals) < 2:
+        vals.append('0')
+    vals[1] = '1'
+    return ','.join(vals)
+
+
 # Synth hits are built at design amplitudes <=1.0 while the sampled kits'
 # baked map entries run 3..13 -- measured on device the same kick line
 # peaked 0.906 (sampled '80s Power) vs 0.159 (tr909_d). This closes the gap;
-# the per-hit 'level' override still scales on top of it. Capped: 4x drove
-# resonant-filter hits into fixed-point saturation that LATCHED (a pad rang
-# forever at full level until the router rebuilt).
-KIT_GAIN = 2.5
+# the per-hit 'level' override still scales on top of it.
+#
+# 1.5 (was 2.5): recalibrated against the CAPPED sampled kits (kitcaps.py drops
+# their peaks to ~1.25 FS). At 1.5 the tr808 synth kick renders 1.09 FS, at
+# parity with juno's 1.03 and the capped sampled kicks (levels/#96). 2.5 sat a
+# whole octave hotter than the reference once the sampled kits stopped clipping.
+KIT_GAIN = 1.5
+# _AMP_CAP stays 2.5 and does NOT track KIT_GAIN: it is a RENDER-time guard, not
+# a loudness knob. It bounds the fixed-point amp*velscale product at ~2.5, the
+# point past which resonant-filter hits drove AMY into a saturation latch (a pad
+# rang forever at full level until the router rebuilt). That threshold is a
+# property of the engine's fixed-point math, independent of how KIT_GAIN is
+# calibrated -- lowering it with KIT_GAIN would re-arm the trim on hits the
+# engine renders cleanly. At KIT_GAIN 1.5 the default product rarely reaches it.
 _AMP_CAP = 2.5
 
 
@@ -249,7 +306,8 @@ def _capped_gain(csv, g, cap=_AMP_CAP):
     return ','.join(vals)
 
 
-def _xform_partials(ps, tune, decay, level, amp_cap=_AMP_CAP, base_osc=0):
+def _xform_partials(ps, tune, decay, level, amp_cap=_AMP_CAP, base_osc=0,
+                    pitch=False):
     """Apply tune/decay/level to a prebuilt BYO_PARTIALS patch string:
     children (w9) get their partial freq scaled by tune and bp times by
     decay; ONLY the parent (w10) amp is scaled by level (children multiply
@@ -257,7 +315,15 @@ def _xform_partials(ps, tune, decay, level, amp_cap=_AMP_CAP, base_osc=0):
     the parent amp (the container path passes _AMP_CAP/velscale so the
     render-time amp*velocity product replicates the legacy amp cap).
     base_osc renumbers the fragments (v0->v<base_osc>..) so the hit can sit
-    inside a kit container patch."""
+    inside a kit container patch.
+
+    pitch=True makes the PARENT track the played note (container path only):
+    the note map fires the whole cluster at note 60+shift and each child's
+    logfreq = child_const + parent_logfreq (interp_partials.c), so pitching the
+    parent transposes every partial. The parent carries no freq of its own, so
+    one is inserted at the pitched default (see _pitch_freq / _PITCH_OCT); at
+    note 60 it is a no-op (bit-identical to today). Children stay unpitched --
+    they ride the parent."""
     out = []
     for frag in ps.split('Z'):
         if not frag:
@@ -278,6 +344,8 @@ def _xform_partials(ps, tune, decay, level, amp_cap=_AMP_CAP, base_osc=0):
         for k, v in toks:
             if k == 'v' and base_osc:
                 v = '%d' % (int(v) + base_osc)
+            elif k == 'f' and pitch and wave == '10':
+                v = _pitch_freq(v)         # parent already carries a freq
             elif k == 'f' and tune != 1.0 and wave == '9':
                 v = _scale_first(v, tune)
             elif k == 'a' and wave == '10' and (level != 1.0
@@ -286,6 +354,10 @@ def _xform_partials(ps, tune, decay, level, amp_cap=_AMP_CAP, base_osc=0):
             elif k in 'AB' and decay != 1.0:
                 v = _scale_times(v, decay)
             nf.append(k + v)
+        # Pitch a parent that has NO freq of its own: insert one at the pitched
+        # 440Hz default (note-coef 1) so the note transposes the cluster.
+        if pitch and wave == '10' and 'f' not in present:
+            nf.append('f' + _pitch_freq('440'))
         # self-contained filter state (same recycled-voice leak as the wire
         # path above): reset any filter letter this osc omits so a partials
         # hit auditioned after a filtered one can't inherit its cutoff.
@@ -444,13 +516,18 @@ def hit_container_oscs(hit_key, overrides, base_osc):
         ps = _xform_partials(hit['patch_string'], tune, decay, 1.0,
                              amp_cap=(amp_cap if amp_cap is not None
                                       else _AMP_CAP),
-                             base_osc=base_osc)
+                             base_osc=base_osc, pitch=True)
         return _updates_from_patch_string(ps), g, [base_osc]
     updates = []
     for i, osc in enumerate(hit['oscs'][:2]):
         o = dict(osc)
-        if 'freq' in o and tune != 1.0:
-            o['freq'] = _scale_first(o['freq'], tune)
+        if 'freq' in o:
+            if tune != 1.0:
+                o['freq'] = _scale_first(o['freq'], tune)
+            # PITCHED oscs track the played note (pack_fill octaves); NOISE
+            # (wave 5) has no pitch, so it stays note-independent.
+            if o.get('wave') != 5:
+                o['freq'] = _pitch_freq(o['freq'])
         if 'filter_freq' in o and tune != 1.0:
             o['filter_freq'] = _scale_first(str(o['filter_freq']), tune)
         if decay != 1.0:
@@ -516,13 +593,19 @@ def container_fragment(updates):
     return 'Z'.join(parts) + 'Z'
 
 
-def container_note_cmd(note, trig, velscale):
+def container_note_cmd(note, trig, velscale, shift=0):
     """midi_note_cmd payload for one played note: osc-targeted template with
     the per-hit gain in the velocity-scale field (sampled-kit io format:
     note,is_log,min,max,offset,template). One Z-separated fragment per osc
     in trig; each fragment carries i%i (this synth's voice) and iM%i (the
-    already-mapped marker -- see the trigger contract above)."""
-    tmpl = 'Z'.join('v%dn60l%%vi%%iiM%%i' % osc for osc in trig)
+    already-mapped marker -- see the trigger contract above).
+
+    shift (pack_fill's per-key octave offset, semitones) fires the oscs at
+    note 60+shift; with the container's pitched freq coefs (_pitch_freq) that
+    transposes the hit by `shift`. shift 0 fires n60 -- bit-identical to the
+    old single-octave map."""
+    fire = 60 + shift
+    tmpl = 'Z'.join('v%dn%dl%%vi%%iiM%%i' % (osc, fire) for osc in trig)
     return '%d,0,0,%s,0,%s' % (note, _fmt(velscale), tmpl)
 
 

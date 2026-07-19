@@ -185,12 +185,16 @@ class SynthKit:
         # the hit synth's fixed root note, gain baked in its amp.
         n = 0
         for note in sorted(fill):
-            home = fill[note]
+            home, shift = fill[note]
             pad = self.pads.get(home)
             if pad is not None:
                 cmd = synthkits.container_note_cmd(note, pad['trig'],
-                                                   pad['velscale'])
+                                                   pad['velscale'], shift)
             else:
+                # Fallback pads stay HOME-ONLY: the per-hit synth plays its
+                # fixed root (n60), so an octave-shifted key over a fallback
+                # home sounds the home hit unpitched -- never the pitch-shifted
+                # container path, and never silent.
                 cmd = '%d,0,0,1,0,i%dn60l%%v' % (
                     note, self.hit_synths[home].synth)
             amy.send(synth=self.synth, midi_note_cmd=cmd)
@@ -250,11 +254,11 @@ class SynthKit:
             amy.send(synth=self.synth, osc=osc, **kw)
         if g != pad['velscale']:
             pad['velscale'] = g    # level moved: refresh this pad's maps
-            for played, home in self.note_alias.items():
+            for played, (home, shift) in self.note_alias.items():
                 if home == note:
                     amy.send(synth=self.synth,
                              midi_note_cmd=synthkits.container_note_cmd(
-                                 played, trig, g))
+                                 played, trig, g, shift))
 
     def _rebuild(self):
         """Full teardown + rebuild (hit swap changed the container layout).
@@ -267,21 +271,26 @@ class SynthKit:
         # Python-routed path (kit not C-owned, or pad-editor audition):
         # resolve through the same alias map the C note maps use, so off-pad
         # keys sound here too. Container pads fire their hit's trigger
-        # osc(s) directly with the map's gain applied to the velocity;
-        # note_source_channel marks the event as already-mapped so the
-        # flags-3 synth doesn't loop it back through the MIDI note maps.
-        base = self.note_alias.get(note, note)
-        pad = self.pads.get(base)
+        # osc(s) directly at note 60+shift (pack_fill's octave), with the
+        # map's gain applied to the velocity; note_source_channel marks the
+        # event as already-mapped so the flags-3 synth doesn't loop it back
+        # through the MIDI note maps.
+        ent = self.note_alias.get(note)
+        if ent is None:
+            return                 # unmapped key: silent (fill covers 35..81)
+        home, shift = ent
+        pad = self.pads.get(home)
         if pad is not None:
             import amy
+            fire = 60 + shift
             for osc in pad['trig']:
-                amy.send(synth=self.synth, osc=osc, note=60,
+                amy.send(synth=self.synth, osc=osc, note=fire,
                          vel=vel * pad['velscale'],
                          note_source_channel=self.synth)
             return
-        hs = self.hit_synths.get(base)
+        hs = self.hit_synths.get(home)
         if hs is not None:
-            hs.note_on(60, vel)
+            hs.note_on(60, vel)    # fallback: fixed root (home-only)
 
     def note_off(self, note, **kw):
         pass                       # drum one-shots self-terminate
@@ -327,4 +336,43 @@ def make_synth(kit=DEFAULT_KIT, num_voices=6, channel=None, hit_overrides=None,
                         slot_base=slot_base, hit_swaps=hit_swaps)
     if kit in SAMPLED_KIT_IDS:
         num_voices = 1
-    return synth.DrumSynth(patch=kit, num_voices=num_voices, channel=channel)
+    syn = synth.DrumSynth(patch=kit, num_voices=num_voices, channel=channel)
+    if kit in SAMPLED_KIT_IDS:
+        _apply_kit_caps(syn, kit)
+    return syn
+
+
+def _apply_kit_caps(syn, patch):
+    """Re-register a SAMPLED kit's io note maps with capped velocities
+    (kitcaps.py). The baked Gamma9001 velscales (2.34..13.1) clipped hard on
+    device (measured bus peaks 2.35..4.79 FS at vel 1.0); kitcaps scales them so
+    the loudest hit lands ~1.25 FS and the rest stay proportional. Each capped
+    entry overwrites its baked map by note (AMY midi_store_mapping replaces by
+    channel+code). No-op if kitcaps is absent, the patch isn't sampled, or the
+    synth never allocated. The DrumSynth must be initialized first -- the maps
+    key on its live synth number -- so we force deferred_init() (idempotent)."""
+    try:
+        import kitcaps
+        ents = kitcaps.entries(patch)
+    except Exception:
+        return
+    if not ents:
+        return
+    try:
+        import amy
+        di = getattr(syn, 'deferred_init', None)
+        if di is not None:
+            di()
+        sn = getattr(syn, 'synth', None)
+        if sn is None:
+            return
+        try:
+            from time import sleep_ms as _yield
+        except ImportError:
+            _yield = lambda ms: None
+        for i, (note, cmd) in enumerate(ents):
+            amy.send(synth=sn, midi_note_cmd=cmd)
+            if (i + 1) % 8 == 0:
+                _yield(1)   # ~40 sends in a row starve the UI task
+    except Exception:
+        pass
