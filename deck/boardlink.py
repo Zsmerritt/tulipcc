@@ -94,12 +94,16 @@ def parse_envelope(raw):
 # layers to build on; no OTA or state-push logic is implemented here.
 OP_PING = 0x00          # reserved (BoardLink.ping already uses AMYboard's zI)
 OP_VERSION = 0x01       # reserved (BoardLink.version already uses AMYboard's zP)
-OP_OTA_BEGIN = 0x10     # reserved for a future firmware updater
-OP_OTA_DATA = 0x11
-OP_OTA_END = 0x12
+OP_OTA_BEGIN = 0x10     # firmware updater (deck/boardfw.py): host->dev, start
+OP_OTA_DATA = 0x11      # host->dev, one image chunk (seq + check + data)
+OP_OTA_END = 0x12       # host->dev, image sent -> verify + commit
+OP_OTA_ACK = 0x13       # dev->host, per-frame ack (seq + OK/BAD)
+OP_OTA_QUERY = 0x14     # host->dev, ask identity/version before an update
+OP_OTA_INFO = 0x15      # dev->host, reply to QUERY (version + slot capacity)
+OP_OTA_RESULT = 0x16    # dev->host, final commit verdict after OTA_END
 OP_STATE_PUSH = 0x20    # reserved for a future instrument-state push
 OP_STATE_ACK = 0x21
-# 0x30-0x7F: unassigned.
+# 0x17-0x1F: unassigned OTA space. 0x30-0x7F: unassigned.
 
 
 def pack_frame(opcode, payload=b''):

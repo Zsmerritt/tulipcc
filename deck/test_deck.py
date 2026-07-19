@@ -31,6 +31,16 @@ def _install_hw_mocks():
     # probes for it (hasattr) instead of raising TypeError per message.
     tulip.num_midi_devices = lambda: 1
     tulip.defer = lambda fn, arg, ms: None
+    # Monotonic ms clock (boardlink/boardfw poll deadlines off this). A plain
+    # incrementing counter is enough for host tests: it advances every call so
+    # a reply-less recv eventually times out, while queued replies return
+    # first.
+    _clock = [0]
+
+    def _ticks():
+        _clock[0] += 1
+        return _clock[0]
+    tulip.amy_ticks_ms = _ticks
     tulip.board = lambda: 'DESKTOP'
     tulip.screen_size = lambda: (1024, 600)
     tulip._sent = sent
@@ -4636,3 +4646,499 @@ def test_uartlink_send_recv_are_unimplemented_stubs():
         uart.send(b'zIZ')
     with pytest.raises(NotImplementedError):
         uart.recv()
+
+
+# ---------------------------------------------------------------------------
+# boardxport: framed 8-bit transport + the 8-to-7 packer (pure wire logic).
+# ---------------------------------------------------------------------------
+
+def test_pack8to7_round_trip_edge_group_sizes():
+    import boardxport as bx
+    # boundaries around the 7-byte packing group, plus empty
+    for n in (0, 1, 6, 7, 8, 13, 14, 15):
+        data = bytes((i * 37 + 11) & 0xFF for i in range(n))
+        assert bx.unpack7to8(bx.pack8to7(data)) == data
+
+
+def test_pack8to7_round_trip_all_256_and_random_kb():
+    import boardxport as bx
+    import os
+    assert bx.unpack7to8(bx.pack8to7(bytes(range(256)))) == bytes(range(256))
+    for size in (1, 3, 1000, 4096, 5001):
+        data = os.urandom(size)
+        assert bx.unpack7to8(bx.pack8to7(data)) == data
+
+
+def test_pack8to7_output_is_7bit_sysex_safe():
+    import boardxport as bx
+    packed = bx.pack8to7(bytes(range(256)) * 3)
+    assert all(0x00 <= b <= 0x7F for b in packed)
+    assert 0xF0 not in packed and 0xF7 not in packed
+
+
+def test_pack8to7_overhead_is_one_byte_per_seven():
+    import boardxport as bx
+    # 7 data bytes -> 8 wire bytes (the +14.3% the module advertises)
+    assert len(bx.pack8to7(b'x' * 7)) == 8
+    assert len(bx.pack8to7(b'x' * 14)) == 16
+    assert len(bx.pack8to7(b'x' * 8)) == 10   # full group (8) + partial (2)
+
+
+def test_uart_build_parse_wire_round_trip():
+    import boardxport as bx
+    U = bx.UartTransport
+    for n in (0, 1, 255, 256, 3000):
+        data = bytes((i * 7) & 0xFF for i in range(n))
+        frame, consumed = U.parse_wire(U.build_wire(data))
+        assert frame == data
+        assert consumed == len(U.build_wire(data))
+
+
+def test_uart_parse_wire_resyncs_past_garbage():
+    import boardxport as bx
+    U = bx.UartTransport
+    wire = b'\x00\x11\x22' + U.build_wire(b'hello')
+    frame, _ = U.parse_wire(wire)
+    assert frame == b'hello'
+
+
+def test_uart_parse_wire_rejects_bad_checkbyte():
+    import boardxport as bx
+    U = bx.UartTransport
+    wire = bytearray(U.build_wire(b'payload'))
+    wire[-1] ^= 0xFF                      # corrupt the trailing xor check
+    frame, consumed = U.parse_wire(bytes(wire))
+    assert frame is None
+    assert consumed >= 1                  # advanced past the bad START to resync
+
+
+def test_uart_parse_wire_waits_for_incomplete_frame():
+    import boardxport as bx
+    U = bx.UartTransport
+    full = U.build_wire(b'abcdef')
+    frame, consumed = U.parse_wire(full[:-2])   # truncated mid-frame
+    assert frame is None and consumed == 0      # keep buffering from START
+
+
+def test_uart_transport_io_is_unimplemented_stub():
+    import boardxport as bx
+    uart = bx.UartTransport(0)
+    with pytest.raises(NotImplementedError):
+        uart.send_frame(b'x')
+    with pytest.raises(NotImplementedError):
+        uart.recv_frame()
+    with pytest.raises(NotImplementedError):
+        uart.flush()
+
+
+def test_boardxport_open_selects_transport_class():
+    import boardxport as bx
+    assert isinstance(bx.open(0), bx.UsbMidiTransport)
+    assert isinstance(bx.open(0, transport='uart'), bx.UartTransport)
+    with pytest.raises(ValueError):
+        bx.open(0, transport='smoke-signal')
+
+
+class _FakeLink:
+    """Stand-in for boardlink.UsbMidiLink: records sent payloads, replays
+    queued recv payloads (envelope already stripped)."""
+
+    def __init__(self):
+        self.sent = []
+        self.inbox = []
+
+    def send(self, payload):
+        self.sent.append(bytes(payload))
+
+    def recv(self, timeout_ms=200):
+        return self.inbox.pop(0) if self.inbox else None
+
+
+def test_usbmidi_transport_send_frame_packs_8to7():
+    import boardxport as bx
+    link = _FakeLink()
+    xport = bx.UsbMidiTransport(0, link=link)
+    xport.send_frame(bytes(range(20)))
+    assert len(link.sent) == 1
+    # what went to the link is the 7-bit-safe packing, and it round-trips
+    assert all(0 <= b <= 0x7F for b in link.sent[0])
+    assert bx.unpack7to8(link.sent[0]) == bytes(range(20))
+
+
+def test_usbmidi_transport_recv_frame_unpacks_7to8():
+    import boardxport as bx
+    link = _FakeLink()
+    link.inbox.append(bx.pack8to7(b'\x00\x80\xff reply'))
+    xport = bx.UsbMidiTransport(0, link=link)
+    assert xport.recv_frame() == b'\x00\x80\xff reply'
+    assert xport.recv_frame() is None    # inbox empty
+
+
+def test_usbmidi_transport_flush_drains_inbox():
+    import boardxport as bx
+    link = _FakeLink()
+    link.inbox.extend([bx.pack8to7(b'a'), bx.pack8to7(b'b')])
+    xport = bx.UsbMidiTransport(0, link=link)
+    xport.flush()
+    assert link.inbox == []
+
+
+# ---------------------------------------------------------------------------
+# boardfw: OTA message codec + sender/receiver flow (host-tested with fakes).
+# ---------------------------------------------------------------------------
+
+class _FakePartition:
+    """Bytearray-backed esp32.Partition stand-in for OtaReceiver tests.
+
+    `corrupt_blocks` names block indices whose read-back returns garbage, to
+    exercise the write-verify-retry path.
+    """
+
+    def __init__(self, capacity, corrupt_blocks=None):
+        self.capacity = capacity
+        self.data = bytearray(b'\xff' * capacity)
+        self.booted = False
+        self.corrupt_blocks = set(corrupt_blocks or ())
+
+    def info(self):
+        return (0, 0, 0, self.capacity)
+
+    def writeblocks(self, block, buf):
+        self.data[block * 4096:block * 4096 + len(buf)] = buf
+
+    def readblocks(self, block, buf):
+        if block in self.corrupt_blocks:
+            for i in range(len(buf)):
+                buf[i] = 0
+            return
+        buf[:] = self.data[block * 4096:block * 4096 + len(buf)]
+
+    def set_boot(self):
+        self.booted = True
+
+
+class _LoopTransport:
+    """In-process transport that feeds every sent frame straight into an
+    OtaReceiver and queues its replies for recv_frame. `drop` is a set of
+    1-based send indices whose reply is swallowed (simulates a lost ack).
+    `corrupt_data_once` flips a byte in the first DATA frame in transit.
+    """
+
+    def __init__(self, receiver, drop=None, corrupt_data_once=False,
+                 deaf=False):
+        self.rx = receiver
+        self.outbox = []
+        self.drop = set(drop or ())
+        self.seen = 0
+        self.corrupt_data_once = corrupt_data_once
+        self._corrupted = False
+        self.deaf = deaf
+
+    def flush(self):
+        self.outbox = []
+
+    def send_frame(self, frame):
+        import boardlink as bl
+        if (self.corrupt_data_once and not self._corrupted
+                and bl.unpack_frame(frame)[0] == bl.OP_OTA_DATA):
+            self._corrupted = True
+            frame = bytearray(frame)
+            frame[-1] ^= 0xFF
+            frame = bytes(frame)
+        self.seen += 1
+        reply = self.rx.feed(frame)
+        if reply is not None and not self.deaf and self.seen not in self.drop:
+            self.outbox.append(reply)
+
+    def recv_frame(self, timeout_ms=200):
+        return self.outbox.pop(0) if self.outbox else None
+
+
+def _mkimg(nbytes, seed=1):
+    import random
+    r = random.Random(seed)
+    return bytes(r.getrandbits(8) for _ in range(nbytes))
+
+
+def test_boardfw_codec_round_trips():
+    import boardfw as bf
+    import hashlib
+    sha = hashlib.sha256(b'img').digest()
+    assert bf.dec_begin(bf.enc_begin(100, sha, 'v1')) == (100, sha, b'v1')
+    assert bf.dec_data(bf.enc_data(5, b'abc')) == (5, b'abc')
+    assert bf.dec_ack(bf.enc_ack(7, bf.ST_OK)) == (7, bf.ST_OK)
+    assert bf.dec_result(bf.enc_result(bf.ST_OK, 'ok')) == (bf.ST_OK, b'ok')
+    assert bf.dec_info(bf.enc_info(4096, 'v9')) == (4096, b'v9')
+
+
+def test_boardfw_dec_data_rejects_corrupt_check():
+    import boardfw as bf
+    frame = bytearray(bf.enc_data(5, b'abcdef'))
+    frame[-1] ^= 0xFF                    # corrupt the payload, check now stale
+    assert bf.dec_data(bytes(frame)) is None
+
+
+def test_boardfw_decoders_reject_wrong_opcode():
+    import boardfw as bf
+    ack = bf.enc_ack(1, bf.ST_OK)
+    assert bf.dec_begin(ack) is None
+    assert bf.dec_data(ack) is None
+    assert bf.dec_result(ack) is None
+    assert bf.dec_info(ack) is None
+
+
+def test_boardfw_enc_begin_rejects_bad_sha_length():
+    import boardfw as bf
+    with pytest.raises(ValueError):
+        bf.enc_begin(10, b'tooshort', 'v')
+
+
+def test_receiver_query_reports_capacity_and_version():
+    import boardfw as bf
+    rx = bf.OtaReceiver(_FakePartition(4096 * 50), version='vBOARD')
+    reply = rx.feed(bf.enc_query())
+    assert bf.dec_info(reply) == (4096 * 50, b'vBOARD')
+
+
+def test_receiver_full_transfer_writes_verifies_and_sets_boot():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096 * 3 + 100)
+    part = _FakePartition(4096 * 50)
+    rx = bf.OtaReceiver(part)
+    sha = hashlib.sha256(img).digest()
+    assert bf.dec_ack(rx.feed(bf.enc_begin(len(img), sha, 'v'))) == \
+        (bf.BEGIN_SEQ, bf.ST_OK)
+    chunk = 1000
+    seq = 0
+    for i in range(0, len(img), chunk):
+        ack = bf.dec_ack(rx.feed(bf.enc_data(seq, img[i:i + chunk])))
+        assert ack == (seq, bf.ST_OK)
+        seq += 1
+    status, msg = bf.dec_result(rx.feed(bf.enc_end()))
+    assert status == bf.ST_OK
+    assert part.booted
+    assert part.data[:len(img)] == img
+    # trailing bytes of the final sector padded with 0xFF
+    assert part.data[len(img):((len(img) + 4095) // 4096) * 4096] == \
+        b'\xff' * (((len(img) + 4095) // 4096) * 4096 - len(img))
+
+
+def test_receiver_refuses_image_larger_than_slot():
+    import boardfw as bf
+    import hashlib
+    part = _FakePartition(4096)          # one sector only
+    rx = bf.OtaReceiver(part)
+    img = _mkimg(4096 * 3)
+    status, msg = bf.dec_result(
+        rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v')))
+    assert status == bf.ST_FAIL
+    assert b'larger' in msg
+
+
+def test_receiver_naks_corrupt_data_without_advancing():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096)
+    part = _FakePartition(4096 * 10)
+    rx = bf.OtaReceiver(part)
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v'))
+    bad = bytearray(bf.enc_data(0, img[:1000]))
+    bad[-1] ^= 0xFF
+    assert bf.dec_ack(rx.feed(bytes(bad))) == (0, bf.ST_BAD)
+    # a good frame for seq 0 is still accepted afterwards (no state advance)
+    assert bf.dec_ack(rx.feed(bf.enc_data(0, img[:1000]))) == (0, bf.ST_OK)
+
+
+def test_receiver_naks_out_of_order_seq():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096)
+    rx = bf.OtaReceiver(_FakePartition(4096 * 10))
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v'))
+    # jump straight to seq 3 -- receiver wants seq 0
+    assert bf.dec_ack(rx.feed(bf.enc_data(3, img[:100]))) == (3, bf.ST_BAD)
+
+
+def test_receiver_idempotently_re_acks_duplicate_frame():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096)
+    part = _FakePartition(4096 * 10)
+    rx = bf.OtaReceiver(part)
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v'))
+    f0 = bf.enc_data(0, img[:1000])
+    assert bf.dec_ack(rx.feed(f0)) == (0, bf.ST_OK)
+    # a lost ack makes the host resend seq 0 while we already want seq 1:
+    # re-ack OK, and the byte count must NOT double-count.
+    before = rx.received
+    assert bf.dec_ack(rx.feed(f0)) == (0, bf.ST_OK)
+    assert rx.received == before
+
+
+def test_receiver_fresh_begin_resets_state():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096)
+    rx = bf.OtaReceiver(_FakePartition(4096 * 10))
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v'))
+    rx.feed(bf.enc_data(0, img[:1000]))
+    assert rx.expect_seq == 1
+    # a new BEGIN restarts from scratch (design: flasher redoes each region)
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v2'))
+    assert rx.expect_seq == 0 and rx.received == 0 and rx.block == 0
+
+
+def test_receiver_fails_commit_on_sha_mismatch():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(2000)
+    rx = bf.OtaReceiver(_FakePartition(4096 * 10))
+    wrong = hashlib.sha256(b'not the image').digest()
+    rx.feed(bf.enc_begin(len(img), wrong, 'v'))
+    rx.feed(bf.enc_data(0, img))
+    status, msg = bf.dec_result(rx.feed(bf.enc_end()))
+    assert status == bf.ST_FAIL and b'sha' in msg
+
+
+def test_receiver_fails_commit_on_write_verify_failure():
+    import boardfw as bf
+    import hashlib
+    img = _mkimg(4096 * 2)
+    part = _FakePartition(4096 * 10, corrupt_blocks={0})   # block 0 read-back bad
+    rx = bf.OtaReceiver(part)
+    rx.feed(bf.enc_begin(len(img), hashlib.sha256(img).digest(), 'v'))
+    seq = 0
+    for i in range(0, len(img), 1000):
+        rx.feed(bf.enc_data(seq, img[i:i + 1000]))
+        seq += 1
+    status, msg = bf.dec_result(rx.feed(bf.enc_end()))
+    assert status == bf.ST_FAIL and b'write-verify' in msg
+    assert not part.booted
+
+
+def test_receiver_end_without_begin_fails():
+    import boardfw as bf
+    rx = bf.OtaReceiver(_FakePartition(4096))
+    status, _ = bf.dec_result(rx.feed(bf.enc_end()))
+    assert status == bf.ST_FAIL
+
+
+def test_sender_probe_returns_capacity_and_version(deck):
+    import boardfw as bf
+    rx = bf.OtaReceiver(_FakePartition(4096 * 40), version='vX')
+    tr = _LoopTransport(rx)
+    import io
+    s = bf.OtaSender(tr, lambda: io.BytesIO(b''), 0)
+    assert s.probe() == (4096 * 40, 'vX')
+
+
+def test_sender_full_run_flashes_image_with_progress(deck):
+    import boardfw as bf
+    import io
+    import hashlib
+    img = _mkimg(4096 * 3 + 55)
+    part = _FakePartition(4096 * 60)
+    rx = bf.OtaReceiver(part, version='vBOARD')
+    tr = _LoopTransport(rx)
+    prog = []
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), version='vNEW',
+                     chunk=1000, progress=lambda a, b, p: prog.append((a, b, p)))
+    result = s.run()
+    assert result['ok'] and result['phase'] == 'done'
+    assert result['sha'] == hashlib.sha256(img).hexdigest()
+    assert part.booted and part.data[:len(img)] == img
+    assert prog and prog[-1][0] == len(img)          # progress reached 100%
+    assert all(b == len(img) for _, b, _ in prog)    # total is the image size
+
+
+def test_sender_resends_after_dropped_ack(deck):
+    import boardfw as bf
+    import io
+    img = _mkimg(4096 * 3 + 10)
+    part = _FakePartition(4096 * 60)
+    tr = _LoopTransport(bf.OtaReceiver(part), drop={4})   # swallow one ack
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), chunk=1000)
+    result = s.run()
+    assert result['ok']
+    assert part.data[:len(img)] == img
+
+
+def test_sender_recovers_from_wire_corruption(deck):
+    import boardfw as bf
+    import io
+    img = _mkimg(4096 * 2 + 7)
+    part = _FakePartition(4096 * 60)
+    tr = _LoopTransport(bf.OtaReceiver(part), corrupt_data_once=True)
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), chunk=1000)
+    result = s.run()
+    assert result['ok']                  # NAK'd frame resent clean
+    assert part.data[:len(img)] == img
+
+
+def test_sender_aborts_mid_stream(deck):
+    import boardfw as bf
+    import io
+    img = _mkimg(4096 * 5)
+    calls = [0]
+
+    def cont():
+        calls[0] += 1
+        return calls[0] < 3
+    tr = _LoopTransport(bf.OtaReceiver(_FakePartition(4096 * 60)))
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), chunk=1000,
+                     should_continue=cont)
+    result = s.run()
+    assert not result['ok'] and result['phase'] == 'aborted'
+
+
+def test_sender_reports_oversize_refusal(deck):
+    import boardfw as bf
+    import io
+    img = _mkimg(4096 * 3)
+    tr = _LoopTransport(bf.OtaReceiver(_FakePartition(4096)))   # one sector
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), chunk=1000)
+    result = s.run()
+    assert not result['ok'] and 'refused' in result['message']
+
+
+def test_sender_reports_no_begin_ack(deck):
+    import boardfw as bf
+    import io
+    img = _mkimg(2000)
+    tr = _LoopTransport(bf.OtaReceiver(_FakePartition(4096 * 10)), deaf=True)
+    s = bf.OtaSender(tr, lambda: io.BytesIO(img), len(img), chunk=1000,
+                     begin_timeout_ms=50)
+    result = s.run()
+    assert not result['ok'] and 'BEGIN' in result['message']
+
+
+def test_sender_chunk_never_acked_gives_up(deck):
+    import boardfw as bf
+    import io
+
+    class _NakEverything:
+        def __init__(self):
+            self.rx = bf.OtaReceiver(_FakePartition(4096 * 10))
+            self.outbox = []
+
+        def flush(self):
+            self.outbox = []
+
+        def send_frame(self, frame):
+            import boardlink as bl
+            op = bl.unpack_frame(frame)[0]
+            if op == bl.OP_OTA_BEGIN:
+                self.outbox.append(bf.enc_ack(bf.BEGIN_SEQ, bf.ST_OK))
+            elif op == bl.OP_OTA_DATA:
+                seq = bf.dec_data(frame)[0]
+                self.outbox.append(bf.enc_ack(seq, bf.ST_BAD))   # always NAK
+
+        def recv_frame(self, timeout_ms=200):
+            return self.outbox.pop(0) if self.outbox else None
+
+    img = _mkimg(2000)
+    s = bf.OtaSender(_NakEverything(), lambda: io.BytesIO(img), len(img),
+                     chunk=1000, tries=3, ack_timeout_ms=20)
+    result = s.run()
+    assert not result['ok'] and 'never acked' in result['message']
