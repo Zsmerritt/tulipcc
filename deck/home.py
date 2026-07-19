@@ -206,7 +206,9 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'profiler', 'profilerdata', 'logs', 'logtail',
                  # deck <-> AMYboard transport (USB-MIDI working, UART skeleton)
                  # + the framed transport and firmware-updater built on it
-                 'boardlink', 'boardxport', 'boardfw')
+                 'boardlink', 'boardxport', 'boardfw',
+                 # DX7/FM algorithm picker (modal diagram) + its routing table
+                 'algopicker', 'dx7algos')
 
 
 def deck_modules_set():

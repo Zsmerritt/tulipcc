@@ -23,7 +23,7 @@ import lvgl as lv
 
 class ParamEditor:
     def __init__(self, iid, defs=None, on_change=None, show_advanced=False,
-                 group_headers=True):
+                 group_headers=True, on_action=None, header_note=None):
         self.iid = iid
         self.defs = defs if defs is not None else amyparams.PARAMS
         self.on_change = on_change
@@ -31,6 +31,11 @@ class ParamEditor:
         # In the tabbed editor each tab is one group, so the in-list group header
         # is redundant -- callers set this False.
         self.group_headers = group_headers
+        # on_action(d): opens a custom picker for a type-'action' control (the
+        # DX7 algorithm modal). header_note(defs) -> (text, color) or None: an
+        # optional line drawn atop a tab (the OP page's carrier/modulator role).
+        self.on_action = on_action
+        self.header_note = header_note
         # What this instrument's PATCH actually bakes, so every control starts
         # from what is SOUNDING rather than from a schema default the patch
         # never had (FxEditor seeds from device_patch_fx for exactly the same
@@ -59,6 +64,14 @@ class ParamEditor:
 
     # ----- rendering -----
     def build(self, body):
+        if self.header_note is not None:
+            try:
+                note = self.header_note(self.visible_defs())
+            except Exception:
+                note = None
+            if note:
+                text, color = note
+                dk.label(body, text, color=color, font=dk.FONT_S)
         seen = []
         for d in self.visible_defs():
             g = d.get('group', '')
@@ -77,6 +90,30 @@ class ParamEditor:
             self._stepper(body, d)
         elif t == 'toggle':
             self._toggle(body, d)
+        elif t == 'action':
+            self._action(body, d)
+
+    def _action(self, body, d):
+        # A row whose value is a BUTTON that hands off to on_action(d) -- used
+        # by the DX7 algorithm control to open the picker modal. The button
+        # shows the current value (or "patch default" when unresolved), exactly
+        # like a slider readout, keeping the honesty marker intact.
+        cur, src = self._get_source(d)
+        r = dk.row(body)
+        dk.label(r, self.label_for(d), color=dk.TEXT)
+        txt = self._fmt_value(d, cur, src)
+        b = dk.button(r, txt + "  >", w=210, h=52, bg=dk.SURFACE2,
+                      font=dk.FONT_S)
+        b.add_event_cb(lambda e: (self._fire_action(d)
+                       if e.get_code() == lv.EVENT.CLICKED else None),
+                       lv.EVENT.CLICKED, None)
+
+    def _fire_action(self, d):
+        if self.on_action is not None:
+            try:
+                self.on_action(d)
+            except Exception:
+                pass
 
     # ----- value plumbing -----
     def _stored_params(self):

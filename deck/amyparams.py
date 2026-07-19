@@ -389,7 +389,12 @@ PARAMS = [
 # patch, and a "Reset FM" clears them (rebuild_one reloads the patch string,
 # restoring every baked operator value).
 OSC_ALGO = 0                       # the ALGO parent osc (== OSC_CTL, named for FM)
-FM_OP_OSCS = (2, 3, 4, 5, 6, 7)    # DX7 operators 1..6 -> AMY oscs 2..7
+# DX7 operators 1..6 -> AMY oscs, REVERSED: fm.py loads operators op6..op1 onto
+# oscs 2..7 (`for i in range(6,0,-1)` then osc=2+index) and render_algo pairs
+# algo.ops[col] (labeled op6..op1) with algo_source osc 2..7. So op N lives on
+# osc (8 - N): op1->osc7 ... op6->osc2. This makes the editor's "OP N" page and
+# dx7algos.role()/the algorithm diagram agree on which operator is which.
+FM_OP_OSCS = (7, 6, 5, 4, 3, 2)    # index 0 = op1 -> osc7 ... index 5 = op6 -> osc2
 
 
 def _bp_env(osc, pos):
@@ -453,11 +458,13 @@ FM_PARAMS = [
     # NUM_ALGORITHMS) algorithm = 0`), and the operator connections (algo_source,
     # set at note-on) are unchanged by it, so a live change only reroutes the FM
     # matrix on the next buffer -- no stale state, no realloc, no crash. Shown as
-    # "patch default" until set (the deck can't read the baked algorithm). The
-    # DX7 algorithm GUIDE is a visual reference we deliberately do NOT render
-    # (too heavy per the cost philosophy); the number is the control.
-    _slider('fm_algorithm', 'FM', 'algorithm', 1, 32, 1, 'basic',
-            _osc(OSC_ALGO, 'algorithm'), truth=TRUTH_PATCH),
+    # "patch default" until set (the deck can't read the baked algorithm).
+    # type 'action': the Voice page renders this as a button that opens the
+    # algorithm PICKER MODAL (a node diagram, scroll 1..32) -- rack wires the
+    # opener via ParamEditor.on_action. The apply spec is unchanged, so a
+    # selection still sends 'algorithm' (the 'o' param) to osc 0 live.
+    _p('fm_algorithm', 'FM', 'algorithm', 'action', 1, 'basic',
+       _osc(OSC_ALGO, 'algorithm'), truth=TRUTH_PATCH, min=1, max=32),
     # feedback: DX7 0..7 maps (fm.py) to 0.00125*2**fb = 0.00125..0.16; a
     # little headroom past that. Scalar on the ALGO osc ('b' wire letter).
     _slider('fm_feedback', 'FM', 'feedback', 0, 0.5, 0, 'basic',

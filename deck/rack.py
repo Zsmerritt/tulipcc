@@ -795,9 +795,15 @@ def _render_sound():
 
     # left-tabbed: one tab per engine-native group (tier-filtered), each a short
     # list. curated.tabbed falls back to the generic grouping for unknown engines.
+    # DX7 also gets the algorithm picker (on_action) + per-OP carrier/modulator
+    # role labels (header_note); both are no-ops for the other engines.
+    act = _open_algo_picker if engine == 'dx7' else None
+    note = _dx7_op_role_note if engine == 'dx7' else None
+
     def _make(defs):
         return curated.CuratedEditor(iid, defs=defs, labels=labels,
-                                     on_change=_snd_apply, show_advanced=True)
+                                     on_change=_snd_apply, show_advanced=True,
+                                     on_action=act, header_note=note)
     tabs = curated.tabbed(engine, _snd['adv'])
     tv = parameditor.build_tabbed(parent, tabs, _make,
                                   x=8, y=58, w=w - 16, h=_panel_h() - 66)
@@ -843,6 +849,58 @@ def _set_adv(value):
         return
     _snd['adv'] = value
     _render_sound()
+
+
+def _current_algo(iid):
+    """The instrument's stored FM algorithm, or None when unset (the deck can't
+    read a DX7 patch's baked algorithm, so role labels stay unknown until the
+    user picks one)."""
+    try:
+        v = ((deckcfg.get_instrument(iid) or {}).get('params') or {}).get(
+            'fm_algorithm')
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def _open_algo_picker(d):
+    """Open the algorithm node-diagram modal from the Voice page's algorithm
+    control. Selecting sets the voice algorithm live (fm_algorithm -> the 'o'
+    param on osc 0) and re-renders so the diagram button + OP role labels
+    update."""
+    import algopicker
+    iid = _snd.get('iid')
+    cur = _current_algo(iid) or 1
+
+    def _select(algo):
+        deckcfg.set_instrument_param(iid, 'fm_algorithm', int(algo))
+        _snd_apply()                 # live: reapply_params sends osc0 algorithm
+        _render_sound()              # refresh the button label + OP roles
+    algopicker.open_modal(cur, _select)
+
+
+def _dx7_op_role_note(defs):
+    """(text, color) role line for an OP page, or None for non-OP pages. Shows
+    CARRIER / MODULATOR (+ feedback) for the operator this page edits under the
+    CURRENTLY SET algorithm; muted prompt when no algorithm has been chosen."""
+    if not defs:
+        return None
+    name = defs[0].get('name', '')
+    if not name.startswith('fm_op'):
+        return None
+    try:
+        op = int(name[5])
+    except (ValueError, IndexError):
+        return None
+    algo = _current_algo(_snd.get('iid'))
+    if algo is None:
+        return ("Role: set algorithm to see", dk.MUTED)
+    import dx7algos
+    r = dx7algos.role(algo, op)
+    fb = " + feedback" if dx7algos.has_feedback(algo, op) else ""
+    if r == 'carrier':
+        return ("CARRIER (algo %d)%s" % (algo, fb), dk.GREEN)
+    return ("MODULATOR (algo %d)%s" % (algo, fb), dk.TEAL)
 
 
 def _reset_fm():

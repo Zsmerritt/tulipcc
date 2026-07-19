@@ -1188,15 +1188,16 @@ def test_synth_send_calls_envelopes():
 def test_fm_operator_params_address_the_right_oscs():
     import amyparams as ap
     assert ap.validate()
-    # per-operator ratio: a plain scalar on osc op+1
-    assert {'osc': 2, 'ratio': 2.0} in ap.synth_send_calls({'fm_op1_ratio': 2.0})
-    assert {'osc': 7, 'ratio': 0.5} in ap.synth_send_calls({'fm_op6_ratio': 0.5})
+    # DX7 op N lives on osc (8 - N): op1->osc7 ... op6->osc2 (fm.py's reversed
+    # operator load order, matched so the editor's "OP N" == the diagram's op N)
+    assert {'osc': 7, 'ratio': 2.0} in ap.synth_send_calls({'fm_op1_ratio': 2.0})
+    assert {'osc': 2, 'ratio': 0.5} in ap.synth_send_calls({'fm_op6_ratio': 0.5})
     # operator output level -> amp CONST slot only (env/vel/mod slots untouched)
-    assert {'osc': 4, 'amp': '1.5'} in ap.synth_send_calls({'fm_op3_level': 1.5})
+    assert {'osc': 5, 'amp': '1.5'} in ap.synth_send_calls({'fm_op3_level': 1.5})
     # per-operator amp LFO -> amp MOD slot (5); level+amp-LFO compose on one amp
-    assert {'osc': 4, 'amp': ',,,,,0.3'} in ap.synth_send_calls(
+    assert {'osc': 5, 'amp': ',,,,,0.3'} in ap.synth_send_calls(
         {'fm_op3_amplfo': 0.3})
-    assert {'osc': 3, 'amp': '1.5,,,,,0.2'} in ap.synth_send_calls(
+    assert {'osc': 6, 'amp': '1.5,,,,,0.2'} in ap.synth_send_calls(
         {'fm_op2_level': 1.5, 'fm_op2_amplfo': 0.2})
     # voice controls land on the ALGO parent (osc 0)
     calls = ap.synth_send_calls({'fm_algorithm': 22, 'fm_feedback': 0.16})
@@ -1214,17 +1215,17 @@ def test_fm_four_stage_envelopes_assemble_bp0():
     # A partial amp-env edit (one stage) still emits a COMPLETE 4-stage bp0 on
     # the operator osc, its other slots restated from the neutral FM defaults
     # (5,1,100,0.8,0,0.8,300,0) -- never invented from an unreadable baked env.
-    assert {'osc': 2, 'bp0': '5,1,200,0.8,0,0.8,300,0'} in ap.synth_send_calls(
+    assert {'osc': 7, 'bp0': '5,1,200,0.8,0,0.8,300,0'} in ap.synth_send_calls(
         {'fm_op1_t2': 200})
     # A full 8-value edit assembles exactly T1,L1,T2,L2,T3,L3,T4,L4. This shape
     # -- attack to 1, a slow first decay to 0.5, hold, long release -- is a
     # delayed/double-slope contour a single 'decay' slider could not express.
     full = {'fm_op1_t1': 10, 'fm_op1_l1': 1, 'fm_op1_t2': 500, 'fm_op1_l2': 0.5,
             'fm_op1_t3': 0, 'fm_op1_l3': 0.5, 'fm_op1_t4': 800, 'fm_op1_l4': 0}
-    assert {'osc': 2, 'bp0': '10,1,500,0.5,0,0.5,800,0'} in ap.synth_send_calls(
+    assert {'osc': 7, 'bp0': '10,1,500,0.5,0,0.5,800,0'} in ap.synth_send_calls(
         full)
-    # amp envelopes are per-operator: op6 lands on osc 7, not osc 2
-    assert {'osc': 7, 'bp0': '5,1,50,0.8,0,0.8,300,0'} in ap.synth_send_calls(
+    # amp envelopes are per-operator: op6 lands on osc 2 (op1 is osc 7)
+    assert {'osc': 2, 'bp0': '5,1,50,0.8,0,0.8,300,0'} in ap.synth_send_calls(
         {'fm_op6_t2': 50})
     # the PITCH env is the parent's bp0 (osc 0); neutral default is flat ratio 1
     assert {'osc': 0, 'bp0': '0,1.5,0,1,0,1,0,1'} in ap.synth_send_calls(
@@ -1232,8 +1233,8 @@ def test_fm_four_stage_envelopes_assemble_bp0():
     # env + level + amp-LFO on one operator are independent sends (bp0 vs amp)
     calls = ap.synth_send_calls({'fm_op1_level': 1.2, 'fm_op1_amplfo': 0.1,
                                  'fm_op1_t4': 900})
-    assert {'osc': 2, 'amp': '1.2,,,,,0.1'} in calls
-    assert {'osc': 2, 'bp0': '5,1,100,0.8,0,0.8,900,0'} in calls
+    assert {'osc': 7, 'amp': '1.2,,,,,0.1'} in calls
+    assert {'osc': 7, 'bp0': '5,1,100,0.8,0,0.8,900,0'} in calls
 
 
 def test_fm_dx7_vcf_reuses_the_analog_filter_params():
@@ -1340,9 +1341,10 @@ def test_fm_overrides_persist_and_reapply_to_the_synth(deck):
     amy._sends = []
     forwarder.start()                             # rebuild reapplies the params
     ops = [s for s in amy._sends if 'osc' in s]
-    assert any(s.get('osc') == 2 and s.get('ratio') == 2.0 for s in ops)
-    # the whole 4-stage bp0 is reassembled and reapplied on op 6's osc (7)
-    assert any(s.get('osc') == 7 and s.get('bp0') == '0,1,40,1,300,0.7,500,0'
+    # op1 -> osc7, op6 -> osc2 (the reversed op->osc mapping)
+    assert any(s.get('osc') == 7 and s.get('ratio') == 2.0 for s in ops)
+    # the whole 4-stage bp0 is reassembled and reapplied on op 6's osc (2)
+    assert any(s.get('osc') == 2 and s.get('bp0') == '0,1,40,1,300,0.7,500,0'
                for s in ops)
     # the pitch env rides the parent osc (0)
     assert any(s.get('osc') == 0 and s.get('bp0') == '0,1.3,0,1,0,1,0,1'
@@ -1357,6 +1359,73 @@ def test_fm_overrides_persist_and_reapply_to_the_synth(deck):
     forwarder.start()
     assert not any(s.get('ratio') == 2.0 for s in amy._sends if 'osc' in s)
     assert not any(s.get('algorithm') == 5 for s in amy._sends if 'osc' in s)
+
+
+# --- DX7 algorithm routing (feature #102), derived from AMY's own table -------
+def test_dx7_algo_routing_matches_known_dx7_algorithms():
+    import dx7algos as dx
+
+    def r(a):
+        x = dx.routing(a)
+        return (sorted(x['carriers']), sorted(x['edges']), sorted(x['feedback']))
+
+    # algo 1: two stacks -- 2->1 (carrier 1) and 6->5->4->3 (carrier 3), fb 6.
+    # NB: NOT "chain with carrier 1" -- AMY's table (== the real DX7) says {1,3}.
+    assert r(1) == ([1, 3], [(2, 1), (4, 3), (5, 4), (6, 5)], [6])
+    # algo 5: three 2-op stacks 6->5, 4->3, 2->1; carriers 1,3,5; fb 6
+    assert r(5) == ([1, 3, 5], [(2, 1), (4, 3), (6, 5)], [6])
+    # algo 7: op3 modulated by BOTH op4 and op5 (a branch); carriers 1,3; fb 6
+    assert r(7) == ([1, 3], [(2, 1), (4, 3), (5, 3), (6, 5)], [6])
+    # algo 32: six parallel carriers, no modulation, feedback on op6
+    assert r(32) == ([1, 2, 3, 4, 5, 6], [], [6])
+    # algo 16: a single carrier (op1)
+    assert dx.routing(16)['carriers'] == [1]
+
+
+def test_dx7_algo_routing_invariants_all_32():
+    import dx7algos as dx
+    for a in range(1, 33):
+        rt = dx.routing(a)
+        # every operator is accounted for exactly once in the graph
+        seen = set(rt['carriers'])
+        for m, t in rt['edges']:
+            seen.add(m)
+            seen.add(t)
+        assert seen == set(range(1, 7)), (a, seen)
+        assert len(rt['carriers']) >= 1
+        # every DX7 algorithm has exactly one feedback operator
+        assert len(rt['feedback']) == 1, (a, rt['feedback'])
+        # the diagram layout places all six operators
+        pos, _, mx, md = dx.layout(a)
+        assert set(pos) == set(range(1, 7))
+        assert mx >= 0 and md >= 0
+    # clamp + wrap behaviour the picker relies on
+    assert dx.clamp(0) == 1 and dx.clamp(99) == 32 and dx.clamp('x') == 1
+    # op<->osc mapping the editor + labels share
+    assert [dx.op_osc(op) for op in range(1, 7)] == [7, 6, 5, 4, 3, 2]
+
+
+def test_dx7_algo_role_and_feedback_labels():
+    import dx7algos as dx
+    # the carrier/modulator label logic (rack._dx7_op_role_note's substance)
+    assert dx.role(1, 1) == 'carrier'      # op1 is a carrier in algo 1
+    assert dx.role(1, 3) == 'carrier'
+    assert dx.role(1, 6) == 'modulator'    # op6 is the feedback modulator
+    assert dx.has_feedback(1, 6) and not dx.has_feedback(1, 1)
+    assert all(dx.role(32, op) == 'carrier' for op in range(1, 7))
+    assert dx.summary(22)['carriers'] == [1, 3, 4, 5]     # DX7 BRASS algorithm
+
+
+def test_fm_algorithm_control_is_a_picker_that_sends_the_o_param():
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME['fm_algorithm']
+    # the Voice control is an 'action' (opens the modal), still TRUTH_PATCH
+    assert d['type'] == 'action'
+    assert ap.truth_of('fm_algorithm') == ap.TRUTH_PATCH
+    # selecting an algorithm still sends 'algorithm' (the 'o' param) to osc 0 --
+    # the live-apply contract the picker's on_select relies on
+    assert {'osc': ap.OSC_ALGO, 'algorithm': 7} in ap.synth_send_calls(
+        {'fm_algorithm': 7})
 
 
 # ---------------------------------------------------------------------------
