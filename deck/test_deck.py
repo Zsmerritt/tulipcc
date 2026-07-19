@@ -3577,9 +3577,9 @@ def test_kit_notes_variant_fallback():
     assert synthkits.kit_notes('garbage') == {}
 
 
-def test_synthkit_registers_contiguous_note_maps():
+def test_synthkit_registers_note_maps_across_gm_range():
     _install_hw_mocks()
-    _fresh_synthkits()
+    synthkits = _fresh_synthkits()
     sys.modules.pop('drums_kit', None)
     import drums_kit
     amy = sys.modules['amy']
@@ -3588,43 +3588,53 @@ def test_synthkit_registers_contiguous_note_maps():
     home = sorted(kit.pads)                        # [36, 38, 39, 42, 46]
     assert home == [36, 38, 39, 42, 46]
     assert kit.hit_synths == {}                   # tr909 is fully container
-    anchor = home[0]
     maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
-    # pack_fill: N maps for N hits, contiguous keys anchor..anchor+N-1
-    assert len(maps) == len(home)                 # one map per DISTINCT hit
+    # NEW pack_fill: the packed block TILES the whole GM percussion range
+    # 35..81 -- every key sounds (one map per key), octave-shifted away from the
+    # base block. Contrast the old compact map (only anchor..anchor+N-1 sounded).
     keys = sorted(int(m.split(',', 1)[0]) for m in maps)
-    assert keys == list(range(anchor, anchor + len(home)))   # contiguous, anchored
-    # each key anchor+i fires the i-th sorted home-note's container osc(s)
-    # via osc-targeted fragments (v<osc>n60l%vi%iiM%i), per-hit gain in the
-    # velocity-scale (max) field -- the sampled kits' baked io format
-    key_to_oscs = {}
-    for m in maps:
-        fields = m.split(',', 5)
-        assert fields[1] == '0' and fields[2] == '0' and fields[4] == '0'
-        assert float(fields[3]) == pytest.approx(2.5)     # KIT_GAIN, level 1
-        frags = fields[5].split('Z')
-        for t in frags:
-            assert t.startswith('v') and t.endswith('n60l%vi%iiM%i')
-        key_to_oscs[int(fields[0])] = [int(t[1:t.index('n')]) for t in frags]
-    for i, hn in enumerate(home):
-        assert key_to_oscs[anchor + i] == kit.pads[hn]['trig'], (i, hn)
-    # Python-routed path packs the same way: key anchor+1 (37) -> 2nd hit
-    # (pad 38), fired as direct osc-targeted note-ons (one per trigger osc)
-    # with the map's gain applied to the velocity and the already-mapped
-    # marker set
+    assert keys == list(range(synthkits.GM_LO, synthkits.GM_HI + 1))   # 35..81
+    assert len(maps) == 47
+    # note_alias is exactly pack_fill over the built pads: {played:(home,shift)}
+    fill = synthkits.pack_fill(home)
+    assert kit.note_alias == fill
+    # every map == container_note_cmd(key, its pad's trig, velscale, shift);
+    # per-hit gain in the velocity-scale (max) field, fired at note 60+shift
+    by_key = {int(m.split(',', 1)[0]): m for m in maps}
+    for key, (hn, shift) in fill.items():
+        pad = kit.pads[hn]
+        assert pad['velscale'] == pytest.approx(1.5)   # KIT_GAIN, level 1
+        assert by_key[key] == synthkits.container_note_cmd(
+            key, pad['trig'], pad['velscale'], shift)
+        assert -24 <= shift <= 24                      # clamped octaves
+    # base block (shift 0) is BIT-IDENTICAL to the old map: fires n60, one
+    # fragment per trigger osc (v<osc>n60l%vi%iiM%i)
+    assert fill[36] == (36, 0)
+    for t in by_key[36].split(',', 5)[5].split('Z'):
+        assert t.startswith('v') and t.endswith('n60l%vi%iiM%i')
+    # one octave up (+12) fires n72; the single below-anchor key 35 fires n48
+    okey = next(k for k, (h, sh) in fill.items() if h == 38 and sh == 12)
+    assert 'n72l%vi%iiM%i' in by_key[okey]
+    assert fill[35] == (46, -12) and 'n48l%vi%iiM%i' in by_key[35]
+    # Python-routed path resolves through the same alias: base-block key 37 ->
+    # 2nd hit (pad 38) fired at n60, vel*velscale, already-mapped marker set
     amy._sends.clear()
-    kit.note_on(anchor + 1, 1.0)
+    kit.note_on(37, 1.0)
     on = [k for k in amy._sends if 'vel' in k]
-    assert [k['osc'] for k in on] == kit.pads[home[1]]['trig']
+    assert [k['osc'] for k in on] == kit.pads[38]['trig']
     for k in on:
         assert k['note'] == 60
-        assert k['vel'] == pytest.approx(2.5)     # vel 1.0 * velscale
+        assert k['vel'] == pytest.approx(1.5)     # vel 1.0 * velscale
         assert k['note_source_channel'] == kit.synth
-    # keys outside [anchor, anchor+len) are unmapped -> silent (no nearest-pad grab)
-    off = anchor + len(home) + 2                   # 43: beyond the packed block
-    assert off not in kit.note_alias
+    # an octave-up key fires the pitched note (60+shift) on the Python path too
     amy._sends.clear()
-    kit.note_on(off, 1.0)
+    kit.note_on(okey, 1.0)
+    on = [k for k in amy._sends if 'vel' in k]
+    assert on and all(k['note'] == 72 for k in on)
+    # keys OUTSIDE the GM range are unmapped -> silent (no runaway aliasing)
+    assert 90 not in kit.note_alias
+    amy._sends.clear()
+    kit.note_on(90, 1.0)
     assert [k for k in amy._sends if 'vel' in k] == []
 
 
@@ -3662,40 +3672,51 @@ def test_kit_container_shape_and_triggers():
     # equivalent (AMY stacks a chained osc into its parent's render buffer
     # and filters the sum)
     assert pads[36] == {'osc': 0, 'nosc': 2, 'trig': [0, 1],
-                        'velscale': 2.5, 'hit': 'p/two'}
+                        'velscale': 1.5, 'hit': 'p/two'}
     assert pads[38] == {'osc': 2, 'nosc': 1, 'trig': [2],
-                        'velscale': 2.5, 'hit': 'p/one'}
-    # design amps preserved (no KIT_GAIN bake -- gain rides in velscale),
-    # except p/one's 1.2 which trims to _AMP_CAP/velscale = 1.0 (reproducing
-    # the legacy min(2.5, 1.2*2.5) render-time cap)
-    assert patch == ('v0w0f100A0,1,50,0a0.8G0F0R0.7Z'
+                        'velscale': 1.5, 'hit': 'p/one'}
+    # design amps preserved (no KIT_GAIN bake -- gain rides in velscale); at
+    # KIT_GAIN 1.5 the amp cap _AMP_CAP/velscale = 2.5/1.5 = 1.67 clears p/one's
+    # 1.2, so it now survives (was trimmed to 1.0 under the old 2.5 gain).
+    # PITCHED oscs (wave != 5) now carry a note-coef: freq const *= 2**(9/12)
+    # (100->168.179, 80->134.543) and coef slot 1 := 1, so note 60+shift
+    # transposes -- at n60 it renders the old pitch. The NOISE osc (w5) is
+    # unpitched (no freq).
+    assert patch == ('v0w0f168.179,1A0,1,50,0a0.8G0F0R0.7Z'
                      'v1w5A0,1,30,0a0.5G1F4000R0.7Z'
-                     'v2w0f80,0,0,0,1A0,1,90,0a1G0F0R0.7Z')
+                     'v2w0f134.543,1,0,0,1A0,1,90,0a1.2G0F0R0.7Z')
     # the 2-osc template is two Z-separated osc-targeted fragments, each
-    # tagged i%i (this synth) + iM%i (already-mapped marker)
-    assert s.container_note_cmd(36, pads[36]['trig'], 2.5) == \
-        '36,0,0,2.5,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i'
-    assert s.container_note_cmd(38, pads[38]['trig'], 2.5) == \
-        '38,0,0,2.5,0,v2n60l%vi%iiM%i'
+    # tagged i%i (this synth) + iM%i (already-mapped marker); default shift 0
+    # fires n60 (bit-identical to the old single-octave map)
+    assert s.container_note_cmd(36, pads[36]['trig'], 1.5) == \
+        '36,0,0,1.5,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i'
+    assert s.container_note_cmd(38, pads[38]['trig'], 1.5) == \
+        '38,0,0,1.5,0,v2n60l%vi%iiM%i'
+    # a non-zero shift fires note 60+shift (the pitched octave)
+    assert s.container_note_cmd(38, pads[38]['trig'], 1.5, 12) == \
+        '38,0,0,1.5,0,v2n72l%vi%iiM%i'
+    assert s.container_note_cmd(38, pads[38]['trig'], 1.5, -12) == \
+        '38,0,0,1.5,0,v2n48l%vi%iiM%i'
 
 
 def test_kit_container_gain_in_velscale_and_cap():
     s = _container_fixture()
     s.kit_notes = lambda k: {36: 'p/one'}
-    # level 2 -> velscale 5.0; the stored amp is trimmed to _AMP_CAP/G so the
-    # render-time amp*velscale product lands exactly on the legacy 2.5 cap
+    # level 2 -> velscale KIT_GAIN(1.5)*2 = 3.0; the stored amp is trimmed to
+    # _AMP_CAP/G = 2.5/3.0 = 0.833 so the render-time amp*velscale product lands
+    # exactly on the 2.5 saturation cap
     patch, pads, _ = s.kit_container('k', hit_overrides={36: {'level': 2.0}})
-    assert pads[36]['velscale'] == pytest.approx(5.0)
-    assert 'a0.5' in patch                        # min(1.2, 2.5/5.0)
-    # level 0.4 -> velscale exactly 1.0; amp under the cap stays the design amp
+    assert pads[36]['velscale'] == pytest.approx(3.0)
+    assert 'a0.833' in patch                       # min(1.2, 2.5/3.0)
+    # level 0.4 -> velscale 0.6; amp under the cap stays the design amp
     patch, pads, _ = s.kit_container('k', hit_overrides={36: {'level': 0.4}})
-    assert pads[36]['velscale'] == pytest.approx(1.0)
+    assert pads[36]['velscale'] == pytest.approx(0.6)
     assert 'a1.2' in patch
-    # default: velscale KIT_GAIN, design amp 1.2 <= 2.5/2.5 is FALSE -> trims
-    # to 1.0 (2.5/2.5), reproducing legacy min(2.5, 1.2*2.5)=2.5 at render
+    # default: velscale KIT_GAIN 1.5; design amp 1.2 <= 2.5/1.5 = 1.67, so it now
+    # SURVIVES (under the old 2.5 gain it trimmed to 1.0)
     patch, pads, _ = s.kit_container('k')
-    assert pads[36]['velscale'] == pytest.approx(2.5)
-    assert 'a1' in patch and 'a1.2' not in patch
+    assert pads[36]['velscale'] == pytest.approx(1.5)
+    assert 'a1.2' in patch
     # snap stays an amp bake on the noise osc only (it's per-osc, velscale
     # is per-hit)
     s.kit_notes = lambda k: {36: 'p/two'}
@@ -3703,9 +3724,11 @@ def test_kit_container_gain_in_velscale_and_cap():
     assert 'a0.8' in patch                        # tone untouched
     assert 'a1' in patch.split('Z')[1]            # noise 0.5*2
 
-    # tune/decay transforms match the legacy per-hit path
+    # tune/decay transforms match the legacy per-hit path (tune applies BEFORE
+    # the pitch note-coef rewrite: freq 100 -> tune x2 = 200 -> *2**(9/12) =
+    # 336.359; filter_freq doubled to 8000; NOISE osc stays unpitched)
     patch, _, _ = s.kit_container('k', hit_overrides={36: {'tune': 12}})
-    assert 'f200' in patch and 'F8000' in patch   # freq + filter_freq doubled
+    assert 'f336.359,1' in patch and 'F8000' in patch
     patch, _, _ = s.kit_container('k', hit_overrides={36: {'decay': 2}})
     assert 'A0,1,100,0' in patch and 'A0,1,60,0' in patch
 
@@ -3738,13 +3761,19 @@ def test_kit_container_partials_block():
     # partials hit renumbered to its base (osc 1..3 after the 1-osc pad 36);
     # trigger target is ONLY the w10 parent -- its children ride behind it
     assert pads[49] == {'osc': 1, 'nosc': 3, 'trig': [1],
-                        'velscale': 2.5, 'hit': 'p/part'}
+                        'velscale': 1.5, 'hit': 'p/part'}
     frags = {f[:2]: f for f in patch.split('Z') if f}
     assert 'w10' in frags['v1'] and 'p2' in frags['v1']
     assert 'w9' in frags['v2'] and 'f100' in frags['v2']
     assert 'w9' in frags['v3'] and 'f200' in frags['v3']
-    # parent amp survives the cap (min(1, 2.5/2.5) == 1), children untouched
+    # parent amp survives the cap (min(1, 2.5/1.5) == 1), children untouched
     assert 'a1,0,1,1' in frags['v1']
+    # the parent gains a note-tracking freq (it had none): const = 440*2**(9/12)
+    # = 739.989, coef 1, so the whole partials cluster transposes with the note
+    # while note 60 is bit-identical. Children (w9) are NOT pitched -- they ride
+    # the parent's logfreq (interp_partials.c).
+    assert 'f739.989,1' in frags['v1']
+    assert 'f100,1' not in frags['v2'] and 'f200,1' not in frags['v3']
 
 
 def test_whole_corpus_classifies_container():
@@ -3829,13 +3858,19 @@ def test_synthkit_retweak_inplace_vs_swap():
     assert all(k['synth'] == kit.synth for k in osc_sends)
     # velscale unchanged -> no map re-registration
     assert not any('midi_note_cmd' in k for k in amy._sends)
-    # ---- level change -> same-osc update PLUS map refresh with new velscale
+    # ---- level change -> same-osc update PLUS map refresh with new velscale,
+    # re-sent for EVERY key aliasing home 36 (base block + octave repeats), each
+    # carrying its own shift; the base-block key 36 fires n60
     amy._sends.clear()
     kit.retweak(36, {'level': 2.0})
     maps = [k['midi_note_cmd'] for k in amy._sends if 'midi_note_cmd' in k]
-    assert maps and all(
-        ',5,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i' in m for m in maps)
-    assert kit.pads[36]['velscale'] == pytest.approx(5.0)
+    assert kit.pads[36]['velscale'] == pytest.approx(3.0)   # KIT_GAIN 1.5 * 2
+    assert maps and all(m.split(',', 4)[3] == '3' for m in maps)  # new velscale
+    base = next(m for m in maps if m.startswith('36,'))
+    assert base == '36,0,0,3,0,v0n60l%vi%iiM%iZv1n60l%vi%iiM%i'
+    # only home-36 keys refreshed (home 38's maps untouched)
+    refreshed = {int(m.split(',', 1)[0]) for m in maps}
+    assert refreshed and all(kit.note_alias[k][0] == 36 for k in refreshed)
     # ---- swap (different hit key) -> full rebuild: maps cleared + relaid
     amy._sends.clear()
     kit.retweak(38, None, hit_key='p/two')
@@ -3873,6 +3908,161 @@ def test_piano_gets_no_special_level_injection():
         amy._sends.clear()
         forwarder._apply_params(_Syn(), {}, {'type': t, 'patch': 256 if t == 'piano' else 0})
         assert _amp_sent() is None, t
+
+
+# ---------------------------------------------------------------------------
+# levels/#96: type-default output levels + drum-kit peak caps.
+# ---------------------------------------------------------------------------
+def test_gm_type_default_gain_and_user_override():
+    _install_hw_mocks()
+    for m in ('deckcfg', 'forwarder', 'gm', 'gmbig', 'amyparams'):
+        sys.modules.pop(m, None)
+    import forwarder
+    import amyparams
+    amy = sys.modules['amy']
+
+    class _Syn:
+        synth = 42
+
+    def _amp():
+        for k in reversed(amy._sends):
+            if 'amp' in k:
+                return float(str(k['amp']).split(',')[0])
+        return None
+
+    # gm/gm2 with NO user level -> the type-default GM_TYPE_GAIN multiplies the
+    # patch's OWN baked osc-0 amp. GM banks bake no amp (AMY default 1.0), so
+    # 1.0 * 1.7 = 1.7 is injected on osc 0.
+    for t in ('gm', 'gm2'):
+        amy._sends.clear()
+        forwarder._apply_params(_Syn(), {}, {'type': t, 'patch': 0})
+        assert _amp() == pytest.approx(forwarder.GM_TYPE_GAIN), t
+        # it is written to the control osc, as a coef-const
+        amps = [k for k in amy._sends if 'amp' in k]
+        assert amps[-1].get('osc') == 0
+    # a user-stored `level` WINS -- the type default is skipped, no *1.7
+    amy._sends.clear()
+    forwarder._apply_params(_Syn(), {'level': 0.5}, {'type': 'gm', 'patch': 0})
+    assert _amp() == pytest.approx(0.5)
+    # the gain COMPOSES with a patch's own baked amp (it does NOT stomp it with
+    # a blind constant): stub a baked osc-0 amp of 0.7 -> injected 0.7 * 1.7
+    orig = amyparams.patch_params
+    amyparams.patch_params = lambda instr: {'level': 0.7}
+    try:
+        amy._sends.clear()
+        forwarder._apply_params(_Syn(), {}, {'type': 'gm', 'patch': 0})
+        assert _amp() == pytest.approx(0.7 * forwarder.GM_TYPE_GAIN)
+    finally:
+        amyparams.patch_params = orig
+    # juno6/dx7/piano get NO type-default injection (piano uses the vel curve;
+    # DX7 per-patch normalization is a separate follow-up)
+    for t in ('juno6', 'dx7', 'piano'):
+        amy._sends.clear()
+        forwarder._apply_params(_Syn(), {}, {'type': t, 'patch': 0})
+        assert _amp() is None, t
+
+
+def test_piano_velocity_remap_on_forward_path():
+    _install_hw_mocks()
+    for m in ('deckcfg', 'forwarder'):
+        sys.modules.pop(m, None)
+    import forwarder
+
+    class _Rec:
+        def __init__(self, vp=None):
+            self.got = []
+            if vp is not None:
+                self.vel_pow = vp
+
+        def note_on(self, n, v, **k):
+            self.got.append(v)
+
+        def note_off(self, n, **k):
+            pass
+
+    piano = _Rec(vp=forwarder.PIANO_VEL_POW)
+    other = _Rec()
+    # two instruments on ch1 -> layered (NOT c-owned), so both reach _route
+    forwarder._state.update({
+        'on': True, 'routes': {1: (['p', 'o'], [])},
+        'synths': {'p': piano, 'o': other},
+        'c_channels': set(), 'notes': {}, 'mpe_members': set(), 'seen': 0})
+    forwarder._route(bytes((0x90, 60, 100)))
+    vel = 100 / 127.0
+    # piano gets vel**0.5 (sqrt lift -> mf audible); every other type unchanged
+    assert forwarder.PIANO_VEL_POW == 0.5
+    assert piano.got == [pytest.approx(vel ** 0.5)]
+    assert other.got == [pytest.approx(vel)]
+
+
+def test_start_tags_only_piano_synth_with_vel_pow(deck):
+    deckcfg, forwarder = deck
+    iid = deckcfg.load()['instruments'][0]['id']
+    deckcfg.set_instrument(iid, 'type', 'piano')
+    deckcfg.set_instrument(iid, 'patch', 256)
+    forwarder.start()
+    syn = forwarder._state['synths'][iid]
+    assert getattr(syn, 'vel_pow', None) == forwarder.PIANO_VEL_POW
+    # a non-piano instrument carries no velocity curve
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 0)
+    forwarder.start()
+    syn = forwarder._state['synths'][iid]
+    assert getattr(syn, 'vel_pow', None) is None
+
+
+def test_kitcaps_table_shape_and_gain():
+    import kitcaps
+    # the peak cap scales every baked velscale so the loudest measured hit
+    # (4.79 FS) lands on the 1.25 FS target: GAIN = 1.25/4.79 ~= 0.26
+    assert kitcaps.KITCAP_GAIN == pytest.approx(0.26)
+    assert set(kitcaps.CAPS) == {384, 385, 386, 387, 388, 389, 390}
+    for patch, rows in kitcaps.CAPS.items():
+        assert rows
+        for note, osc, base, capped in rows:
+            assert 35 <= note <= 81
+            assert osc >= 0 and 0 <= base <= 127
+            # loudest baked velscale is 15 (MR-12/Tokyo) -> 15*0.26 = 3.9 ceiling
+            assert 0 < capped <= 15 * kitcaps.KITCAP_GAIN + 0.001
+    # a uniform scale PRESERVES the kit's balance: kit 384's snare (io37, baked
+    # 13.1) stays the loudest hit after capping
+    lv = {n: c for n, o, b, c in kitcaps.CAPS[384]}
+    assert lv[37] == max(lv.values())
+
+
+def test_kitcaps_entries_wire_format():
+    import kitcaps
+    ents = kitcaps.entries(384)
+    assert len(ents) == len(kitcaps.CAPS[384])       # one entry per baked io
+    assert [n for n, _ in ents] == [r[0] for r in kitcaps.CAPS[384]]
+    # baked io field layout: note,0,0,cappedscale,0,v<osc>n<base>l%vi%i
+    d = dict(ents)
+    assert d[35] == '35,0,0,1.045,0,v0n60l%vi%i'     # 4.02 * 0.26
+    assert d[37] == '37,0,0,3.406,0,v2n90l%vi%i'     # 13.1 * 0.26, base n90
+    # non-sampled patches (the deck's synth kits, kit 258, a melodic patch)
+    # get NO cap entries
+    assert kitcaps.entries(258) == []
+    assert kitcaps.entries(0) == []
+
+
+def test_sampled_kit_reregisters_capped_maps():
+    _install_hw_mocks()
+    sys.modules.pop('drums_kit', None)
+    import drums_kit
+    import kitcaps
+    amy = sys.modules['amy']
+    amy._sends.clear()
+    syn = drums_kit.make_synth(384)                  # sampled TR-808 DrumSynth
+    maps = [k for k in amy._sends if 'midi_note_cmd' in k]
+    # every baked io is overwritten with its capped velscale, on the live synth
+    # number (AMY replaces the note map by code)
+    assert [k['midi_note_cmd'] for k in maps] == [c for _, c in
+                                                  kitcaps.entries(384)]
+    assert maps and all(k.get('synth') == syn.synth for k in maps)
+    # a NON-sampled kit id gets no cap re-registration from this path
+    amy._sends.clear()
+    drums_kit._apply_kit_caps(syn, 0)
+    assert [k for k in amy._sends if 'midi_note_cmd' in k] == []
 
 
 # --- deckcfg: per-pad drum edits survive a reload ---
@@ -4472,14 +4662,15 @@ def test_hit_patch_string_tune_decay_level_snap():
     # decay 2.0 scales bp0 TIME slots x2 (50->100, 30->60); freq/amp untouched.
     assert s.hit_patch_string('t16/k', {'level': unity, 'decay': 2}) == \
         'v0w0f100A0,1,100,0a1G0F200R0.7Zv1w5A0,1,60,0a0.5G0F0R0.7Z'
-    # level 2.0 -> net 2.0*2.5 == 5.0: both amps drive PAST the cap, so both
-    # land exactly on 2.5 (this pins the _capped_gain 2.5 ceiling).
+    # level 2.0 -> net 2.0*KIT_GAIN(1.5) == 3.0: the tone amp '1' -> 3.0 drives
+    # PAST the _AMP_CAP 2.5 ceiling (lands on 2.5), the noise amp '0.5' -> 1.5
+    # stays under it (this pins the cap ceiling is STILL 2.5, not KIT_GAIN).
     assert s.hit_patch_string('t16/k', {'level': 2.0}) == \
-        'v0w0f100A0,1,50,0a2.5G0F200R0.7Zv1w5A0,1,30,0a2.5G0F0R0.7Z'
-    # default overrides -> net KIT_GAIN (2.5): amp '1' -> 2.5, and the noise
-    # osc amp '0.5' -> 1.25 (under the cap).
+        'v0w0f100A0,1,50,0a2.5G0F200R0.7Zv1w5A0,1,30,0a1.5G0F0R0.7Z'
+    # default overrides -> net KIT_GAIN (1.5): amp '1' -> 1.5, and the noise
+    # osc amp '0.5' -> 0.75 (both under the cap).
     assert s.hit_patch_string('t16/k') == \
-        'v0w0f100A0,1,50,0a2.5G0F200R0.7Zv1w5A0,1,30,0a1.25G0F0R0.7Z'
+        'v0w0f100A0,1,50,0a1.5G0F200R0.7Zv1w5A0,1,30,0a0.75G0F0R0.7Z'
 
 
 def test_hit_patch_string_snap_only_scales_the_noise_osc():
@@ -4515,13 +4706,15 @@ def test_xform_partials_parent_only_level_rule():
     import synthkits as s
     # child = partial (w9), parent = summing carrier (w10). Both carry an amp.
     ps = 'v0w9f100,0,0a3Zv1w10a1A0,1,100,0Z'
-    # identity transform via hit_patch_string (default level -> KIT_GAIN 2.5):
-    # ONLY the parent (w10) amp is scaled (1 -> 2.5, capped); the child amp
+    # identity transform via hit_patch_string (default level -> KIT_GAIN 1.5):
+    # ONLY the parent (w10) amp is scaled (1 -> 1.5, under cap); the child amp
     # 'a3' is left ALONE (scaling both would square the gain). Each osc also
     # gains the self-contained filter reset (G0F0R0.7) from the pad-picker fix.
+    # No freq is inserted on the parent -- hit_patch_string does not pitch (the
+    # note-tracking rewrite is container-only, pitch=False here).
     _inject_hit(s, 'p16/x', {'patch_string': ps})
     assert s.hit_patch_string('p16/x', {'level': 1.0}) == \
-        'v0w9f100,0,0a3G0F0R0.7Zv1w10a2.5A0,1,100,0G0F0R0.7Z'
+        'v0w9f100,0,0a3G0F0R0.7Zv1w10a1.5A0,1,100,0G0F0R0.7Z'
     # direct call, tune/decay/level all != 1: child freq first-slot scaled by
     # tune (100->200), parent amp by level (1->2, under cap), parent bp times
     # by decay (100->200); the child amp 'a3' stays put -> parent-only rule.

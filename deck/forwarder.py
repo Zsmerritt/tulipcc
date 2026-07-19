@@ -24,6 +24,18 @@
 import tulip
 import deckcfg
 
+# Type-default output levels (levels/#96). The GM SoundFont banks bake no osc-0
+# amp (AMY default 1.0) and rendered a good ~5 dB under the junos; ×1.7 on the
+# patch's OWN baked osc-0 amp (read via amyparams, so a patch that DOES bake an
+# amp is scaled, not stomped) brings them to parity. A user-stored `level`
+# param still wins (it's already in params, so the inject is skipped).
+GM_TYPE_GAIN = 1.7
+# Piano velocity curve (levels/#96): the piano engine's response is ~vel**3.5,
+# so mezzo-forte played nearly silent. sqrt-remap (vel**0.5) lifts vel 0.5 to
+# ~juno parity WITHOUT adding ff clipping (vel 1.0 -> 1.0). Applied on the deck
+# forward path (_route) to piano instruments only; carried on the synth object.
+PIANO_VEL_POW = 0.5
+
 _state = {
     'on': False,
     'synths': {},        # instrument id -> PatchSynth (internal instruments)
@@ -130,7 +142,12 @@ def _route_impl(m):
                 syn = synths.get(iid)
                 if syn is not None:
                     try:
-                        syn.note_on(note, vel)
+                        # piano velocity curve (PIANO_VEL_POW): vel**0.5 on
+                        # piano instruments only, carried on the synth. Other
+                        # types render vel unchanged. (C-owned solo channels
+                        # play in AMY's C layer and never reach here.)
+                        vp = getattr(syn, 'vel_pow', None)
+                        syn.note_on(note, vel ** vp if vp else vel)
                     except Exception as e:
                         _synth_err(iid, e)
                     if played is None:
@@ -196,6 +213,30 @@ def _release_synths():
         pass
 
 
+def _with_type_level(params, instr, amyparams):
+    """params with a type-default `level` injected for gm/gm2 (GM_TYPE_GAIN)
+    when the user has stored none. The gain multiplies the patch's OWN baked
+    osc-0 amp (read via amyparams.patch_params), so a patch that bakes an amp is
+    scaled rather than stomped by a blind constant; GM banks bake none, so they
+    default to 1.0 -> 1.7. A user `level` is already in params and wins (skip).
+    Piano/juno6/dx7 are untouched -- piano is handled by the velocity curve, and
+    DX7 per-patch normalization is a separate follow-up."""
+    p = params or {}
+    if not instr or instr.get('type') not in ('gm', 'gm2'):
+        return p
+    if 'level' in p:
+        return p                          # user set it: wins
+    try:
+        baked = amyparams.patch_params(instr).get('level', 1.0)
+    except Exception:
+        baked = 1.0
+    d = amyparams.PARAM_BY_NAME.get('level')
+    hi = d.get('max', 7) if d else 7
+    p = dict(p)
+    p['level'] = min(hi, baked * GM_TYPE_GAIN)
+    return p
+
+
 def _apply_params(syn, params, instr=None):
     """Push an internal instrument's stored AMY params to its owned synth via
     amy.send(synth=<n>, ...). Also assigns the synth to the device's FX bus
@@ -221,6 +262,7 @@ def _apply_params(syn, params, instr=None):
         penv = amyparams.patch_env(instr)
     except Exception:
         penv = {}
+    params = _with_type_level(params, instr, amyparams)
     for kw in amyparams.synth_send_calls(params, penv):
         try:
             amy.send(synth=sn, **kw)
@@ -398,6 +440,11 @@ def rebuild_one(iid):
             _synth_err(iid, e)
             return False                    # broken half-state: rebuild all
         _state['synths'][iid] = syn
+        if instr.get('type') == 'piano':
+            try:
+                syn.vel_pow = PIANO_VEL_POW       # _route applies vel**0.5
+            except Exception:
+                pass
         di = getattr(syn, 'deferred_init', None)
         if di is not None:
             try:
@@ -732,6 +779,11 @@ def _start_once():
                                             num_voices=nv,
                                             channel=(ch if c_own else None))
                 _state['synths'][instr['id']] = syn
+                if instr.get('type') == 'piano':
+                    try:
+                        syn.vel_pow = PIANO_VEL_POW   # _route applies vel**0.5
+                    except Exception:
+                        pass
                 if c_own:
                     _state['c_channels'].add(ch)
                 _state['built'][instr['id']] = {
