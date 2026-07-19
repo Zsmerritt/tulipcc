@@ -206,9 +206,14 @@ def swap_panel(parent, shell=None):
     body = dk.row(parent, h=H - 96)
     body.set_pos(0, 72)
     # scroll_col, not bare lv.obj: without a flex column every pack/hit
-    # button stacked at (0,0) and only the last one showed
-    packs = dk.scroll_col(body, 260, H - 110, gap=8)
-    hits = dk.scroll_col(body, w - 320, H - 110, gap=8)
+    # button stacked at (0,0) and only the last one showed.
+    # Use scroll_col's DEFAULT row gap (12) -- the gap=8 override was the lone
+    # deviation in the app, and at 8px the rows' rounded corners carved the dark
+    # column bg into a right-pointing "funnel" wedge on RGB332 (UX12-1). The
+    # patch and kit pickers use the default 12 with the same radius/colors and
+    # show no funnel (verified: ux-review-12 shots 04 vs 05); match them.
+    packs = dk.scroll_col(body, 260, H - 110)
+    hits = dk.scroll_col(body, w - 320, H - 110)
     # empty-state prompt so the right column isn't a bare void (F-7)
     dk.label(hits, "Pick a pack to browse its hits", color=dk.MUTED,
              font=dk.FONT_S)
