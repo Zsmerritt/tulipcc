@@ -392,26 +392,70 @@ OSC_ALGO = 0                       # the ALGO parent osc (== OSC_CTL, named for 
 FM_OP_OSCS = (2, 3, 4, 5, 6, 7)    # DX7 operators 1..6 -> AMY oscs 2..7
 
 
-def _op_env(osc):
-    """A per-operator amp envelope: one 'decay' slider that emits a complete,
-    self-contained bp0 ('0,1,<ms>,0') to `osc`. Single-slider by design -- a
-    multi-slot composite would restate its siblings from schema defaults and,
-    with no readable baked envelope to fall back to (penv is empty for FM
-    operators), silently rewrite the operator's baked envelope. One slider =
-    one whole bp0 = no restate hazard: dragging it is an explicit 'make this
-    operator pluck/decay' edit, and it is only sent once the user touches it."""
-    return {'kind': 'op_env', 'osc': osc}
+def _bp_env(osc, pos):
+    """One field of an 8-field (4-stage) breakpoint envelope written to `osc`'s
+    bp0 -- the surface the AMYboard editor exposes as AMP ENV / PITCH ENV
+    (T1,L1,T2,L2,T3,L3,T4,L4). `pos` is the field's slot in that string (0..7).
+
+    synth_send_calls assembles the WHOLE bp0 "T1,L1,T2,L2,T3,L3,T4,L4" from the
+    fields the user set, filling the rest from FM_BP_DEFAULTS. The deck can't
+    read the operator's baked bp0 back, so a partial edit restates its siblings
+    from a known NEUTRAL shape rather than inventing them -- the same discipline
+    _adsr_string uses for the analog ADSR. AMY holds the envelope at the 3rd
+    level (L3) until note-off, then plays the 4th segment as the release, so L3
+    reads as the sustain. A 4-stage bp0 is what lets an operator do a delayed
+    swell or a two-slope decay that the v1 single 'decay' could not."""
+    return {'kind': 'bp_env', 'osc': osc, 'pos': pos}
+
+
+# (suffix, label, bp0 position, lo, hi, default, scale, unit) for a 4-stage
+# envelope's eight controls. Times are log-curved ms; levels are linear.
+#
+# Amp env neutral default: 5 ms attack to full, 100 ms decay to 0.8, hold
+# (sustain) 0.8, 300 ms release to 0 -- a plain sustaining shape so touching
+# any one stage leaves the rest musical.
+_AMP_ENV_FIELDS = [
+    ('t1', 'T1 attack',  0, 0, 150000, 5,   1,   'ms'),
+    ('l1', 'L1 peak',    1, 0, 1,      1.0, 100, ''),
+    ('t2', 'T2 decay',   2, 0, 150000, 100, 1,   'ms'),
+    ('l2', 'L2',         3, 0, 1,      0.8, 100, ''),
+    ('t3', 'T3',         4, 0, 150000, 0,   1,   'ms'),
+    ('l3', 'L3 sustain', 5, 0, 1,      0.8, 100, ''),
+    ('t4', 'T4 release', 6, 0, 150000, 300, 1,   'ms'),
+    ('l4', 'L4 end',     7, 0, 1,      0.0, 100, ''),
+]
+# Pitch env neutral default: perfectly flat (every level = ratio 1.0, no time)
+# so an untouched-but-partially-edited pitch env doesn't bend pitch by accident.
+# Levels are frequency RATIOS around 1.0 (0..2), matching fm.py's pitch bp.
+_PITCH_ENV_FIELDS = [
+    ('t1', 'T1', 0, 0, 150000, 0,   1,   'ms'),
+    ('l1', 'L1', 1, 0, 2,      1.0, 100, ''),
+    ('t2', 'T2', 2, 0, 150000, 0,   1,   'ms'),
+    ('l2', 'L2', 3, 0, 2,      1.0, 100, ''),
+    ('t3', 'T3', 4, 0, 150000, 0,   1,   'ms'),
+    ('l3', 'L3', 5, 0, 2,      1.0, 100, ''),
+    ('t4', 'T4', 6, 0, 150000, 0,   1,   'ms'),
+    ('l4', 'L4', 7, 0, 2,      1.0, 100, ''),
+]
+
+
+def _env_field_slider(name, group, spec, osc):
+    suf, label, pos, lo, hi, dflt, scale, unit = spec
+    return _slider(name, group, label, lo, hi, dflt, 'basic',
+                   _bp_env(osc, pos), scale=scale, unit=unit,
+                   truth=TRUTH_PATCH, curve=('log' if unit == 'ms' else None))
 
 
 FM_PARAMS = [
-    # Voice level (osc 0 = ALGO parent). algorithm is EDITABLE, not read-only:
-    # amy/src/algorithms.c reads synth[osc]->algorithm every render and clamps
-    # it (`if (algorithm >= NUM_ALGORITHMS) algorithm = 0`), and the operator
-    # connections (algo_source, set at note-on) are unchanged by it, so a live
-    # change only reroutes the FM matrix on the next buffer -- no stale state,
-    # no realloc, no crash. The deck can't read the baked algorithm, so it
-    # shows "patch default" until set; setting it picks a DX7 topology (1..32)
-    # over the patch's own six operators.
+    # --- FM Voice (osc 0 = ALGO parent, osc 1 = LFO) ---
+    # algorithm is EDITABLE, not read-only: amy/src/algorithms.c reads
+    # synth[osc]->algorithm every render and clamps it (`if (algorithm >=
+    # NUM_ALGORITHMS) algorithm = 0`), and the operator connections (algo_source,
+    # set at note-on) are unchanged by it, so a live change only reroutes the FM
+    # matrix on the next buffer -- no stale state, no realloc, no crash. Shown as
+    # "patch default" until set (the deck can't read the baked algorithm). The
+    # DX7 algorithm GUIDE is a visual reference we deliberately do NOT render
+    # (too heavy per the cost philosophy); the number is the control.
     _slider('fm_algorithm', 'FM', 'algorithm', 1, 32, 1, 'basic',
             _osc(OSC_ALGO, 'algorithm'), truth=TRUTH_PATCH),
     # feedback: DX7 0..7 maps (fm.py) to 0.00125*2**fb = 0.00125..0.16; a
@@ -423,8 +467,16 @@ FM_PARAMS = [
     # (unlike the analog lfo_pitch, which would hit only ops 1-2's freq).
     _slider('fm_lfo_pitch', 'FM', 'LFO to pitch', 0, 0.5, 0, 'basic',
             _osc(OSC_ALGO, 'freq', COEF_MOD), scale=1000, truth=TRUTH_PATCH),
+    # LFO wave + LFO speed are the base schema's own 'lfo_wave'/'lfo_freq'
+    # (they target OSC_LFO=1, which IS the DX7 LFO) -- reused by the curated
+    # view, so not redefined here.
 ]
-# Per-operator page (6 ops): ratio + output level + envelope decay.
+# Parent PITCH ENV (osc 0 bp0): fm.py sends bp0=pitchbp with freq eg0=1, so
+# the parent's bp0 drives a pitch envelope over the whole voice.
+for _pspec in _PITCH_ENV_FIELDS:
+    FM_PARAMS.append(_env_field_slider('fm_pitch_%s' % _pspec[0], 'Pitch',
+                                       _pspec, OSC_ALGO))
+# --- Per-operator pages (6 ops): level, ratio, amp LFO + a 4-stage amp env ---
 for _fm_op in range(1, 7):
     _fm_osc = FM_OP_OSCS[_fm_op - 1]
     _fm_grp = 'OP %d' % _fm_op
@@ -438,11 +490,24 @@ for _fm_op in range(1, 7):
         _slider('fm_op%d_level' % _fm_op, _fm_grp, 'output', 0, 2, 1, 'basic',
                 _osc(_fm_osc, 'amp', COEF_CONST), scale=100, truth=TRUTH_PATCH))
     FM_PARAMS.append(
-        # decay: one self-contained bp0 (see _op_env). Log 0..150000 ms like
-        # the other envelope times; the max is effectively 'sustained'.
-        _slider('fm_op%d_decay' % _fm_op, _fm_grp, 'decay', 0, 150000, 150000,
-                'basic', _op_env(_fm_osc), unit='ms', truth=TRUTH_PATCH,
-                curve='log'))
+        # amp LFO: operator amp MOD slot (fm.py amp='op_amp,0,0,1,0,<amp_lfo>',
+        # slot 5). Composes with level -- both are coefs on this osc's amp, and
+        # the empty slots keep the baked eg0=1 that wires the amp env.
+        _slider('fm_op%d_amplfo' % _fm_op, _fm_grp, 'amp LFO', 0, 1, 0, 'basic',
+                _osc(_fm_osc, 'amp', COEF_MOD), scale=100, truth=TRUTH_PATCH))
+    for _aspec in _AMP_ENV_FIELDS:
+        FM_PARAMS.append(_env_field_slider('fm_op%d_%s' % (_fm_op, _aspec[0]),
+                                           _fm_grp, _aspec, _fm_osc))
+
+
+# Neutral fallback for every bp0 field, keyed by osc -- so a partial envelope
+# edit assembles a full, musical bp0 (see _bp_env / synth_send_calls).
+FM_BP_DEFAULTS = {}
+for _d in FM_PARAMS:
+    _apd = _d['apply']
+    if _apd['kind'] == 'bp_env':
+        FM_BP_DEFAULTS.setdefault(_apd['osc'], [0] * 8)[_apd['pos']] = \
+            _d['default']
 
 
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
@@ -1001,7 +1066,7 @@ def synth_send_calls(params, penv=None):
     coefmap = {}                    # (osc, arg) -> {coef: value}
     scalars = []                    # (osc, arg, value)  -- coef is None
     env = {'amp': {}, 'filter': {}}
-    op_env = {}                     # osc -> decay ms (per-operator bp0, FM)
+    bp_env = {}                     # osc -> {pos: value} (FM 4-stage bp0)
     eq = [None, None, None]
 
     for name, val in merged.items():
@@ -1024,8 +1089,8 @@ def synth_send_calls(params, penv=None):
                     coefmap.setdefault((osc, arg), {})[coef] = val
         elif kind == 'env':
             env[ap['env']][ap['slot']] = val
-        elif kind == 'op_env':
-            op_env[ap['osc']] = val
+        elif kind == 'bp_env':
+            bp_env.setdefault(ap['osc'], {})[ap['pos']] = val
         elif kind == 'eq':
             eq[ap['index']] = val
 
@@ -1053,10 +1118,15 @@ def synth_send_calls(params, penv=None):
         calls.append({'osc': OSC_CTL,
                       'bp1': _adsr_string('filter', env['filter'],
                                           (penv or {}).get('filter'))})
-    # Per-operator amp envelope: each is a complete two-point bp0 on its own
-    # operator osc (0 ms attack to full, linear decay to silence over <ms>).
-    for osc, ms in op_env.items():
-        calls.append({'osc': osc, 'bp0': "0,1,%s,0" % _fmt(ms)})
+    # FM 4-stage breakpoint envelopes: one complete bp0 per osc,
+    # "T1,L1,T2,L2,T3,L3,T4,L4", assembled from the fields the user set with the
+    # rest filled from the neutral FM_BP_DEFAULTS (operators use their own bp0
+    # for the amp env; the ALGO parent's bp0 is the pitch env).
+    for osc, fields in bp_env.items():
+        vals = list(FM_BP_DEFAULTS.get(osc, [0] * 8))
+        for pos, v in fields.items():
+            vals[pos] = v
+        calls.append({'osc': osc, 'bp0': ",".join(_fmt(v) for v in vals)})
     if any(v is not None for v in eq):
         calls.append({'eq': "%s,%s,%s" % tuple(
             _fmt(v if v is not None else 0) for v in eq)})

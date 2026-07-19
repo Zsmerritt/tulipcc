@@ -1193,9 +1193,11 @@ def test_fm_operator_params_address_the_right_oscs():
     assert {'osc': 7, 'ratio': 0.5} in ap.synth_send_calls({'fm_op6_ratio': 0.5})
     # operator output level -> amp CONST slot only (env/vel/mod slots untouched)
     assert {'osc': 4, 'amp': '1.5'} in ap.synth_send_calls({'fm_op3_level': 1.5})
-    # operator decay -> one complete, self-contained bp0 on that operator osc
-    assert {'osc': 5, 'bp0': '0,1,900,0'} in ap.synth_send_calls(
-        {'fm_op4_decay': 900})
+    # per-operator amp LFO -> amp MOD slot (5); level+amp-LFO compose on one amp
+    assert {'osc': 4, 'amp': ',,,,,0.3'} in ap.synth_send_calls(
+        {'fm_op3_amplfo': 0.3})
+    assert {'osc': 3, 'amp': '1.5,,,,,0.2'} in ap.synth_send_calls(
+        {'fm_op2_level': 1.5, 'fm_op2_amplfo': 0.2})
     # voice controls land on the ALGO parent (osc 0)
     calls = ap.synth_send_calls({'fm_algorithm': 22, 'fm_feedback': 0.16})
     assert {'osc': 0, 'algorithm': 22} in calls
@@ -1207,6 +1209,44 @@ def test_fm_operator_params_address_the_right_oscs():
     assert ap.synth_send_calls({}) == []
 
 
+def test_fm_four_stage_envelopes_assemble_bp0():
+    import amyparams as ap
+    # A partial amp-env edit (one stage) still emits a COMPLETE 4-stage bp0 on
+    # the operator osc, its other slots restated from the neutral FM defaults
+    # (5,1,100,0.8,0,0.8,300,0) -- never invented from an unreadable baked env.
+    assert {'osc': 2, 'bp0': '5,1,200,0.8,0,0.8,300,0'} in ap.synth_send_calls(
+        {'fm_op1_t2': 200})
+    # A full 8-value edit assembles exactly T1,L1,T2,L2,T3,L3,T4,L4. This shape
+    # -- attack to 1, a slow first decay to 0.5, hold, long release -- is a
+    # delayed/double-slope contour a single 'decay' slider could not express.
+    full = {'fm_op1_t1': 10, 'fm_op1_l1': 1, 'fm_op1_t2': 500, 'fm_op1_l2': 0.5,
+            'fm_op1_t3': 0, 'fm_op1_l3': 0.5, 'fm_op1_t4': 800, 'fm_op1_l4': 0}
+    assert {'osc': 2, 'bp0': '10,1,500,0.5,0,0.5,800,0'} in ap.synth_send_calls(
+        full)
+    # amp envelopes are per-operator: op6 lands on osc 7, not osc 2
+    assert {'osc': 7, 'bp0': '5,1,50,0.8,0,0.8,300,0'} in ap.synth_send_calls(
+        {'fm_op6_t2': 50})
+    # the PITCH env is the parent's bp0 (osc 0); neutral default is flat ratio 1
+    assert {'osc': 0, 'bp0': '0,1.5,0,1,0,1,0,1'} in ap.synth_send_calls(
+        {'fm_pitch_l1': 1.5})
+    # env + level + amp-LFO on one operator are independent sends (bp0 vs amp)
+    calls = ap.synth_send_calls({'fm_op1_level': 1.2, 'fm_op1_amplfo': 0.1,
+                                 'fm_op1_t4': 900})
+    assert {'osc': 2, 'amp': '1.2,,,,,0.1'} in calls
+    assert {'osc': 2, 'bp0': '5,1,100,0.8,0,0.8,900,0'} in calls
+
+
+def test_fm_dx7_vcf_reuses_the_analog_filter_params():
+    import amyparams as ap
+    # the DX7 VCF page reuses the base filter params; filt_* still target the
+    # control/ALGO osc's filter envelope (bp1), unchanged by the FM additions
+    calls = ap.synth_send_calls({'filter_freq': 1200, 'filt_attack': 5,
+                                 'filt_decay': 200, 'filt_sustain': 0.4,
+                                 'filt_release': 300})
+    assert {'osc': ap.OSC_CTL, 'filter_freq': '1200'} in calls
+    assert {'osc': ap.OSC_CTL, 'bp1': '5,1,200,0.4,300,0'} in calls
+
+
 def test_fm_params_are_patch_default_until_touched_and_stay_out_of_generic():
     import amyparams as ap
     # every FM control is TRUTH_PATCH: the deck can't read a DX7 patch's baked
@@ -1216,12 +1256,15 @@ def test_fm_params_are_patch_default_until_touched_and_stay_out_of_generic():
         assert ap.truth_of(d['name']) == ap.TRUTH_PATCH
         assert ap.is_fabricated(d, 'default')
         assert not ap.is_fabricated(d, 'user')     # a real edit is a real number
+    # the full surface: 3 voice + 8 pitch-env + 6*(ratio/level/amplfo + 8 env)
+    assert len(ap.FM_PARAMS) == 3 + 8 + 6 * 11
     # FM controls must NOT leak into the generic grouped editor, the patch-string
     # readers, or default_params() -- they belong only to the curated DX7 view.
     assert 'FM' not in ap.groups()
     assert 'OP 1' not in ap.groups()
+    assert 'Pitch' not in ap.groups()
     assert not any(n.startswith('fm_') for n in ap.default_params())
-    assert not any(d['group'].startswith(('FM', 'OP')) for _, defs in
+    assert not any(d['group'].startswith(('FM', 'OP', 'Pitch')) for _, defs in
                    ap.tabbed_groups(True) for d in defs)
 
 
@@ -1243,19 +1286,26 @@ def test_dx7_curated_view_pages_per_operator():
         tabs = curated.tabbed('dx7', True)
         labels = [t[0] for t in tabs]
         assert curated.view_name('dx7') == 'DX7-FM'
-        for op in ('OP 1', 'OP 2', 'OP 3', 'OP 4', 'OP 5', 'OP 6'):
-            assert op in labels                   # one page per operator
-        assert 'Voice' in labels
+        # the full surface: Voice + Pitch + VCF + one page per operator
+        for t in ('Voice', 'Pitch', 'VCF', 'OP 1', 'OP 2', 'OP 3', 'OP 4',
+                  'OP 5', 'OP 6'):
+            assert t in labels, t
         names = [d['name'] for _, defs in tabs for d in defs]
         # every name the view references resolved (no silent drops)
-        for want in ('fm_algorithm', 'fm_feedback', 'fm_lfo_pitch', 'lfo_freq',
-                     'fm_op1_ratio', 'fm_op1_level', 'fm_op1_decay',
-                     'fm_op6_decay'):
+        for want in ('fm_algorithm', 'fm_feedback', 'lfo_wave', 'lfo_freq',
+                     'fm_lfo_pitch', 'fm_pitch_t1', 'fm_pitch_l4',
+                     'filt_attack', 'filt_release',
+                     'fm_op1_ratio', 'fm_op1_amplfo', 'fm_op1_t1', 'fm_op1_l4',
+                     'fm_op6_t4'):
             assert want in names, want
-        # each operator page carries exactly its three controls
+        # each operator page carries level/ratio/amp-LFO + the 4-stage amp env
         op1 = dict(tabs)['OP 1']
-        assert [d['name'] for d in op1] == ['fm_op1_ratio', 'fm_op1_level',
-                                            'fm_op1_decay']
+        assert [d['name'] for d in op1] == [
+            'fm_op1_ratio', 'fm_op1_level', 'fm_op1_amplfo',
+            'fm_op1_t1', 'fm_op1_l1', 'fm_op1_t2', 'fm_op1_l2',
+            'fm_op1_t3', 'fm_op1_l3', 'fm_op1_t4', 'fm_op1_l4']
+        # the Pitch page is the 4-stage parent pitch env (8 fields)
+        assert len(dict(tabs)['Pitch']) == 8
         # the analog engines are untouched by the FM view
         assert curated.view_name('juno6') == 'Juno-6'
     finally:
@@ -1274,19 +1324,29 @@ def test_fm_overrides_persist_and_reapply_to_the_synth(deck):
     deckcfg.set_instrument(iid, 'type', 'dx7')
     deckcfg.set_instrument(iid, 'patch', 128)     # a DX7 patch
     deckcfg.set_instrument_param(iid, 'fm_op1_ratio', 2.0)
-    deckcfg.set_instrument_param(iid, 'fm_op6_decay', 800)
+    # a full 4-stage operator amp env (the v1 single-decay's replacement)
+    for f, v in (('t1', 0), ('l1', 1), ('t2', 40), ('l2', 1),
+                 ('t3', 300), ('l3', 0.7), ('t4', 500), ('l4', 0)):
+        deckcfg.set_instrument_param(iid, 'fm_op6_%s' % f, v)
+    deckcfg.set_instrument_param(iid, 'fm_pitch_l1', 1.3)
     deckcfg.set_instrument_param(iid, 'fm_algorithm', 5)
     # persistence: survives a reload from disk (rebuild/reboot path)
     deckcfg._state.clear()
     stored = deckcfg.get_instrument(iid).get('params')
     assert stored['fm_op1_ratio'] == 2.0 and stored['fm_algorithm'] == 5
+    assert stored['fm_op6_t3'] == 300 and stored['fm_pitch_l1'] == 1.3
 
     amy = sys.modules['amy']
     amy._sends = []
     forwarder.start()                             # rebuild reapplies the params
     ops = [s for s in amy._sends if 'osc' in s]
     assert any(s.get('osc') == 2 and s.get('ratio') == 2.0 for s in ops)
-    assert any(s.get('osc') == 7 and s.get('bp0') == '0,1,800,0' for s in ops)
+    # the whole 4-stage bp0 is reassembled and reapplied on op 6's osc (7)
+    assert any(s.get('osc') == 7 and s.get('bp0') == '0,1,40,1,300,0.7,500,0'
+               for s in ops)
+    # the pitch env rides the parent osc (0)
+    assert any(s.get('osc') == 0 and s.get('bp0') == '0,1.3,0,1,0,1,0,1'
+               for s in ops)
     assert any(s.get('osc') == 0 and s.get('algorithm') == 5 for s in ops)
 
     # "Reset FM" clears the fm_* overrides; a rebuild then reloads the baked

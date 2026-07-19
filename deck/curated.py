@@ -43,49 +43,8 @@ _VIEWS = {
             'reverb_send': 'reverb send',
         },
     },
-    # DX7 is an FM voice, not the four-osc analog layout: osc 0 is the ALGO
-    # parent (algorithm/feedback/pitch-LFO), osc 1 the LFO, oscs 2..7 the six
-    # operators. The view mirrors that -- a Voice page for the global FM
-    # controls, a Tone page for the post-filter, then ONE PAGE PER OPERATOR
-    # (OP 1..OP 6), each with that operator's ratio / output / decay. Page-per-
-    # operator is the deck's own paging idiom (the pad editor's per-pad pages,
-    # build_tabbed's left tab bar) -- 6*3 controls can't share a screen, and a
-    # grid would need a bespoke control; tabs reuse the existing machinery and
-    # keep each operator's three sliders full-width and legible. See
-    # amyparams.FM_PARAMS for the osc addressing and the "patch default" honesty.
-    'dx7': {
-        'name': 'DX7-FM',
-        'tabs': [
-            ('Voice', ['fm_algorithm', 'fm_feedback', 'lfo_freq',
-                       'fm_lfo_pitch', 'level', 'pan', 'reverb_send']),
-            ('Tone', ['filter_freq', 'resonance']),
-            ('OP 1', ['fm_op1_ratio', 'fm_op1_level', 'fm_op1_decay']),
-            ('OP 2', ['fm_op2_ratio', 'fm_op2_level', 'fm_op2_decay']),
-            ('OP 3', ['fm_op3_ratio', 'fm_op3_level', 'fm_op3_decay']),
-            ('OP 4', ['fm_op4_ratio', 'fm_op4_level', 'fm_op4_decay']),
-            ('OP 5', ['fm_op5_ratio', 'fm_op5_level', 'fm_op5_decay']),
-            ('OP 6', ['fm_op6_ratio', 'fm_op6_level', 'fm_op6_decay']),
-        ],
-        'labels': {
-            'fm_algorithm': 'algorithm', 'fm_feedback': 'feedback',
-            'lfo_freq': 'LFO speed', 'fm_lfo_pitch': 'LFO to pitch',
-            'level': 'output level', 'pan': 'pan',
-            'reverb_send': 'reverb send',
-            'filter_freq': 'brightness', 'resonance': 'edge',
-            'fm_op1_ratio': 'ratio', 'fm_op1_level': 'output',
-            'fm_op1_decay': 'decay',
-            'fm_op2_ratio': 'ratio', 'fm_op2_level': 'output',
-            'fm_op2_decay': 'decay',
-            'fm_op3_ratio': 'ratio', 'fm_op3_level': 'output',
-            'fm_op3_decay': 'decay',
-            'fm_op4_ratio': 'ratio', 'fm_op4_level': 'output',
-            'fm_op4_decay': 'decay',
-            'fm_op5_ratio': 'ratio', 'fm_op5_level': 'output',
-            'fm_op5_decay': 'decay',
-            'fm_op6_ratio': 'ratio', 'fm_op6_level': 'output',
-            'fm_op6_decay': 'decay',
-        },
-    },
+    # 'dx7' is built after this dict by _dx7_view() -- it has 9 tabs of ~11
+    # controls each, too much to spell out as a literal.
     'piano': {
         'name': 'Piano',
         'tabs': [
@@ -103,6 +62,58 @@ _VIEWS = {
         },
     },
 }
+
+
+# The controls each operator page hosts, in order: level/ratio/amp-LFO then the
+# 4-stage amp env (T1,L1..T4,L4). These name the fm_op<N>_* params in
+# amyparams.FM_PARAMS.
+_FM_OP_FIELDS = ['ratio', 'level', 'amplfo',
+                 't1', 'l1', 't2', 'l2', 't3', 'l3', 't4', 'l4']
+
+
+def _dx7_view():
+    """The full AMYboard-parity DX7/FM surface. DX7 is an FM voice, not the
+    four-osc analog layout: osc 0 is the ALGO parent (algorithm/feedback/
+    pitch-LFO + the pitch env on its bp0), osc 1 the LFO, oscs 2..7 the six
+    operators (level/ratio/amp-LFO + a 4-stage amp env on each osc's bp0).
+
+    Layout mirrors that engine, using the deck's own per-page paging idiom (the
+    pad editor's per-pad pages / build_tabbed's left tab bar): a Voice page for
+    the FM block, a Pitch page (the parent's pitch env), a VCF page (the post-
+    filter + its ADSR), then ONE PAGE PER OPERATOR (OP 1..OP 6). 6x11 controls
+    can't share a screen and a bp-grid would need a bespoke control; a page per
+    operator keeps every slider full-width and reuses the existing machinery.
+    The 4-stage envelope uses the deck's own envelope idiom -- one slider per
+    stage value (as the ADSR sliders already are), assembled into a bp0 string
+    by amyparams.synth_send_calls."""
+    tabs = [
+        ('Voice', ['fm_algorithm', 'fm_feedback', 'lfo_wave', 'lfo_freq',
+                   'fm_lfo_pitch', 'level', 'pan', 'reverb_send']),
+        ('Pitch', ['fm_pitch_t1', 'fm_pitch_l1', 'fm_pitch_t2', 'fm_pitch_l2',
+                   'fm_pitch_t3', 'fm_pitch_l3', 'fm_pitch_t4', 'fm_pitch_l4']),
+        ('VCF', ['filter_freq', 'resonance', 'filter_kbd', 'filter_env',
+                 'filt_attack', 'filt_decay', 'filt_sustain', 'filt_release']),
+    ]
+    for op in range(1, 7):
+        tabs.append(('OP %d' % op,
+                     ['fm_op%d_%s' % (op, f) for f in _FM_OP_FIELDS]))
+    # Only the shared/voice controls need engine-native labels; the per-op and
+    # pitch-env controls keep their own def labels (ratio / output / amp LFO /
+    # T1 attack..L4 end, T1..L4), which read correctly per page.
+    labels = {
+        'fm_algorithm': 'algorithm', 'fm_feedback': 'feedback',
+        'lfo_wave': 'LFO wave', 'lfo_freq': 'LFO speed',
+        'fm_lfo_pitch': 'LFO to pitch', 'level': 'output level',
+        'pan': 'pan', 'reverb_send': 'reverb send',
+        'filter_freq': 'cutoff', 'resonance': 'resonance',
+        'filter_kbd': 'kbd track', 'filter_env': 'env depth',
+        'filt_attack': 'VCF attack', 'filt_decay': 'VCF decay',
+        'filt_sustain': 'VCF sustain', 'filt_release': 'VCF release',
+    }
+    return {'name': 'DX7-FM', 'tabs': tabs, 'labels': labels}
+
+
+_VIEWS['dx7'] = _dx7_view()
 
 
 class CuratedEditor(ParamEditor):
