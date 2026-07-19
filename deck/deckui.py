@@ -308,6 +308,16 @@ def button(parent, text, w=140, h=52, bg=ACCENT, fg=WHITE, font=FONT_M,
     lb = lv.label(b)
     lb.set_text(text)
     lb.set_style_text_color(c(fg), 0)
+    # Mute the label in the DISABLED state too (UX10-12): the button bg already
+    # went SURFACE2 when disabled, but a nav button whose ENABLED bg is also
+    # SURFACE2 (the "Edit >" rows) then looked identical to an active one, with
+    # full-white text -- the disabled MPE nav button read as tappable. Callers
+    # that disable a button and its label (mpe._disable_tree) now get grayed
+    # text, the same "flat disabled colors" treatment dk.switch/dk.slider have.
+    try:
+        lb.set_style_text_color(c(MUTED), lv.STATE.DISABLED)
+    except Exception:
+        pass
     lb.set_style_text_font(font, 0)
     lb.center()
     if cb is not None:

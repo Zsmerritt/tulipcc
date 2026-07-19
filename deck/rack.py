@@ -478,6 +478,39 @@ def _remove(e):
                _do_remove, yes_text="Remove")
 
 
+def _do_reset_patch():
+    """Wipe the active instrument's sound-design overrides back to the patch.
+    Run only after the confirm (see _build_edit._reset_patch)."""
+    rid = deckcfg.active_instrument()
+    deckcfg.set_instrument(rid, 'params', {}, flush=False)
+    deckcfg.set_instrument(rid, 'reverb_send', 0.0, flush=False)
+    deckcfg.set_instrument(rid, 'hits', {}, flush=False)
+    # per-pad SWAPS are sound-design overrides too (review F-13)
+    deckcfg.set_instrument(rid, 'hit_swaps', {})
+    deckcfg.apply_instrument(rid)   # O-5
+    _preset_toast("Patch reset")
+    sh2 = _s.get('shell')
+    if sh2 is not None:
+        try:
+            sh2.refresh_chips()
+        except Exception:
+            pass
+
+        def _redraw(_x):   # rebuild the editor with the patch values
+            try:           # (same clean+fill back() uses, off-tick)
+                h = sh2.stack.top_handle()
+                b = sh2.stack.top_builder()
+                if h is not None and b is not None:
+                    h.clean()
+                    sh2._fill(h, b)
+            except Exception:
+                pass
+        try:
+            tulip.defer(_redraw, 0, 30)
+        except Exception:
+            pass
+
+
 def _vcol2(parent, cw):
     """A transparent fixed-width flex column -- one column of the two-column
     editor layout (S2). dk.row(pct 100) children size to the column."""
@@ -602,36 +635,16 @@ def _build_edit(parent, shell):
 
     # Reset patch: clear this instrument's sound-design overrides (params,
     # reverb send, per-pad tweaks) back to what the patch itself defines.
+    # Gated behind a confirm (UX10-6): it wipes potentially hours of sound
+    # design instantly, the same severity as Remove instrument / Factory reset,
+    # which both confirm. A toast acknowledges the (intentional) reset.
     def _reset_patch(e):
         if e.get_code() != lv.EVENT.CLICKED:
             return
-        rid = deckcfg.active_instrument()
-        deckcfg.set_instrument(rid, 'params', {}, flush=False)
-        deckcfg.set_instrument(rid, 'reverb_send', 0.0, flush=False)
-        deckcfg.set_instrument(rid, 'hits', {}, flush=False)
-        # per-pad SWAPS are sound-design overrides too (review F-13)
-        deckcfg.set_instrument(rid, 'hit_swaps', {})
-        deckcfg.apply_instrument(rid)   # O-5
-        sh2 = _s.get('shell')
-        if sh2 is not None:
-            try:
-                sh2.refresh_chips()
-            except Exception:
-                pass
-
-            def _redraw(_x):   # rebuild the editor with the patch values
-                try:           # (same clean+fill back() uses, off-tick)
-                    h = sh2.stack.top_handle()
-                    b = sh2.stack.top_builder()
-                    if h is not None and b is not None:
-                        h.clean()
-                        sh2._fill(h, b)
-                except Exception:
-                    pass
-            try:
-                tulip.defer(_redraw, 0, 30)
-            except Exception:
-                pass
+        dk.confirm("Reset patch?",
+                   "Clears this instrument's sound edits (params, reverb send, "
+                   "per-pad tweaks) back to the patch. This can't be undone.",
+                   _do_reset_patch, yes_text="Reset")
     r = dk.row(left, h=76)
     dk.label(r, "Patch values", color=dk.TEXT)
     rb = dk.button(r, "Reset patch", w=190, h=52, bg=dk.SURFACE2,
@@ -724,6 +737,7 @@ def sound_panel(parent, shell=None):
     _snd['shell'] = shell
     _snd['iid'] = deckcfg.active_instrument()
     _snd['adv'] = False
+    _snd['tab'] = 0        # active param-group tab, carried across rebuilds
     _snd['parent'] = parent
     _render_sound()
 
@@ -772,8 +786,44 @@ def _render_sound():
     def _make(defs):
         return curated.CuratedEditor(iid, defs=defs, labels=labels,
                                      on_change=_snd_apply, show_advanced=True)
-    parameditor.build_tabbed(parent, curated.tabbed(engine, _snd['adv']), _make,
-                             x=8, y=58, w=w - 16, h=_panel_h() - 66)
+    tabs = curated.tabbed(engine, _snd['adv'])
+    tv = parameditor.build_tabbed(parent, tabs, _make,
+                                  x=8, y=58, w=w - 16, h=_panel_h() - 66)
+    # Carry the active tab across a Basic/Advanced rebuild (UX10-11): the switch
+    # rebuilds the whole view, which otherwise dropped the user back on the
+    # first tab (VCF -> Advanced landed on DCO). Restore the remembered tab and
+    # keep tracking it as the user switches tabs.
+    _restore_tab(tv, len(tabs))
+
+
+def _restore_tab(tv, n):
+    if tv is None:
+        return
+    want = _snd.get('tab', 0)
+    if want >= n:
+        want = 0
+    if want:
+        try:
+            tv.set_active(want, lv.ANIM.OFF)
+        except Exception:
+            try:
+                tv.set_tab_active(want, lv.ANIM.OFF)
+            except Exception:
+                pass
+    try:
+        tv.add_event_cb(lambda e: _on_snd_tab(tv), lv.EVENT.VALUE_CHANGED, None)
+    except Exception:
+        pass
+
+
+def _on_snd_tab(tv):
+    try:
+        _snd['tab'] = tv.get_tab_active()
+    except Exception:
+        try:
+            _snd['tab'] = tv.get_active()
+        except Exception:
+            pass
 
 
 def _set_adv(value):

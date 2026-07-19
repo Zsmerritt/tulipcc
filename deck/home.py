@@ -132,7 +132,17 @@ _APPS = [
     (lv.SYMBOL.EDIT,     "Editor",      "call", tulip.edit,     dk.GREEN),
     (lv.SYMBOL.FILE,     "Wordpad",     "run",  "wordpad",      dk.TEAL),
     (lv.SYMBOL.GPS,      "Tulip World", "run",  "worldui",      dk.PURPLE),
-    (lv.SYMBOL.KEYBOARD, "Keyboard",    "call", tulip.keyboard, dk.GRAY),
+    # The raw "Keyboard" tile (tulip.keyboard) is GONE (UX10-2). It opened the
+    # firmware soft keyboard with NO textarea bound and OUTSIDE kbmgr: keys fell
+    # through to tulip.key_send() into the REPL *under* the shell (invisible
+    # typing), and every nav guard (kbmgr.close) was a no-op because kbmgr had
+    # no binding -- the exact orphan-keyboard lifecycle hole kbmgr exists to
+    # close, and it preceded a WDT reboot. Its only real purpose -- a soft
+    # keyboard for typing at the REPL -- belongs on the actual REPL screen
+    # (the System > Terminal tile), where the firmware owns the keyboard; there
+    # is no textarea to bind inside the shell, so routing it through kbmgr has
+    # nothing to target. Removing the tile is the fix that preserves the
+    # intended function (REPL typing stays reachable via Terminal) safely.
     # (the legacy Drums/Voices tiles are gone -- Instruments owns that
     # functionality now; devs can still tulip.run them; fresh-eyes F-13)
 ]
@@ -263,18 +273,21 @@ def _root_footer(shell):
                             if e.get_code() == lv.EVENT.CLICKED else None)))(opener),
                            lv.EVENT.CLICKED, None)
 
-        # status line: glanceable state in what used to be dead space
+        # status line: glanceable state in what used to be dead space. The old
+        # line repeated the active instrument's name + sound already shown in
+        # the rack row above it (UX10-14); carry only NON-duplicate state --
+        # volume (shown nowhere else on the root) plus network reachability
+        # (the deck's IP, or "offline"), so the line earns its space.
         try:
             import deckcfg
-            import catalog
-            instr = deckcfg.get_instrument(deckcfg.active_instrument()) or {}
-            # type-aware (review F-12): a GM instrument's patch is a GM
-            # program number -- the raw patches[] lookup printed the
-            # same-numbered Juno name. catalog owns the dispatch (E-8).
-            sound = catalog.sound_label(instr)
+            ip = None
+            try:
+                ip = tulip.ip()
+            except Exception:
+                ip = None
+            net = ("net " + ip) if ip else "offline"
             # ASCII separators only: the compiled montserrat range is ASCII
-            txt = "%s  %s   |   vol %s" % (instr.get('name', '?'), sound,
-                                           deckcfg.get('volume', 4))
+            txt = "vol %s   |   %s" % (deckcfg.get('volume', 4), net)
             dk.label(body, txt, color=dk.MUTED, font=dk.FONT_S)
         except Exception:
             pass

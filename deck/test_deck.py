@@ -5736,3 +5736,211 @@ def test_sender_chunk_never_acked_gives_up(deck):
                      chunk=1000, tries=3, ack_timeout_ms=20)
     result = s.run()
     assert not result['ok'] and 'never acked' in result['message']
+
+
+# --- UX-round-1 fixes: kbmgr close-listeners / echo refresh, dk.confirm gate ---
+# These UI helpers are LVGL-heavy, so we import them against a richer lv/ui
+# mock (below) than the ui_patch tests need -- enough to import deckui + kbmgr
+# and drive the specific logic the round-1 UX fixes added.
+
+def _install_rich_ui_mocks():
+    class _NS:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    _events = []   # (code, cb) across all objects, in registration order
+
+    class _Obj:
+        def __init__(self, *a, **k):
+            self._children = []
+            self.deleted = False
+            self._text = None
+
+        def add_event_cb(self, cb, code=None, ud=None):
+            _events.append((code, cb))
+
+        def get_child(self, i):
+            while len(self._children) <= i:
+                self._children.append(_Obj())
+            return self._children[i]
+
+        def delete(self):
+            self.deleted = True
+
+        def center(self):
+            pass
+
+        def set_text(self, t=None, *a):
+            self._text = t
+
+        def invalidate(self):
+            pass
+
+        def __getattr__(self, name):
+            def _noop(*a, **k):
+                return None
+            return _noop
+
+    class _ObjType:
+        FLAG = _NS(SCROLLABLE=1, HIDDEN=2, CLICKABLE=4)
+
+        def __call__(self, parent=None):
+            return _Obj()
+
+    lv = types.ModuleType('lvgl')
+    lv.obj = _ObjType()
+    lv.label = lambda parent=None: _Obj()
+    lv.button = lambda parent=None: _Obj()
+    lv.image = lambda parent=None: _Obj()
+    lv.layer_top = lambda: _Obj()
+    lv.screen_active = lambda: _Obj()
+    lv.font_montserrat_24 = object()
+    lv.font_montserrat_18 = object()
+    lv.font_montserrat_12 = object()
+    lv.OPA = _NS(COVER=255, TRANSP=0)
+    lv.PART = _NS(MAIN=0, INDICATOR=16, KNOB=32, ITEMS=48, SCROLLBAR=64,
+                  SELECTED=80, TEXTAREA_PLACEHOLDER=96)
+    lv.STATE = _NS(PRESSED=1, CHECKED=2, DISABLED=4)
+    lv.TEXT_ALIGN = _NS(LEFT=0, RIGHT=1, CENTER=2)
+    lv.EVENT = _NS(CLICKED=1, VALUE_CHANGED=2, DELETE=3, FOCUSED=4,
+                   DEFOCUSED=5, READY=6, RELEASED=7)
+    lv.ALIGN = _NS(LEFT_MID=1, RIGHT_MID=2, TOP_LEFT=3, TOP_RIGHT=4,
+                   BOTTOM_LEFT=5, BOTTOM_RIGHT=6, BOTTOM_MID=7, CENTER=8)
+    lv.BORDER_SIDE = _NS(TOP=1)
+    lv.SYMBOL = _NS(OK='ok', KEYBOARD='kb', LEFT='<', RIGHT='>')
+    lv.pct = lambda v: v
+    lv._events = _events
+    sys.modules['lvgl'] = lv
+
+    ui = types.ModuleType('ui')
+    ui.lv_soft_kb = None
+    ui.pal_to_lv = lambda p: p
+    ui.keyboard = lambda: None
+    sys.modules['ui'] = ui
+    return lv, ui
+
+
+@pytest.fixture
+def dk_env():
+    """deckui + kbmgr imported against rich lv/ui mocks."""
+    _install_hw_mocks()
+    tulip = sys.modules['tulip']
+    tulip.color = lambda *a: tuple(a)
+    tulip.keyboard = lambda: None
+    lv, ui = _install_rich_ui_mocks()
+    for m in ('deckui', 'kbmgr'):
+        sys.modules.pop(m, None)
+    deckui = importlib.import_module('deckui')
+    kbmgr = importlib.import_module('kbmgr')
+    kbmgr._reset_state()
+    del kbmgr._close_listeners[:]
+    return {'dk': deckui, 'kbmgr': kbmgr, 'lv': lv, 'ui': ui, 'tulip': tulip}
+
+
+def test_kbmgr_close_listener_fires_once_per_close(dk_env):
+    km = dk_env['kbmgr']
+    hits = []
+    km.add_close_listener(lambda: hits.append(1))
+    km._s['open'] = True
+    km._teardown_binding(touch_kb=False)      # the real close
+    assert hits == [1]
+    km._teardown_binding(touch_kb=False)      # idempotent second teardown
+    assert hits == [1]                        # not re-fired (was_open False)
+
+
+def test_kbmgr_add_close_listener_dedups(dk_env):
+    km = dk_env['kbmgr']
+    hits = []
+
+    def l():
+        hits.append(1)
+    km.add_close_listener(l)
+    km.add_close_listener(l)                  # same callback held once
+    km._s['open'] = True
+    km._teardown_binding(touch_kb=False)
+    assert hits == [1]
+
+
+def test_kbmgr_remove_close_listener(dk_env):
+    km = dk_env['kbmgr']
+    hits = []
+
+    def l():
+        hits.append(1)
+    km.add_close_listener(l)
+    km.remove_close_listener(l)
+    km.remove_close_listener(l)               # safe when already gone
+    km._s['open'] = True
+    km._teardown_binding(touch_kb=False)
+    assert hits == []
+
+
+def test_kbmgr_close_listener_exception_isolated(dk_env):
+    km = dk_env['kbmgr']
+    hits = []
+    km.add_close_listener(lambda: (_ for _ in ()).throw(ValueError('boom')))
+    km.add_close_listener(lambda: hits.append(1))
+    km._s['open'] = True
+    km._teardown_binding(touch_kb=False)      # a raising listener must not stop the rest
+    assert hits == [1]
+
+
+class _FakeTa:
+    def __init__(self, text, pw):
+        self._t = text
+        self._pw = pw
+
+    def get_text(self):
+        return self._t
+
+    def get_password_mode(self):
+        return self._pw
+
+
+class _FakeLbl:
+    def __init__(self):
+        self.text = None
+
+    def set_text(self, t):
+        self.text = t
+
+
+def test_kbmgr_refresh_echo_masks_password(dk_env):
+    km = dk_env['kbmgr']
+    lbl = _FakeLbl()
+    km._s['ta'] = _FakeTa('hunter2', True)
+    km._s['echo_lbl'] = lbl
+    km._s['reveal_last'] = False
+    km.refresh_echo()
+    assert lbl.text == km._DOT * 7            # all bullets, no reveal
+
+
+def test_kbmgr_refresh_echo_cleartext_when_unmasked(dk_env):
+    # UX10-8: after the eye toggle flips password mode OFF, refresh_echo()
+    # repaints the strip as cleartext immediately (no keystroke needed).
+    km = dk_env['kbmgr']
+    lbl = _FakeLbl()
+    km._s['ta'] = _FakeTa('juno6', False)
+    km._s['echo_lbl'] = lbl
+    km.refresh_echo()
+    assert lbl.text == 'juno6'
+
+
+def test_dk_confirm_runs_on_yes_and_dismisses(dk_env):
+    # UX10-6 relies on dk.confirm to gate the destructive reset: the yes button
+    # runs on_yes() and the modal dismisses.
+    dk = dk_env['dk']
+    lv = dk_env['lv']
+    dk._confirm_open = None
+    ran = []
+    ov = dk.confirm("Reset patch?", "msg", lambda: ran.append(1),
+                    yes_text="Reset")
+    assert dk._confirm_open is ov
+
+    class _Ev:
+        def get_code(self):
+            return lv.EVENT.CLICKED
+    clicked = [cb for (code, cb) in lv._events if code == lv.EVENT.CLICKED]
+    clicked[-1](_Ev())                        # last CLICKED handler = yes button
+    assert ran == [1]
+    assert dk._confirm_open is None           # dismissed

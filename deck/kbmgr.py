@@ -36,11 +36,47 @@ import lvgl as lv
 import deckui as dk
 
 _DOT = '•'          # the bullet LVGL's password mode masks with
+_ECHO_H = 34        # echo strip height (px). One owner: _build_echo positions
+                    # the strip this tall, and _ensure_visible must lift the
+                    # field clear of it too, not just the keyboard (UX10-5).
 
 
 # All lifecycle state in one dict (the decklog._state idiom): module-level,
 # single keyboard, single binding at a time.
 _s = {}
+
+# Close listeners: callbacks invoked once each time a live binding is torn
+# down (the keyboard closed), by ANY path -- our close(), a nav guard, the
+# firmware hide/checkmark key, or the bound field being deleted. Panels that
+# lay out around the keyboard (the patch picker collapses its header while the
+# keyboard is up) register here so they relayout even when the keyboard is
+# dismissed by its OWN hide key, which never touches the panel (UX10-4).
+# Module-level so registration survives keyboard open/close cycles.
+_close_listeners = []
+
+
+def add_close_listener(cb):
+    """Register cb() to run whenever the keyboard closes. Idempotent: the same
+    callback is only held once."""
+    if cb not in _close_listeners:
+        _close_listeners.append(cb)
+
+
+def remove_close_listener(cb):
+    """Unregister a close listener (safe if it was never registered) -- a panel
+    calls this from its own teardown so a stale relayout can't fire."""
+    try:
+        _close_listeners.remove(cb)
+    except ValueError:
+        pass
+
+
+def _notify_closed():
+    for cb in list(_close_listeners):
+        try:
+            cb()
+        except Exception:
+            pass
 
 
 def _reset_state():
@@ -190,8 +226,24 @@ def _hide_overlay(_x=None):
     try:
         if getattr(ui, 'lv_soft_kb', None) is not None:
             tulip.keyboard()
+            # tulip.keyboard() tears the overlay down WITHOUT invalidating the
+            # rect it vacated, so on a tab-switch close the keyboard stayed
+            # PAINTED over the bottom half of the screen (a ghost that ate taps
+            # meant for the widgets beneath it -- UX10-3). One invalidate per
+            # close, no per-frame cost; LVGL's own object-delete path (the
+            # firmware hide key) already invalidates, so this only matters here.
+            _invalidate_screen()
     except Exception as e:
         _log('kbmgr overlay hide failed', e)
+
+
+def _invalidate_screen():
+    try:
+        scr = lv.screen_active()
+        if scr is not None:
+            scr.invalidate()
+    except Exception:
+        pass
 
 
 def _teardown_binding(touch_kb=True):
@@ -199,6 +251,7 @@ def _teardown_binding(touch_kb=True):
     the view shift. Idempotent. touch_kb=False when the keyboard object is
     itself being deleted (its DELETE handler) -- we must not poke the dying
     object, only clean up the things that outlive it."""
+    was_open = bool(_s.get('open'))
     if touch_kb:
         try:
             kb = getattr(ui, 'lv_soft_kb', None)
@@ -225,6 +278,11 @@ def _teardown_binding(touch_kb=True):
     _s['open'] = False
     _s['echo_len'] = 0
     _s['reveal_last'] = False
+    # Fire close listeners exactly ONCE per real close: close() runs this with
+    # touch_kb=True (was_open True -> notify), then _hide_overlay's delete
+    # fires _on_kb_delete -> a second teardown (open already False -> silent).
+    if was_open:
+        _notify_closed()
 
 
 # --- keyboard + textarea callbacks ------------------------------------------
@@ -247,15 +305,35 @@ def _install_kb_callbacks():
 
 
 def _kb_event_cb(e):
-    """Keyboard VALUE_CHANGED: refresh the echo preview. Runs inside the
-    keyboard's own event dispatch, so flag it -- a close() triggered from here
-    must defer the overlay teardown."""
+    """Keyboard VALUE_CHANGED: refresh the echo preview, and treat the OK
+    (checkmark) key as "done" -> close. Runs inside the keyboard's own event
+    dispatch, so flag it -- a close() triggered from here must defer the overlay
+    teardown (deleting the keyboard inside its own handler is the UAF crash
+    class, which close() already guards via in_kb_event)."""
     _s['in_kb_event'] = True
     try:
         _refresh_echo()
+        # The prominent checkmark key emitted nothing: the firmware key cb has
+        # no SYMBOL.OK branch and nothing listened for READY, so "I'm done" was
+        # dead (UX10-7). The pressed OK button still fires VALUE_CHANGED here.
+        if _pressed_is_ok(e):
+            close()
     except Exception:
         pass
     _s['in_kb_event'] = False
+
+
+def _pressed_is_ok(e):
+    """True when the VALUE_CHANGED came from the keyboard's OK (checkmark) key."""
+    try:
+        kb = e.get_target_obj()
+    except Exception:
+        return False
+    try:
+        bid = kb.get_selected_button()
+        return kb.get_button_text(bid) == lv.SYMBOL.OK
+    except Exception:
+        return False
 
 
 def _on_kb_delete(e):
@@ -309,7 +387,7 @@ def _build_echo():
         w = tulip.screen_size()[0]
         h = tulip.screen_size()[1]
         kb_h = height()
-        eh = 34
+        eh = _ECHO_H
         y = h - kb_h - eh
         if y < 0:
             y = 0
@@ -350,6 +428,17 @@ def _detach_echo():
             cont.delete()
         except Exception:
             pass
+
+
+def refresh_echo():
+    """Public: repaint the echo strip against the textarea's CURRENT state,
+    without waiting for the next keystroke. The Settings eye toggle flips the
+    field's password mode; calling this makes the echo unmask/re-mask to match
+    immediately instead of one keystroke later (UX10-8)."""
+    try:
+        _update_echo()
+    except Exception:
+        pass
 
 
 def _refresh_echo():
@@ -463,13 +552,20 @@ def _ensure_visible(ta):
             return
         margin = 12
         kb_top = h - kb_h
+        # The echo strip sits ABOVE the keyboard's top edge (it is _ECHO_H tall);
+        # clearing only the keyboard left the field hidden behind the strip with
+        # ~20px peeking out, and the eye button half-covered (UX10-5). When the
+        # strip is (or will be) shown, lift the field above the strip too.
+        clear_top = kb_top - margin
+        if _s.get('echo') is not None:
+            clear_top -= _ECHO_H
         area = lv.area_t()
         try:
             ta.get_coords(area)
             bottom = area.y2
         except Exception:
             return
-        overlap = bottom - (kb_top - margin)
+        overlap = bottom - clear_top
         if overlap <= 0:
             return                      # already clear of the keyboard
         scroller = _find_scroller(ta)

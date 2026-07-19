@@ -314,6 +314,11 @@ class HomeShell:
                 self._dbg_lbl.remove_flag(lv.obj.FLAG.HIDDEN)
                 self._dbg_lbl.set_text(_debug_str())
             else:
+                # Clear the TEXT before hiding: HIDDEN alone left the old
+                # "WDT py..K int..K" glyphs painted in the bar for minutes
+                # after Debug off (UX10-10). set_text('') invalidates the
+                # vacated glyph rect so it actually repaints.
+                self._dbg_lbl.set_text('')
                 self._dbg_lbl.add_flag(lv.obj.FLAG.HIDDEN)
         except Exception:
             pass

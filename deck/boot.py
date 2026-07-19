@@ -69,6 +69,12 @@ def _boot():
     # Wi-Fi -- only if you've saved a network (Settings does this).
     ssid = cfg.get('wifi_ssid', '') if cfg else ''
     if ssid:
+        # BaseException, not Exception: a stray serial ^C arriving during the
+        # ~10s Wi-Fi join raises KeyboardInterrupt (a BaseException, NOT an
+        # Exception subclass). It escaped a bare `except Exception`, aborted
+        # boot.py mid-way and stranded the deck on the REPL with no touch path
+        # back into the UI (UX10-13). Swallow it here so boot always continues
+        # to Home; a real ^C at the REPL still works once boot has finished.
         try:
             tulip.wifi(ssid, cfg.get('wifi_pass', ''))
             if tulip.ip():
@@ -77,7 +83,7 @@ def _boot():
                     _dc.sync_time()    # NTP + geo-IP localize (real clock)
                 except Exception:
                     pass
-        except Exception as e:
+        except BaseException as e:
             print("wifi failed:", e)
 
     # Optional microSD as a TRUE second write channel: SD goes over its own

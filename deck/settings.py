@@ -221,6 +221,9 @@ def _build_wifi(body, screen):
                 else _sym('EYE_OPEN', 'show'))
         except Exception:
             pass
+        # repaint the echo strip against the NEW password mode now, instead of
+        # one keystroke later -- so the eye works when you need it (UX10-8)
+        kbmgr.refresh_echo()
 
     def _mask_pw():
         _eye['shown'] = False
@@ -229,6 +232,7 @@ def _build_wifi(body, screen):
             eyebtn.get_child(0).set_text(_sym('EYE_OPEN', 'show'))
         except Exception:
             pass
+        kbmgr.refresh_echo()   # re-mask the echo immediately (UX10-8)
 
     def connect_cb(e):
         s = ssid.ta.get_text() or cfg.get('wifi_ssid', '')
@@ -444,6 +448,23 @@ def _build_system(body, screen, shell=None):
             home._shell._start_clock()
         except Exception:
             pass
+        # Reveal (or hide) the Profiler/Logs tiles WITHOUT making the user
+        # leave and reopen Settings (UX10-9). Rebuild the System tab page the
+        # same way a tab switch does -- but DEFERRED, so we don't delete this
+        # switch out from under its own VALUE_CHANGED dispatch (the self-delete
+        # UAF class). Only in the shell-panel path (the standalone launcher has
+        # no debug tiles and body is a plain scroll column there).
+        if shell is not None:
+            def _rebuild_sys(_x):
+                try:
+                    body.clean()
+                    _build_system(body, screen, shell)
+                except Exception:
+                    pass
+            try:
+                tulip.defer(_rebuild_sys, 0, 30)
+            except Exception:
+                pass
     _switch_row(body, "Debug", "status-bar RAM readout + verbose log",
                 bool(cfg.get('debug', False)), _debug_switch)
 

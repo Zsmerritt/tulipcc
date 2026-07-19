@@ -135,7 +135,12 @@ def _select(path, name, btn):
     # it rendered enabled-red and only refused on tap)
     _set_btn('run', path.endswith('.py'))
     _set_btn('edit', _editable(path))
-    _set_btn('delbtn', not _is_system_module(path))
+    sysmod = _is_system_module(path)
+    if sysmod:
+        # say WHY Delete is disabled instead of leaving a silently dead button
+        # (UX10-15). ASCII separator only (compiled montserrat range is ASCII).
+        _s['selname'].set_text(name + "   -   system file")
+    _set_btn('delbtn', not sysmod)
 
 
 def _open(path):

@@ -55,6 +55,21 @@ def _mark_dead():
     # rebuilding the list against the freed scroll body -- a hard device crash
     # (E-1). Re-armed to True at the end of _rebuild_content for the new panel.
     _s['alive'] = False
+    # Drop our kbmgr close-listener so a keyboard close elsewhere can't relayout
+    # this freed panel (UX10-4). Re-registered in _rebuild_content.
+    try:
+        kbmgr.remove_close_listener(_on_kb_closed)
+    except Exception:
+        pass
+
+
+def _on_kb_closed():
+    # The keyboard closed -- possibly via its OWN hide key, which fires no panel
+    # event, so _kb_layout_cb (panel kb button + search-ta focus) never ran and
+    # the picker stayed stuck in the collapsed keyboard layout (UX10-4). kbmgr
+    # calls this on every close; relayout to expand the header/list again.
+    if _s.get('alive'):
+        _kb_layout_cb(None)
 
 
 def _inst():
@@ -378,6 +393,12 @@ def _rebuild_content():
     body.set_pos(24, 172)
     _s['listbody'] = body
     _build_list()
+    # relayout when the keyboard closes by ANY path, including its own hide key
+    # (UX10-4). Registration is idempotent; _mark_dead removes it on teardown.
+    try:
+        kbmgr.add_close_listener(_on_kb_closed)
+    except Exception:
+        pass
 
 
 def panel(parent, shell=None):

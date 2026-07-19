@@ -143,8 +143,21 @@ def _bar_set(row, pct, text, color_key=pd.BAR_GREEN):
     the over-budget-clamp case, profilerdata.mem_pct_free for memory);
     `text` is shown as-is and can carry the real, unclamped number."""
     frac = 0.0 if pct <= 0 else (1.0 if pct >= 100.0 else pct / 100.0)
+    # A nonzero-but-low fill (5-7% memory-free at boot) rendered as a CIRCLE:
+    # the fill was narrower than the bar's own corner radius (_BAR_H // 2), so a
+    # rounded rect collapsed to a dot that read as a bullet, not a bar (UX10-16).
+    # Clamp any nonzero fill to at least the bar height so it always draws as a
+    # short bar; the value TEXT still carries the true, unclamped number.
+    if frac <= 0:
+        fill = 1
+    else:
+        fill = int(row['track_w'] * frac)
+        if fill < _BAR_H + 2:
+            fill = _BAR_H + 2
+        if fill > row['track_w']:
+            fill = row['track_w']
     try:
-        row['bar'].set_width(max(1, int(row['track_w'] * frac)))
+        row['bar'].set_width(fill)
         row['bar'].set_style_bg_color(dk.c(_BAR_COLORS.get(color_key, dk.GREEN)), 0)
         row['value'].set_text(text)
     except Exception:
