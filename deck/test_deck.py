@@ -3994,6 +3994,119 @@ def test_deckcfg_write_self_heals_stale_chain_after_5s(deck):
 
 
 # ---------------------------------------------------------------------------
+# deckcfg: config data-loss protection (CFG-2). A degraded load() must not
+# silently degrade to bare defaults that the next save() then persists over the
+# user's real config (observed wiping wifi + render flags after a night of
+# crashes). Covers: corrupt-file quarantine, the regression guard healing an
+# implicit wipe, an explicit clear still persisting, and atomic-write recovery.
+# ---------------------------------------------------------------------------
+def test_load_quarantines_corrupt_config(deck):
+    import os
+    deckcfg, _ = deck
+    # a good config existed but got torn/corrupted (invalid JSON on disk).
+    with open(deckcfg.PATH, 'w') as f:
+        f.write('{"wifi_ssid": "HomeNet", "volume":')   # truncated -> corrupt
+    deckcfg.invalidate()
+    cfg = deckcfg.load()
+    # load() must NOT crash and must FLAG the session degraded (so a later
+    # save() heals rather than clobbers) instead of trusting the skeleton.
+    assert deckcfg._state['load_degraded'] is True
+    # the raw bytes are preserved for recovery, and the UI still gets usable
+    # defaults so the device boots.
+    bad = deckcfg.PATH[:-5] + '.bad-1.json'
+    assert os.path.exists(bad)
+    assert 'HomeNet' in open(bad).read()
+    assert cfg['wifi_ssid'] == ''
+    # quarantine is BOUNDED: repeated corruption cannot fill flash.
+    for _ in range(deckcfg._MAX_BAD + 2):
+        with open(deckcfg.PATH, 'w') as f:
+            f.write('{corrupt')
+        deckcfg.invalidate()
+        deckcfg.load()
+    d = os.path.dirname(deckcfg.PATH)
+    bads = [n for n in os.listdir(d) if '.bad-' in n]
+    assert 0 < len(bads) <= deckcfg._MAX_BAD
+
+
+def _flaky_first_open(monkeypatch, deckcfg):
+    """Make the FIRST open() of PATH raise a transient OSError (flash busy),
+    so load() degrades to a skeleton while the file on disk stays intact."""
+    import builtins
+    real_open = builtins.open
+    seen = {'n': 0}
+
+    def flaky(path, *a, **k):
+        if path == deckcfg.PATH and seen['n'] == 0:
+            seen['n'] += 1
+            raise OSError(5, 'EIO')
+        return real_open(path, *a, **k)
+    monkeypatch.setattr(builtins, 'open', flaky)
+
+
+def test_regression_guard_heals_implicit_wipe(deck, monkeypatch):
+    import json
+    deckcfg, _ = deck
+    secret = 'wifi-secret'
+    good = {'wifi_ssid': 'HomeNet', 'wifi_pass': secret,
+            'render_partial': True, 'volume': 6}
+    with open(deckcfg.PATH, 'w') as f:
+        json.dump(good, f)
+    deckcfg.invalidate()
+    _flaky_first_open(monkeypatch, deckcfg)
+    cfg = deckcfg.load()
+    assert deckcfg._state['load_degraded'] is True
+    assert cfg['wifi_ssid'] == '' and cfg['render_partial'] is False   # skeleton
+    # an UNRELATED implicit save (favoriting a patch) must NOT persist the
+    # skeleton's empty wifi / default render flag over the good on-disk values.
+    deckcfg.toggle_favorite(7)
+    with open(deckcfg.PATH) as f:
+        disk = json.load(f)
+    assert disk['wifi_ssid'] == 'HomeNet'
+    assert disk['wifi_pass'] == secret          # cleartext secret preserved
+    assert disk['render_partial'] is True
+    assert disk['volume'] == 6
+    assert 7 in disk['favorites']               # the intended change still lands
+
+
+def test_explicit_clear_persists_but_guard_protects_untouched(deck, monkeypatch):
+    import json
+    deckcfg, _ = deck
+    good = {'wifi_ssid': 'HomeNet', 'wifi_pass': 'pw', 'render_partial': True}
+    with open(deckcfg.PATH, 'w') as f:
+        json.dump(good, f)
+    deckcfg.invalidate()
+    _flaky_first_open(monkeypatch, deckcfg)
+    deckcfg.load()                              # degraded skeleton
+    # the user EXPLICITLY clears wifi in Settings: set_value marks it explicit,
+    # so the guard must NOT resurrect the old ssid.
+    deckcfg.set_value('wifi_ssid', '')
+    with open(deckcfg.PATH) as f:
+        disk = json.load(f)
+    assert disk['wifi_ssid'] == ''              # explicit clear persisted
+    # ...but a field the user did NOT touch is still shielded from the wipe.
+    assert disk['render_partial'] is True
+
+
+def test_crash_mid_write_leaves_old_config_intact(deck):
+    import json
+    deckcfg, _ = deck
+    deckcfg.set_value('wifi_ssid', 'GoodNet')   # committed to disk (atomic)
+    # a crash AFTER the temp file was opened but BEFORE the atomic rename
+    # leaves a torn PATH.new behind; PATH itself must be untouched.
+    with open(deckcfg.PATH + '.new', 'w') as f:
+        f.write('{ half-written torn file')
+    deckcfg.invalidate()
+    cfg = deckcfg.load()
+    assert cfg['wifi_ssid'] == 'GoodNet'        # old config read cleanly
+    assert not deckcfg._state.get('load_degraded')
+    # the next successful save renames its temp over PATH, consuming the stub.
+    deckcfg.set_value('volume', 3)
+    with open(deckcfg.PATH) as f:
+        disk = json.load(f)
+    assert disk['wifi_ssid'] == 'GoodNet' and disk['volume'] == 3
+
+
+# ---------------------------------------------------------------------------
 # decklog: log rollover -- one previous generation kept, size counter reset.
 # ---------------------------------------------------------------------------
 @pytest.fixture

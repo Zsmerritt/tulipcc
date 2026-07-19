@@ -161,6 +161,73 @@ def _instrument_from_flat(data):
     return instr
 
 
+_MAX_BAD = 3   # keep at most this many quarantined bad configs
+
+
+def _exists(path):
+    try:
+        import os
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
+def _load_legacy():
+    """Read + delete the legacy /user-root config, migrating it once. Returns
+    the parsed dict, or None when there is no (readable) legacy file."""
+    try:
+        with open(_LEGACY_PATH) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    import os
+    try:
+        os.remove(_LEGACY_PATH)
+    except OSError:
+        pass
+    return d
+
+
+def _quarantine_bad(path):
+    """Copy an unreadable config aside to <path>.bad-N.json (a bounded set: the
+    oldest is recycled once _MAX_BAD exist) so a corrupt config is never
+    silently lost -- the user can recover it. NEVER logs the file's contents
+    (it holds wifi_pass in cleartext)."""
+    import os
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        raw = None
+    try:
+        import decklog
+        decklog.log("deckcfg: config unreadable/corrupt (%s bytes); quarantining"
+                    % (len(raw) if raw is not None else '?'))
+    except Exception:
+        pass
+    if not raw:
+        return
+    base = path[:-5] if path.endswith('.json') else path
+    target = None
+    oldest = None
+    for i in range(1, _MAX_BAD + 1):
+        slot = '%s.bad-%d.json' % (base, i)
+        try:
+            mt = os.stat(slot)[8]      # st_mtime; free slots win first
+        except OSError:
+            target = slot
+            break
+        if oldest is None or mt < oldest:
+            oldest = mt
+            target = slot              # else recycle the oldest quarantine
+    try:
+        with open(target, 'wb') as f:
+            f.write(raw)
+    except OSError:
+        pass
+
+
 def load():
     """Return THE live config dict (cached; every caller aliases the same
     object). CONTRACT (E-6): treat the result as read-only -- mutate only
@@ -169,20 +236,36 @@ def load():
     cached = _state.get('cfg')
     if cached is not None:
         return cached
+    _state['load_degraded'] = False
     try:
         with open(PATH) as f:
             data = json.load(f)
-    except (OSError, ValueError):
-        # one-time migration from the legacy /user-root location (E-5)
-        try:
-            with open(_LEGACY_PATH) as f:
-                data = json.load(f)
-            import os
-            try:
-                os.remove(_LEGACY_PATH)
-            except OSError:
-                pass
-        except (OSError, ValueError):
+    except ValueError:
+        # The file EXISTS but is not valid JSON (a torn/corrupt write, flash
+        # rot after a crash). DO NOT silently fall back to bare defaults: that
+        # skeleton would be persisted by the very next setter, overwriting the
+        # user's real config with schema defaults (CFG-2 -- observed wiping
+        # wifi + render flags after a night of crashes). Preserve the raw
+        # bytes, log loudly, and flag the session degraded so save() heals.
+        _quarantine_bad(PATH)
+        _state['load_degraded'] = True
+        data = {}
+    except OSError:
+        # File missing (genuine first run) OR unreadable. Try the one-time
+        # migration from the legacy /user-root location (E-5) first.
+        data = _load_legacy()
+        if data is None:
+            # No config anywhere. If the MAIN file nonetheless EXISTS, we hit
+            # a read error on real data (not a genuine first run): degrade so
+            # the next save() heals instead of persisting defaults over it.
+            if _exists(PATH):
+                _state['load_degraded'] = True
+                try:
+                    import decklog
+                    decklog.log("deckcfg: config present but unreadable; "
+                                "not overwriting it with defaults")
+                except Exception:
+                    pass
             data = {}
     # Deep-copy the MUTABLE defaults (dicts/lists) so cfg never aliases the
     # module-level DEFAULTS objects. A shallow dict(DEFAULTS) shared cfg['fx']
@@ -344,7 +427,62 @@ def _write(cfg, _retry=0, _chained=False):
     _state['write_chain'] = False
 
 
-def save(cfg):
+# Guarded top-level scalars: user data whose silent loss is harmful. If a
+# DEGRADED load (see load()) cached schema defaults over these, save() would
+# persist the wipe. _heal_from_disk restores each guarded field from the
+# still-intact on-disk file just before the write, UNLESS the caller is
+# explicitly changing it (set_value passes the key as `explicit` -- a user
+# clearing wifi in Settings must still go through). Instruments are NOT
+# auto-healed: they are actively user-edited and the on-disk copy may be
+# intentionally stale (mid delete/recreate); the scalar heal + quarantine are
+# what stop the reported wifi/render wipe.
+_GUARDED_KEYS = ('wifi_ssid', 'wifi_pass', 'render_partial', 'render_vsync',
+                 'volume', 'brightness', 'tfb_font', 'ui_btn', 'clock_24h',
+                 'setup_done', 'dim_after', 'sleep_after', 'mpe_enabled',
+                 'debug', 'tz_offset_s', 'touch_delta', 'sd_pins')
+
+
+def _heal_from_disk(cfg, explicit):
+    # Cost-free in healthy sessions: only a load that DEGRADED (corrupt/
+    # unreadable file) can leave the cache carrying defaults over populated
+    # on-disk values, so the on-disk re-read happens only then.
+    if not _state.get('load_degraded'):
+        return
+    try:
+        with open(PATH) as f:
+            disk = json.load(f)
+    except (OSError, ValueError):
+        return          # nothing trustworthy on disk to restore from
+    if not isinstance(disk, dict):
+        return
+    ex = explicit or ()
+    healed = []
+    for k in _GUARDED_KEYS:
+        if k in ex:
+            continue
+        dflt = DEFAULTS.get(k)
+        dv = disk.get(k, dflt)
+        cv = cfg.get(k, dflt)
+        # restore only when a populated on-disk value is about to be replaced
+        # by the schema default -- a real regression, not a legit same-value
+        # or an explicit user clear.
+        if cv == dflt and dv != dflt:
+            cfg[k] = dv
+            healed.append(k)
+    if healed:
+        try:
+            import decklog
+            decklog.log("deckcfg: preserved %d field(s) a degraded load would "
+                        "have wiped: %s" % (len(healed), ",".join(healed)))
+        except Exception:
+            pass
+
+
+def save(cfg, explicit=None):
+    """Persist cfg. `explicit` names the key(s) the caller is intentionally
+    changing (set_value passes its key) so the regression guard does not undo
+    a legitimate clear -- e.g. the user emptying wifi in Settings."""
+    _heal_from_disk(cfg, explicit)
     _state['cfg'] = cfg
     _write(cfg)
 
@@ -355,6 +493,7 @@ def flush():
     once on release, so a drag costs one flash write instead of dozens."""
     cfg = _state.get('cfg')
     if cfg is not None:
+        _heal_from_disk(cfg, None)
         _write(cfg)
 
 
@@ -367,7 +506,7 @@ def invalidate():
 def set_value(key, value):
     cfg = load()
     cfg[key] = value
-    save(cfg)
+    save(cfg, explicit=(key,))   # explicit: a user clear here must persist
     return cfg
 
 
