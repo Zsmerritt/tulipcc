@@ -95,6 +95,11 @@ volatile uint8_t tulip_midi_route_active = 0;  // table uploaded at least once
 volatile uint8_t tulip_midi_notify_all = 1;    // schedule Python per message
                                                // (legacy default; midimon)
 volatile uint8_t tulip_midi_py_pending = 0;    // outstanding scheduler entry
+// Ring backlog at which the input hook re-drives a possibly-lost Python wakeup
+// even though py_pending is set (a reload can discard the queued callback while
+// this C global stays latched). Small: the healthy drain keeps occupancy ~0, so
+// reaching this many undrained messages means the wakeup was lost.
+#define TULIP_MIDI_PENDING_REDRIVE 8
 volatile uint32_t tulip_midi_activity = 0;     // messages seen (meter/UI poll)
 
 
@@ -259,22 +264,47 @@ void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
 #ifdef AMY_MIDI_MPSC
         int pushed = midi_in_ring_push_mpsc(last_midi, last_midi_len,
                 &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_mpsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
 #else
         int pushed = midi_in_ring_push_spsc(last_midi, last_midi_len,
                 &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_spsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
 #endif
         if (!pushed) {
-            uint32_t n = ++tulip_midi_ring_drops;
-            if ((n & (n - 1)) == 0)
-                fprintf(stderr, "tulip midi ring full -- %u messages dropped so far "
-                        "(is Python draining midi_in?)\n", (unsigned)n);
+            // Drop-newest by contract (S4). COUNT it -- tulip.midi_in_drops()
+            // exposes tulip_midi_ring_drops -- but do NOT fprintf here. This
+            // runs on the AMY MIDI task; a console write can stall it for
+            // ~milliseconds, and with the ring wedged full (see below) that
+            // stall fired on EVERY dropped message, glitching the render while
+            // a keyboard played (soft notes exposed it, loud ones masked it --
+            // reproduced live). The counter is the signal; a stall is surfaced
+            // by the Python watchdog (deck/forwarder _watchdog) with one loud
+            // decklog line instead.
+            ++tulip_midi_ring_drops;
         }
 
-        // Tell Python -- COALESCED: one outstanding scheduler entry serves
-        // the whole backlog (the drain loops until midi_in empties, which
-        // clears the flag). A CC storm used to enqueue one scheduler entry
-        // per message.
-        if (midi_callback != NULL && !tulip_midi_py_pending) {
+        // Tell Python -- COALESCED: one outstanding scheduler entry serves the
+        // whole backlog (the drain loops until midi_in empties, which clears
+        // the flag). A CC storm used to enqueue one scheduler entry per message.
+        //
+        // SELF-HEAL a LOST WAKEUP. tulip_midi_py_pending is a C global that
+        // SURVIVES a MicroPython soft-reset; the scheduler queue it refers to
+        // does NOT. If the app crashes/reloads between "schedule succeeded
+        // (pending=1)" and c_fired_midi_event running, the queued callback is
+        // discarded but pending stays latched at 1 -- and this hook, gating
+        // solely on !pending, would then NEVER schedule again: the ring fills
+        // and the Python MIDI path stays dead until reboot (reproduced live:
+        // ring full, 1023 stale messages, midi_in_drops climbing). Note the set
+        // below only latches pending when the schedule SUCCEEDS, so a transient
+        // full-scheduler-queue does NOT leak pending -- the discarded-callback
+        // reload window is the sole leak. Recover by force-scheduling whenever
+        // the ring has backed up past a small threshold even though pending is
+        // set: that can only mean the earlier wakeup was lost. A duplicate
+        // drain is harmless (it finds an empty ring and clears pending), and
+        // MIDI is ~1 msg/ms so at most a couple of extra entries queue before
+        // the drain runs.
+        if (midi_callback != NULL
+                && (!tulip_midi_py_pending || occ >= TULIP_MIDI_PENDING_REDRIVE)) {
             if (mp_sched_schedule(midi_callback, mp_const_false)) {
                 tulip_midi_py_pending = 1;
             }
@@ -340,6 +370,90 @@ void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
 }
 
 #ifndef AMY_IS_EXTERNAL
+
+// ---- Debug audio-capture tap (router-tap-fix follow-up) --------------------
+// Capture the final int16 output block(s) into PSRAM so the host can pull
+// rendered PCM off the device over serial and diff it against the bit-clean
+// host render (chasing the ESP-only soft-note fold). amy_get_level() only
+// yields one peak per read; this yields the actual samples.
+//
+// Hook: amy_external_block_done_hook. It fires at the TOP of amy_fill_buffer,
+// at which point amy's `output_block` still points at the PREVIOUS, fully
+// mixed block that was already handed to I2S (the swap + new mix happen after
+// the hook returns) -- so we capture the true DAC output, one block late, and
+// touch amy not at all (it stays close to upstream). The hook runs ON THE
+// AUDIO TASK, which must never stall (we just fixed a bug caused by exactly
+// that): when armed it does a single memcpy of the block and nothing else, and
+// when unarmed it is one volatile read + branch.
+//
+// Output format (what the host reconstructs a WAV from): int16 little-endian,
+// AMY_NCHANS channels INTERLEAVED (stereo => L,R,L,R...), AMY_BLOCK_SIZE frames
+// per block, at AMY_SAMPLE_RATE (48000 on ESP). Note amy right-shifts the ESP
+// output by 1 bit before store (amy.c), so captured samples are that same
+// post-shift DAC value -- the host diff must account for it.
+#define TULIP_AUDIO_TAP_MAX_BLOCKS 256   // ~1.37 s @ 256 frames/block @ 48kHz.
+// PSRAM budget at the cap: 256 blocks * 256 frames * 2 ch * 2 B = 256 KB. This
+// MUST be PSRAM (MALLOC_CAP_SPIRAM): internal SRAM is critically full on this
+// device (largest free block ~31 KB), so a 256 KB internal alloc is impossible
+// and would brick the render task -- never allocate this internal.
+extern output_sample_type *output_block;   // amy.c: final DAC block, int16 LE
+static int16_t *tulip_audio_tap_buf = NULL;         // PSRAM: cap*frame int16
+static volatile uint16_t tulip_audio_tap_cap = 0;   // blocks allocated
+static volatile uint16_t tulip_audio_tap_want = 0;  // blocks still to capture
+static volatile uint16_t tulip_audio_tap_got = 0;   // blocks captured so far
+
+// AUDIO TASK. Zero cost unarmed (one volatile read + branch). Armed: one
+// memcpy of the block, no formatting, no printf, nothing that can stall.
+void tulip_audio_tap_block_done(void) {
+    if (tulip_audio_tap_want == 0) return;               // fast path: unarmed
+    int16_t *buf = tulip_audio_tap_buf;
+    uint16_t idx = tulip_audio_tap_got;
+    if (buf == NULL || idx >= tulip_audio_tap_cap) {     // safety: disarm
+        tulip_audio_tap_want = 0;
+        return;
+    }
+    const uint32_t block_int16 = (uint32_t)AMY_BLOCK_SIZE * AMY_NCHANS;
+    memcpy(buf + (uint32_t)idx * block_int16, output_block,
+           block_int16 * sizeof(int16_t));
+    tulip_audio_tap_got = (uint16_t)(idx + 1);
+    tulip_audio_tap_want = (uint16_t)(tulip_audio_tap_want - 1);
+}
+
+// MP TASK. Arm capture of the next n_blocks. Returns 0 ok, -1 over cap,
+// -2 PSRAM alloc failed. n_blocks==0 just disarms.
+int tulip_audio_tap_arm(uint16_t n_blocks) {
+    if (n_blocks == 0) { tulip_audio_tap_want = 0; return 0; }
+    if (n_blocks > TULIP_AUDIO_TAP_MAX_BLOCKS) return -1;   // reject, don't clamp
+    if (tulip_audio_tap_buf == NULL || tulip_audio_tap_cap < n_blocks) {
+        if (tulip_audio_tap_buf != NULL) {
+            free_caps(tulip_audio_tap_buf);
+            tulip_audio_tap_buf = NULL;
+            tulip_audio_tap_cap = 0;
+        }
+        size_t bytes = (size_t)n_blocks * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+#ifdef ESP_PLATFORM
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_SPIRAM);
+#else
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_INTERNAL);
+#endif
+        if (b == NULL) return -2;
+        tulip_audio_tap_buf = b;
+        tulip_audio_tap_cap = n_blocks;
+    }
+    tulip_audio_tap_got = 0;
+    // Publish buf/cap/got=0 before arming: the audio task reads `want` first
+    // and only touches the rest when want>0.
+    __asm__ volatile("" ::: "memory");
+    tulip_audio_tap_want = n_blocks;
+    return 0;
+}
+
+uint16_t tulip_audio_tap_got_blocks(void) { return tulip_audio_tap_got; }
+uint8_t  tulip_audio_tap_is_armed(void)   { return tulip_audio_tap_want > 0; }
+const uint8_t *tulip_audio_tap_data(void) { return (const uint8_t *)tulip_audio_tap_buf; }
+uint32_t tulip_audio_tap_bytes(void) {
+    return (uint32_t)tulip_audio_tap_got * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+}
 
 #if (defined AMYBOARD) || (defined TULIP)
 #include "tulip_helpers.h"
@@ -673,6 +787,7 @@ void run_amy(uint8_t midi_out_pin) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
     amy_config.amy_external_render_hook = external_cv_render;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     amy_config.amy_external_fopen_hook = mp_fopen_hook;
     amy_config.amy_external_fseek_hook = mp_fseek_hook;
     amy_config.amy_external_fclose_hook = mp_fclose_hook;
@@ -764,6 +879,7 @@ void amyboard_set_midi_out(uint8_t midi_out_pin) {
 void run_amy(uint8_t capture_device_id, uint8_t playback_device_id) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     extern void tulip_amy_sequencer_hook(uint32_t tick_count);
     amy_config.amy_external_sequencer_hook = tulip_amy_sequencer_hook;
     amy_config.features.default_synths = 0; // midi.py does this for us

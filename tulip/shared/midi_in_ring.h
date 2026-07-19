@@ -147,4 +147,22 @@ static inline int midi_in_ring_pop_mpsc(
     return 1;
 }
 
+// ---- Occupancy (both disciplines) -----------------------------------------
+// Approximate number of queued-but-undrained messages. Used only as a HEURISTIC
+// (the lost-wakeup self-heal in the input hook), so a slightly stale read from
+// racing head/tail is fine -- it never decides correctness, only whether to
+// re-drive a possibly-lost Python wakeup.
+static inline int midi_in_ring_occupancy_spsc(
+        volatile int16_t *head, volatile int16_t *tail, int16_t depth) {
+    int occ = (int)(*tail) - (int)(*head);
+    if (occ < 0) occ += depth;
+    return occ;
+}
+
+static inline int midi_in_ring_occupancy_mpsc(
+        volatile uint16_t *head, volatile uint16_t *tail, uint16_t depth) {
+    (void)depth;   // monotonic counters: the raw difference IS the occupancy
+    return (int)(uint16_t)(*tail - *head);
+}
+
 #endif // __MIDI_IN_RING_H

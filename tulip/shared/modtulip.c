@@ -549,6 +549,87 @@ STATIC mp_obj_t tulip_midi_in_drops(size_t n_args, const mp_obj_t *args) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_drops_obj, 0, 0, tulip_midi_in_drops);
 
+// ---- Debug audio-capture tap (router-tap-fix follow-up) ----
+// Pull rendered PCM off the device to diff against the bit-clean host render
+// (chasing the ESP-only soft-note fold; amy_get_level gives only one peak).
+//   tulip.audio_tap(n_blocks)  arms capture of the next n_blocks FINAL output
+//       blocks into a PSRAM buffer. Cap 256 blocks (~1.37 s); larger raises.
+//   tulip.audio_tap()          -> (captured_blocks, armed).
+//   tulip.audio_tap_read(off=0, n=rest) -> a bytes() slice (off/n in BYTES) of
+//       the captured PCM: int16 little-endian, AMY_NCHANS interleaved (stereo
+//       => L,R,L,R...), AMY_BLOCK_SIZE frames/block, at AMY_SAMPLE_RATE. Read
+//       once audio_tap()[1] (armed) is False. Capture logic + the audio-task
+//       memcpy live in amy_connector.c.
+// The tap implementation (amy_connector.c) is compiled only when AMY runs in
+// this module -- it reads amy's output_block and allocs PSRAM. On the web /
+// external builds (amyboardweb, tulip/web, amyrepl all -DAMY_IS_EXTERNAL) AMY
+// is a SEPARATE module, so the tap symbols aren't linked. Guard on the SAME
+// AMY_IS_EXTERNAL the implementation uses: keep the bindings present (the
+// module table must stay valid) but degrade to None/(0, False)/b'' there, the
+// same way eq_silent_skip / render_cyc degrade off-device.
+#ifndef AMY_IS_EXTERNAL
+extern int tulip_audio_tap_arm(uint16_t n_blocks);
+extern uint16_t tulip_audio_tap_got_blocks(void);
+extern uint8_t tulip_audio_tap_is_armed(void);
+extern const uint8_t *tulip_audio_tap_data(void);
+extern uint32_t tulip_audio_tap_bytes(void);
+#endif
+
+STATIC mp_obj_t tulip_audio_tap_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
+    if (n_args == 0) {
+        mp_obj_t items[2] = {
+            mp_obj_new_int_from_uint(tulip_audio_tap_got_blocks()),
+            mp_obj_new_bool(tulip_audio_tap_is_armed()),
+        };
+        return mp_obj_new_tuple(2, items);
+    }
+    int n = mp_obj_get_int(args[0]);
+    if (n < 0) n = 0;
+    int r = tulip_audio_tap_arm((uint16_t)n);
+    if (r == -1) mp_raise_ValueError(MP_ERROR_TEXT("audio_tap: n_blocks over cap (max 256)"));
+    if (r == -2) mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("audio_tap: PSRAM alloc failed"));
+    return mp_const_none;
+#else
+    // No connector-side tap on external-AMY builds: audio_tap() -> (0, False),
+    // audio_tap(n) -> None.
+    (void)args;
+    if (n_args == 0) {
+        mp_obj_t items[2] = { mp_obj_new_int(0), mp_const_false };
+        return mp_obj_new_tuple(2, items);
+    }
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_obj, 0, 1, tulip_audio_tap_fn);
+
+STATIC mp_obj_t tulip_audio_tap_read_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
+    uint32_t total = tulip_audio_tap_bytes();
+    const uint8_t *data = tulip_audio_tap_data();
+    if (data == NULL || total == 0)
+        return mp_obj_new_bytes((const byte *)"", 0);
+    int32_t o = (n_args > 0) ? mp_obj_get_int(args[0]) : 0;
+    if (o < 0) o = 0;
+    uint32_t off = (uint32_t)o;
+    if (off >= total)
+        return mp_obj_new_bytes((const byte *)"", 0);
+    uint32_t avail = total - off;
+    uint32_t n = avail;
+    if (n_args > 1) {
+        int32_t nn = mp_obj_get_int(args[1]);
+        if (nn < 0) nn = 0;
+        n = (uint32_t)nn;
+        if (n > avail) n = avail;
+    }
+    return mp_obj_new_bytes(data + off, n);
+#else
+    (void)n_args; (void)args;
+    return mp_obj_new_bytes((const byte *)"", 0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_read_obj, 0, 2, tulip_audio_tap_read_fn);
+
 extern uint16_t sysex_len;
 STATIC mp_obj_t tulip_sysex_in(size_t n_args, const mp_obj_t *args) {
     if(sysex_len) {
@@ -2195,6 +2276,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_midi_routes), MP_ROM_PTR(&tulip_midi_routes_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_activity), MP_ROM_PTR(&tulip_midi_activity_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_in_drops), MP_ROM_PTR(&tulip_midi_in_drops_obj) },
+    { MP_ROM_QSTR(MP_QSTR_audio_tap), MP_ROM_PTR(&tulip_audio_tap_obj) },
+    { MP_ROM_QSTR(MP_QSTR_audio_tap_read), MP_ROM_PTR(&tulip_audio_tap_read_obj) },
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
 #endif

@@ -326,14 +326,30 @@ sysex_callback = None
 def c_fired_midi_event(is_sysex):
     if(is_sysex):
         if sysex_callback is not None:
-            s = tulip.sysex_in()
-            sysex_callback(s)
+            try:
+                s = tulip.sysex_in()
+                sysex_callback(s)
+            except Exception as e:
+                print("midi sysex callback error:", e)
 
     m = tulip.midi_in()
     while m is not None and len(m) > 0:
-        # call the other callbacks
+        # Isolate each callback. This loop drains the C ring, and the C hook
+        # (amy_connector.c tulip_midi_input_hook) only re-schedules this drain
+        # when tulip_midi_py_pending == 0 -- a flag cleared ONLY when tulip.
+        # midi_in() below reaches an empty ring. If a callback raises, the
+        # exception escapes this loop BEFORE the ring drains, py_pending stays
+        # latched at 1, and the C hook NEVER schedules another drain: the whole
+        # Python MIDI path wedges until reboot. Symptom: the MIDI monitor shows
+        # nothing while tulip.midi_activity() keeps climbing, and layered
+        # channels stop routing. One bad callback (or a transient MemoryError
+        # during GC) must not do that -- swallow per callback so the loop always
+        # runs to empty and clears the flag.
         for c in MIDI_CALLBACKS:
-            c(m)
+            try:
+                c(m)
+            except Exception as e:
+                print("midi callback error:", e)
 
         m = tulip.midi_in()
 

@@ -77,6 +77,24 @@ def _synth_err(iid, e):
 
 
 def _route(m):
+    # Top-level guard (MIDI-7): this runs inside midi.c_fired_midi_event's
+    # drain loop. If it raises, the exception escapes the drain BEFORE the ring
+    # empties, so the C coalescing flag (tulip_midi_py_pending) is never
+    # cleared -- it latches at 1 and the C hook stops scheduling the drain
+    # entirely. The result is a permanently blind Python MIDI path (the monitor
+    # shows nothing while tulip.midi_activity() keeps climbing) until reboot.
+    # The deck must never be that trigger, so swallow here.
+    try:
+        _route_impl(m)
+    except Exception as e:
+        try:
+            import decklog
+            decklog.dbg("forwarder: _route swallowed %r" % e)
+        except Exception:
+            pass
+
+
+def _route_impl(m):
     # The per-MIDI-message hot path: no list/dict allocation for CC/bend/
     # pressure streams (MPE controllers send 100+ msgs/sec), which keeps
     # MicroPython GC pauses out of the note timing.
@@ -840,8 +858,21 @@ def _start_once():
         try:
             midi.add_callback(_route)
             _state['registered'] = True
+            _state['register_failed'] = False
         except Exception as e:
-            print("forwarder: add_callback failed:", e)
+            # If this fails the forwarder never sees a single MIDI message: no
+            # notes, no layering, no board forwarding, no monitor. That is a
+            # total MIDI outage and must be LOUD -- a lone print scrolls away
+            # unseen. Record it (register_ok() surfaces it in the UI) and log
+            # it where the user actually looks.
+            _state['register_failed'] = True
+            try:
+                import decklog
+                decklog.log_exc("forwarder: midi.add_callback(_route) FAILED -- "
+                                "MIDI routing is DISABLED (no notes will play)", e)
+            except Exception:
+                print("forwarder: add_callback failed:", e)
+    _ensure_watchdog()
     _state['on'] = True
     try:
         import decklog
@@ -940,12 +971,119 @@ def activity():
     return _state['seen']
 
 
+def _has_c_router():
+    """True if this firmware carries the C MIDI router (tulip.midi_routes).
+    Only that firmware can suppress Python for C-owned channels, so only
+    there does a tap need engaging -- older firmware wakes Python for every
+    message unconditionally."""
+    try:
+        import tulip
+        return hasattr(tulip, 'midi_routes')
+    except Exception:
+        return False
+
+
 def set_midi_tap(on):
     """Full-stream Python notification toggle (midimon): with the C router
     active, C-owned channels never wake Python -- unless a tap asks for
-    every message."""
+    every message.
+
+    Returns True if the requested state is now IN EFFECT in the C router (or
+    there is no C router to gate, so Python already sees everything); returns
+    False only when the router IS present but the upload FAILED -- which means
+    a stale table may still be suppressing Python with the tap off, i.e. the
+    monitor would go silently blind. midimon surfaces that False loudly (#85)."""
     _state['py_tap'] = bool(on)
-    _upload_c_routes()
+    r = _upload_c_routes()
+    # None = no C router present (nothing to gate; monitor sees all).
+    return r is None or bool(r)
+
+
+def tap_engaged():
+    """True if the full MIDI stream currently reaches Python callbacks: either
+    there is no C router (all messages already come through), or the router is
+    live AND our tap flag is set. midimon polls this to SELF-HEAL a tap that a
+    rebuild or transient error dropped, instead of going silently blind."""
+    if not _has_c_router():
+        return True
+    return bool(_state.get('c_router')) and bool(_state.get('py_tap'))
+
+
+def register_ok():
+    """False if midi.add_callback(_route) failed at build time -- a total MIDI
+    outage the UI must surface (not just a scrolled-away print)."""
+    return not _state.get('register_failed', False)
+
+
+# --- MIDI drain watchdog (router-tap-fix) ---------------------------------
+# The C input hook wakes Python by scheduling a drain callback and coalescing
+# on a C-global flag (tulip_midi_py_pending, amy_connector.c). That flag
+# SURVIVES a MicroPython soft-reset but the scheduled callback it refers to
+# does NOT, so a crash/reload can leave the flag latched with no callback
+# queued -- after which the C hook never re-schedules and the last_midi ring
+# fills forever, killing ALL Python MIDI (observed live: ring full, 1023 stale
+# messages, midi_in_drops climbing). The firmware now self-heals on the next
+# burst, but this watchdog is belt-and-suspenders that ALSO recovers on
+# firmware without that fix: when the ring-drop counter climbs (ring
+# overflowing => Python not draining), force-drain to clear the flag and log
+# loudly. Runs on the shared deck ticker, ~1 Hz, essentially free when idle.
+_wd = {'last_ring_drops': None, 'stalls': 0, 'started': False}
+
+
+def midi_stalls():
+    """Count of MIDI-drain stalls the watchdog has detected and recovered."""
+    return _wd['stalls']
+
+
+def _watchdog(sid=None):
+    try:
+        import tulip
+        if not hasattr(tulip, 'midi_in_drops'):
+            return
+        drops = tulip.midi_in_drops()
+        ring = (drops[1] if isinstance(drops, (tuple, list)) and len(drops) > 1
+                else 0)
+    except Exception:
+        return
+    last = _wd['last_ring_drops']
+    _wd['last_ring_drops'] = ring
+    if last is None or ring <= last:
+        return
+    # The ring-drop counter climbed since the last check: the ring is
+    # overflowing, i.e. Python is not draining it. Force a drain to pop the
+    # ring empty -- which clears tulip_midi_py_pending (modtulip.c clears it on
+    # an empty read) and unwedges the MIDI path. A stall means the backlog is
+    # stale, so discard rather than replay (replaying old note-ons without
+    # their note-offs would strand voices).
+    drained = 0
+    try:
+        import tulip
+        for _ in range(4096):
+            m = tulip.midi_in()
+            if not m:
+                break
+            drained += 1
+    except Exception:
+        pass
+    _wd['stalls'] += 1
+    try:
+        import decklog
+        decklog.log("MIDI DRAIN STALLED: ring overflowing (+%d drops); "
+                    "force-drained %d stale messages to recover (stall #%d)"
+                    % (ring - last, drained, _wd['stalls']))
+    except Exception:
+        pass
+
+
+def _ensure_watchdog():
+    if _wd['started']:
+        return
+    try:
+        import ticker
+        ticker.every(1000, _watchdog, key='midiwd')
+        _wd['started'] = True
+    except Exception:
+        pass
 
 
 def _upload_c_routes():
@@ -953,11 +1091,16 @@ def _upload_c_routes():
     board masks + which channels still need Python (layered internals).
     After this, C-owned channels cost ZERO Python per message: the C layer
     plays the synth, forwards the boards, bumps the activity counter, and
-    never touches the scheduler. Fails soft on older firmware."""
+    never touches the scheduler.
+
+    Returns True on a successful upload, False if the router is present but the
+    upload raised (a genuine failure -- a prior table may still be gating
+    Python), or None if this firmware has no C router at all (fails soft)."""
+    if not _has_c_router():
+        _state['c_router'] = False
+        return None
     try:
         import tulip
-        if not hasattr(tulip, 'midi_routes'):
-            return
         masks = [0] * 16
         py_mask = 0
         for ch, (iids, boards) in _state['routes'].items():
@@ -973,5 +1116,15 @@ def _upload_c_routes():
                 py_mask |= 1 << (ch - 1)
         tulip.midi_routes(masks, py_mask, bool(_state.get('py_tap')))
         _state['c_router'] = True
-    except Exception:
+        return True
+    except Exception as e:
+        # The router exists but we could not push the table: it may be gating
+        # Python with a stale mask + the tap off. Report the failure so the
+        # caller (midimon) can warn on screen instead of showing an empty log.
         _state['c_router'] = False
+        try:
+            import decklog
+            decklog.dbg("forwarder: midi_routes upload FAILED %r" % e)
+        except Exception:
+            pass
+        return False
