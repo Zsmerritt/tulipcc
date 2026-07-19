@@ -179,7 +179,7 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'welcome', 'deckui', 'deckcfg', 'ui_patch', 'fleet',
                  'forwarder', 'amyfleet', 'homeshell', 'shellmodel',
                  'navshell', 'calib', 'rack', 'devices', 'screensaver',
-                 'voices', 'wordpad', 'worldui', 'drums',
+                 'voices', 'wordpad', 'worldui', 'drums', 'kbmgr',
                  # these were MISSING, so Apps read them in full every open
                  'test_deck', 'midimon', 'amyparams', 'curated',
                  'parameditor', 'decklog', 'drums_kit', 'channels', 'gm',

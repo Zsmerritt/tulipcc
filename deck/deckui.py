@@ -470,7 +470,14 @@ def open_keyboard_for(ta):
 
 def toggle_keyboard_for(ta):
     """Keyboard-button behavior: close the keyboard if it's up, else open it
-    targeting `ta`."""
+    targeting `ta`. Delegates to kbmgr (the lifecycle owner); the raw toggle is
+    the fallback if kbmgr is somehow unavailable."""
+    try:
+        import kbmgr
+        kbmgr.toggle(ta)
+        return
+    except Exception:
+        pass
     try:
         import ui
         if getattr(ui, 'lv_soft_kb', None) is not None:
@@ -482,10 +489,16 @@ def toggle_keyboard_for(ta):
 
 
 def autoshow_keyboard(ta):
-    """Pop the on-screen keyboard when a text field is focused (tapped). Guards
-    against ui.keyboard()'s toggle by only opening it when it isn't already up,
-    and always (re)targets the keyboard at this field."""
+    """Pop the on-screen keyboard when a text field is focused (tapped), via
+    kbmgr so the binding is guarded, the field is scrolled clear of the keyboard
+    and (password fields) an echo strip appears. Raw open is the fallback."""
     def _cb(e):
+        try:
+            import kbmgr
+            kbmgr.open(ta)
+            return
+        except Exception:
+            pass
         open_keyboard_for(ta)
     try:
         ta.add_event_cb(_cb, lv.EVENT.FOCUSED, None)
@@ -494,12 +507,19 @@ def autoshow_keyboard(ta):
 
 
 def close_keyboard():
-    """Hide the soft keyboard and DETACH it from its textarea. Must run
-    before tearing down any screen/panel that hosts text fields: the global
-    keyboard outlives them holding a raw pointer to its target textarea, and
-    its close/checkmark callback poking the deleted field hard-crashed the
-    whole device (LVGL use-after-free; seen live leaving Wi-Fi settings with
-    the keyboard up). Safe no-op when the keyboard isn't showing."""
+    """Hide the soft keyboard and DETACH it from its textarea. Must run before
+    tearing down any screen/panel that hosts text fields: the global keyboard
+    outlives them holding a raw pointer to its target textarea, and its
+    close/checkmark callback poking the deleted field hard-crashed the whole
+    device (LVGL use-after-free; seen live leaving Wi-Fi settings with the
+    keyboard up). Delegates to kbmgr; the raw detach+toggle is the fallback.
+    Safe no-op when the keyboard isn't showing."""
+    try:
+        import kbmgr
+        kbmgr.close()
+        return
+    except Exception:
+        pass
     try:
         import ui
         kb = getattr(ui, 'lv_soft_kb', None)

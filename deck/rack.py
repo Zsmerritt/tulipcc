@@ -9,6 +9,7 @@
 import tulip
 import deckui as dk
 import deckcfg
+import kbmgr
 import shellmodel as sm
 import lvgl as lv
 
@@ -538,7 +539,7 @@ def _build_edit(parent, shell):
                        placeholder="instrument name", w=250, h=44)
     nt.group.align(lv.ALIGN.RIGHT_MID, -76, 0)
     dk.button(ncard, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
-              cb=lambda e: dk.toggle_keyboard_for(nt.ta)).align(
+              cb=lambda e: kbmgr.toggle(nt.ta, echo=True)).align(
                   lv.ALIGN.RIGHT_MID, -14, 0)
 
     # Per keystroke: RAM cache only (a full config flash write per keypress was
@@ -888,7 +889,7 @@ def _build_presets(parent):
                        placeholder="preset name", w=250, h=44)
     nt.group.align(lv.ALIGN.RIGHT_MID, -220, 0)
     dk.button(card, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
-              cb=lambda e: dk.toggle_keyboard_for(nt.ta)).align(
+              cb=lambda e: kbmgr.toggle(nt.ta, echo=True)).align(
                   lv.ALIGN.RIGHT_MID, -158, 0)
     sb = dk.button(card, "Save", w=130, h=48, bg=dk.GREEN, font=dk.FONT_S)
     sb.align(lv.ALIGN.RIGHT_MID, -14, 0)
@@ -1038,7 +1039,7 @@ def _build_preset_detail(parent):
                        placeholder="new name", w=250, h=44)
     rt.group.align(lv.ALIGN.RIGHT_MID, -220, 0)
     dk.button(rcard, tulip.lv.SYMBOL.KEYBOARD, w=52, h=44, bg=dk.SURFACE2,
-              cb=lambda e: dk.toggle_keyboard_for(rt.ta)).align(
+              cb=lambda e: kbmgr.toggle(rt.ta, echo=True)).align(
                   lv.ALIGN.RIGHT_MID, -158, 0)
     nb = dk.button(rcard, "Rename", w=130, h=48, bg=dk.ACCENT, font=dk.FONT_S)
     nb.align(lv.ALIGN.RIGHT_MID, -14, 0)

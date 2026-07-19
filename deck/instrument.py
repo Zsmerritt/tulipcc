@@ -8,6 +8,7 @@
 import tulip
 import deckui as dk
 import deckcfg
+import kbmgr
 from patches import patches
 import lvgl as lv
 
@@ -210,22 +211,9 @@ def _toggle_favonly(btn):
 
 
 def _kb_height():
-    """Height of the soft keyboard if it's on screen, else 0."""
-    try:
-        import ui
-        kb = getattr(ui, 'lv_soft_kb', None)
-        if kb is None:
-            return 0
-        try:
-            kb.update_layout()
-            h = kb.get_height()
-            if h > 0:
-                return h
-        except Exception:
-            pass
-        return tulip.screen_size()[1] // 2   # LVGL keyboard default: 50%
-    except Exception:
-        return 0
+    """Height of the soft keyboard if it's on screen, else 0. kbmgr owns the
+    keyboard lifecycle and is the single source of truth for its height."""
+    return kbmgr.height()
 
 
 def _layout_list():
@@ -381,7 +369,7 @@ def _rebuild_content():
         pass
     _s['kbbtn'] = dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60,
                             bg=dk.SURFACE2,
-                            cb=lambda e: (dk.toggle_keyboard_for(_s['searchta']),
+                            cb=lambda e: (kbmgr.toggle(_s['searchta'], echo=True),
                                           _kb_layout_cb(e)))
     _s['kbbtn'].set_pos(w - 24 - 72, 100)
 
