@@ -1181,6 +1181,124 @@ def test_synth_send_calls_envelopes():
     assert not any('eq' in c for c in calls)
 
 
+# --- FM / DX7 operator editing (feature #98) --------------------------------
+# The DX7 view addresses the FM voice's own oscillators: osc 0 the ALGO parent
+# (algorithm/feedback/pitch-LFO), oscs 2..7 the six operators (ratio/level/
+# envelope), all sent voice-relative via amy.send(synth=n, osc=k, ...).
+def test_fm_operator_params_address_the_right_oscs():
+    import amyparams as ap
+    assert ap.validate()
+    # per-operator ratio: a plain scalar on osc op+1
+    assert {'osc': 2, 'ratio': 2.0} in ap.synth_send_calls({'fm_op1_ratio': 2.0})
+    assert {'osc': 7, 'ratio': 0.5} in ap.synth_send_calls({'fm_op6_ratio': 0.5})
+    # operator output level -> amp CONST slot only (env/vel/mod slots untouched)
+    assert {'osc': 4, 'amp': '1.5'} in ap.synth_send_calls({'fm_op3_level': 1.5})
+    # operator decay -> one complete, self-contained bp0 on that operator osc
+    assert {'osc': 5, 'bp0': '0,1,900,0'} in ap.synth_send_calls(
+        {'fm_op4_decay': 900})
+    # voice controls land on the ALGO parent (osc 0)
+    calls = ap.synth_send_calls({'fm_algorithm': 22, 'fm_feedback': 0.16})
+    assert {'osc': 0, 'algorithm': 22} in calls
+    assert {'osc': 0, 'feedback': 0.16} in calls
+    # global pitch-LFO depth -> freq coef MOD slot (5) on osc 0 (base slots kept)
+    assert {'osc': 0, 'freq': ',,,,,0.02'} in ap.synth_send_calls(
+        {'fm_lfo_pitch': 0.02})
+    # untouched sends nothing
+    assert ap.synth_send_calls({}) == []
+
+
+def test_fm_params_are_patch_default_until_touched_and_stay_out_of_generic():
+    import amyparams as ap
+    # every FM control is TRUTH_PATCH: the deck can't read a DX7 patch's baked
+    # operators back, so an unset FM control renders "patch default", not a
+    # fabricated number, and is never sent.
+    for d in ap.FM_PARAMS:
+        assert ap.truth_of(d['name']) == ap.TRUTH_PATCH
+        assert ap.is_fabricated(d, 'default')
+        assert not ap.is_fabricated(d, 'user')     # a real edit is a real number
+    # FM controls must NOT leak into the generic grouped editor, the patch-string
+    # readers, or default_params() -- they belong only to the curated DX7 view.
+    assert 'FM' not in ap.groups()
+    assert 'OP 1' not in ap.groups()
+    assert not any(n.startswith('fm_') for n in ap.default_params())
+    assert not any(d['group'].startswith(('FM', 'OP')) for _, defs in
+                   ap.tabbed_groups(True) for d in defs)
+
+
+def test_dx7_curated_view_pages_per_operator():
+    # curated.tabbed() is pure data over amyparams; stub the ParamEditor import
+    # so the test doesn't drag in the LVGL UI chain (deckui/ui/lvgl).
+    pe = types.ModuleType('parameditor')
+
+    class _PE:
+        def __init__(self, *a, **k):
+            pass
+    pe.ParamEditor = _PE
+    saved_pe = sys.modules.get('parameditor')
+    saved_cur = sys.modules.get('curated')
+    sys.modules['parameditor'] = pe
+    sys.modules.pop('curated', None)
+    try:
+        import curated
+        tabs = curated.tabbed('dx7', True)
+        labels = [t[0] for t in tabs]
+        assert curated.view_name('dx7') == 'DX7-FM'
+        for op in ('OP 1', 'OP 2', 'OP 3', 'OP 4', 'OP 5', 'OP 6'):
+            assert op in labels                   # one page per operator
+        assert 'Voice' in labels
+        names = [d['name'] for _, defs in tabs for d in defs]
+        # every name the view references resolved (no silent drops)
+        for want in ('fm_algorithm', 'fm_feedback', 'fm_lfo_pitch', 'lfo_freq',
+                     'fm_op1_ratio', 'fm_op1_level', 'fm_op1_decay',
+                     'fm_op6_decay'):
+            assert want in names, want
+        # each operator page carries exactly its three controls
+        op1 = dict(tabs)['OP 1']
+        assert [d['name'] for d in op1] == ['fm_op1_ratio', 'fm_op1_level',
+                                            'fm_op1_decay']
+        # the analog engines are untouched by the FM view
+        assert curated.view_name('juno6') == 'Juno-6'
+    finally:
+        # don't leave the stubbed parameditor/curated behind for later tests
+        for n, mod in (('parameditor', saved_pe), ('curated', saved_cur)):
+            if mod is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = mod
+
+
+def test_fm_overrides_persist_and_reapply_to_the_synth(deck):
+    deckcfg, forwarder = deck
+    instr = deckcfg.add_instrument(device='internal', channel=1)
+    iid = instr['id']
+    deckcfg.set_instrument(iid, 'type', 'dx7')
+    deckcfg.set_instrument(iid, 'patch', 128)     # a DX7 patch
+    deckcfg.set_instrument_param(iid, 'fm_op1_ratio', 2.0)
+    deckcfg.set_instrument_param(iid, 'fm_op6_decay', 800)
+    deckcfg.set_instrument_param(iid, 'fm_algorithm', 5)
+    # persistence: survives a reload from disk (rebuild/reboot path)
+    deckcfg._state.clear()
+    stored = deckcfg.get_instrument(iid).get('params')
+    assert stored['fm_op1_ratio'] == 2.0 and stored['fm_algorithm'] == 5
+
+    amy = sys.modules['amy']
+    amy._sends = []
+    forwarder.start()                             # rebuild reapplies the params
+    ops = [s for s in amy._sends if 'osc' in s]
+    assert any(s.get('osc') == 2 and s.get('ratio') == 2.0 for s in ops)
+    assert any(s.get('osc') == 7 and s.get('bp0') == '0,1,800,0' for s in ops)
+    assert any(s.get('osc') == 0 and s.get('algorithm') == 5 for s in ops)
+
+    # "Reset FM" clears the fm_* overrides; a rebuild then reloads the baked
+    # patch and no operator override is re-sent (non-FM params, if any, stay).
+    kept = {k: v for k, v in stored.items() if not k.startswith('fm_')}
+    deckcfg.set_instrument(iid, 'params', kept)
+    amy._sends = []
+    forwarder.start()
+    assert not any(s.get('ratio') == 2.0 for s in amy._sends if 'osc' in s)
+    assert not any(s.get('algorithm') == 5 for s in amy._sends if 'osc' in s)
+
+
 # ---------------------------------------------------------------------------
 # The envelope editor must show the patch's REAL envelope, not schema defaults.
 # A GM patch bakes 'A5,1,60000,0.85,220,0'; the editor used to draw its own

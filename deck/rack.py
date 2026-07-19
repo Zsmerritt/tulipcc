@@ -781,6 +781,18 @@ def _render_sound():
                         if e.get_code() == lv.EVENT.CLICKED else None))(val),
                        lv.EVENT.CLICKED, None)
 
+    # DX7 FM edits are made HERE, on the per-operator pages, so the reset for
+    # them lives here too -- a "Reset FM" that clears just the fm_* overrides
+    # (leaving level/pan/reverb/tone) and reloads the baked patch. Same confirm
+    # pattern as the rack "Reset patch" button (it wipes hand-tuned operators).
+    if engine == 'dx7':
+        rf = dk.button(hdr, "Reset FM", w=140, h=34, font=dk.FONT_S,
+                       bg=dk.SURFACE2)
+        rf.set_pos(200, 5)
+        rf.add_event_cb(lambda e: (_reset_fm()
+                        if e.get_code() == lv.EVENT.CLICKED else None),
+                        lv.EVENT.CLICKED, None)
+
     # left-tabbed: one tab per engine-native group (tier-filtered), each a short
     # list. curated.tabbed falls back to the generic grouping for unknown engines.
     def _make(defs):
@@ -831,6 +843,27 @@ def _set_adv(value):
         return
     _snd['adv'] = value
     _render_sound()
+
+
+def _reset_fm():
+    """Confirm, then clear this instrument's FM operator overrides (the fm_*
+    params) back to the baked DX7 patch. Non-FM sound edits (level, pan,
+    reverb, tone) are kept. apply_instrument -> rebuild_one reloads the patch
+    string, restoring every baked operator ratio/level/envelope, then reapplies
+    the params that remain."""
+    def _do():
+        iid = _snd.get('iid')
+        instr = deckcfg.get_instrument(iid) or {}
+        kept = {k: v for k, v in (instr.get('params') or {}).items()
+                if not k.startswith('fm_')}
+        deckcfg.set_instrument(iid, 'params', kept)
+        deckcfg.apply_instrument(iid)
+        _render_sound()
+    dk.confirm("Reset FM?",
+               "Clears this instrument's FM operator edits (ratios, levels, "
+               "envelopes, algorithm, feedback) back to the patch. This can't "
+               "be undone.",
+               _do, yes_text="Reset")
 
 
 def _snd_apply():

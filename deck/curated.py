@@ -43,20 +43,47 @@ _VIEWS = {
             'reverb_send': 'reverb send',
         },
     },
+    # DX7 is an FM voice, not the four-osc analog layout: osc 0 is the ALGO
+    # parent (algorithm/feedback/pitch-LFO), osc 1 the LFO, oscs 2..7 the six
+    # operators. The view mirrors that -- a Voice page for the global FM
+    # controls, a Tone page for the post-filter, then ONE PAGE PER OPERATOR
+    # (OP 1..OP 6), each with that operator's ratio / output / decay. Page-per-
+    # operator is the deck's own paging idiom (the pad editor's per-pad pages,
+    # build_tabbed's left tab bar) -- 6*3 controls can't share a screen, and a
+    # grid would need a bespoke control; tabs reuse the existing machinery and
+    # keep each operator's three sliders full-width and legible. See
+    # amyparams.FM_PARAMS for the osc addressing and the "patch default" honesty.
     'dx7': {
-        'name': 'DX7',
+        'name': 'DX7-FM',
         'tabs': [
-            ('Level', ['level', 'pan', 'reverb_send']),
+            ('Voice', ['fm_algorithm', 'fm_feedback', 'lfo_freq',
+                       'fm_lfo_pitch', 'level', 'pan', 'reverb_send']),
             ('Tone', ['filter_freq', 'resonance']),
-            ('EG', ['amp_attack', 'amp_decay', 'amp_sustain', 'amp_release']),
-            ('Mod', ['lfo_freq', 'lfo_pitch']),
+            ('OP 1', ['fm_op1_ratio', 'fm_op1_level', 'fm_op1_decay']),
+            ('OP 2', ['fm_op2_ratio', 'fm_op2_level', 'fm_op2_decay']),
+            ('OP 3', ['fm_op3_ratio', 'fm_op3_level', 'fm_op3_decay']),
+            ('OP 4', ['fm_op4_ratio', 'fm_op4_level', 'fm_op4_decay']),
+            ('OP 5', ['fm_op5_ratio', 'fm_op5_level', 'fm_op5_decay']),
+            ('OP 6', ['fm_op6_ratio', 'fm_op6_level', 'fm_op6_decay']),
         ],
         'labels': {
+            'fm_algorithm': 'algorithm', 'fm_feedback': 'feedback',
+            'lfo_freq': 'LFO speed', 'fm_lfo_pitch': 'LFO to pitch',
             'level': 'output level', 'pan': 'pan',
+            'reverb_send': 'reverb send',
             'filter_freq': 'brightness', 'resonance': 'edge',
-            'amp_attack': 'EG rate 1 (attack)', 'amp_decay': 'EG rate 2 (decay)',
-            'amp_sustain': 'EG level (sustain)', 'amp_release': 'EG release',
-            'lfo_freq': 'LFO speed', 'lfo_pitch': 'LFO pitch mod',
+            'fm_op1_ratio': 'ratio', 'fm_op1_level': 'output',
+            'fm_op1_decay': 'decay',
+            'fm_op2_ratio': 'ratio', 'fm_op2_level': 'output',
+            'fm_op2_decay': 'decay',
+            'fm_op3_ratio': 'ratio', 'fm_op3_level': 'output',
+            'fm_op3_decay': 'decay',
+            'fm_op4_ratio': 'ratio', 'fm_op4_level': 'output',
+            'fm_op4_decay': 'decay',
+            'fm_op5_ratio': 'ratio', 'fm_op5_level': 'output',
+            'fm_op5_decay': 'decay',
+            'fm_op6_ratio': 'ratio', 'fm_op6_level': 'output',
+            'fm_op6_decay': 'decay',
         },
     },
     'piano': {

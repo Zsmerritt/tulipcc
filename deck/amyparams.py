@@ -354,7 +354,101 @@ PARAMS = [
             {'kind': 'piano_quality'}, truth=TRUTH_DECK),
 ]
 
+# --- FM / DX7 operator schema (feature #98) -------------------------------
+#
+# A DX7-class instrument (catalog patches 128..255) is NOT the four-osc deck
+# layout the PARAMS table above assumes. Loaded from patches.h it is an FM
+# voice whose oscillators are, per amy/amy/fm.py's send_to_AMY and confirmed
+# against the baked strings in amy/src/patches.h:
+#
+#     osc 0   ALGO parent (wave=8): `algorithm`, `feedback`, `algo_source`
+#             (=2,3,4,5,6,7), plus the voice pitch env (bp0) and pitch-LFO
+#             depth (freq coef slot MOD).
+#     osc 1   the LFO (wave/`freq`).
+#     osc 2..7  operators 1..6 -- each a sine with `ratio` (freq multiple),
+#             output level (`amp` coef CONST) and its own amp envelope (bp0),
+#             LFO-amp-modulated via mod_source=1.
+#
+# These params therefore address oscs 0..7 of the SOUNDING synth directly:
+# forwarder._apply_params emits amy.send(synth=<n>, osc=<k>, ...), which is
+# voice-relative (AMY copies the synth's osc template to each allocated
+# voice) -- exactly the addressing the container-drum work established.
+#
+# They live in FM_PARAMS (a SEPARATE list, not PARAMS) on purpose: PARAMS is
+# iterated to build the GENERIC grouped editor, the patch-string readers, and
+# default_params(), none of which should ever see FM controls (they only
+# belong to the curated DX7 view, curated.py). But PARAM_BY_NAME, the apply
+# path (synth_send_calls) and the value/curve helpers must resolve them, so
+# they are folded into PARAM_BY_NAME below.
+#
+# TRUTH: every FM param is TRUTH_PATCH. The deck loads a DX7 patch by NUMBER
+# and cannot read its baked operator ratios/levels/envelopes/algorithm back
+# at runtime (patchparams.py distils only the four-osc juno layout, not FM),
+# so an untouched FM control has no fact to show -- it renders "patch default"
+# and is never sent. Only the user's own edits layer on top of the baked
+# patch, and a "Reset FM" clears them (rebuild_one reloads the patch string,
+# restoring every baked operator value).
+OSC_ALGO = 0                       # the ALGO parent osc (== OSC_CTL, named for FM)
+FM_OP_OSCS = (2, 3, 4, 5, 6, 7)    # DX7 operators 1..6 -> AMY oscs 2..7
+
+
+def _op_env(osc):
+    """A per-operator amp envelope: one 'decay' slider that emits a complete,
+    self-contained bp0 ('0,1,<ms>,0') to `osc`. Single-slider by design -- a
+    multi-slot composite would restate its siblings from schema defaults and,
+    with no readable baked envelope to fall back to (penv is empty for FM
+    operators), silently rewrite the operator's baked envelope. One slider =
+    one whole bp0 = no restate hazard: dragging it is an explicit 'make this
+    operator pluck/decay' edit, and it is only sent once the user touches it."""
+    return {'kind': 'op_env', 'osc': osc}
+
+
+FM_PARAMS = [
+    # Voice level (osc 0 = ALGO parent). algorithm is EDITABLE, not read-only:
+    # amy/src/algorithms.c reads synth[osc]->algorithm every render and clamps
+    # it (`if (algorithm >= NUM_ALGORITHMS) algorithm = 0`), and the operator
+    # connections (algo_source, set at note-on) are unchanged by it, so a live
+    # change only reroutes the FM matrix on the next buffer -- no stale state,
+    # no realloc, no crash. The deck can't read the baked algorithm, so it
+    # shows "patch default" until set; setting it picks a DX7 topology (1..32)
+    # over the patch's own six operators.
+    _slider('fm_algorithm', 'FM', 'algorithm', 1, 32, 1, 'basic',
+            _osc(OSC_ALGO, 'algorithm'), truth=TRUTH_PATCH),
+    # feedback: DX7 0..7 maps (fm.py) to 0.00125*2**fb = 0.00125..0.16; a
+    # little headroom past that. Scalar on the ALGO osc ('b' wire letter).
+    _slider('fm_feedback', 'FM', 'feedback', 0, 0.5, 0, 'basic',
+            _osc(OSC_ALGO, 'feedback'), scale=1000, truth=TRUTH_PATCH),
+    # global pitch-LFO depth: freq coef MOD slot on the ALGO osc, matching
+    # fm.py's freq='0,1,0,1,0,<pitch_lfo_amp>' (slot 5). Correct FM pitch mod
+    # (unlike the analog lfo_pitch, which would hit only ops 1-2's freq).
+    _slider('fm_lfo_pitch', 'FM', 'LFO to pitch', 0, 0.5, 0, 'basic',
+            _osc(OSC_ALGO, 'freq', COEF_MOD), scale=1000, truth=TRUTH_PATCH),
+]
+# Per-operator page (6 ops): ratio + output level + envelope decay.
+for _fm_op in range(1, 7):
+    _fm_osc = FM_OP_OSCS[_fm_op - 1]
+    _fm_grp = 'OP %d' % _fm_op
+    FM_PARAMS.append(
+        # ratio: DX7 coarse/fine frequency multiple (fm.py coarse_fine_ratio,
+        # 0.5..~31). 0.01 grid catches the fine detune (e.g. 1.00125).
+        _slider('fm_op%d_ratio' % _fm_op, _fm_grp, 'ratio', 0.1, 32, 1,
+                'basic', _osc(_fm_osc, 'ratio'), scale=100, truth=TRUTH_PATCH))
+    FM_PARAMS.append(
+        # output level: operator amp CONST slot (fm.py op_amp = 2*linear, 0..2).
+        _slider('fm_op%d_level' % _fm_op, _fm_grp, 'output', 0, 2, 1, 'basic',
+                _osc(_fm_osc, 'amp', COEF_CONST), scale=100, truth=TRUTH_PATCH))
+    FM_PARAMS.append(
+        # decay: one self-contained bp0 (see _op_env). Log 0..150000 ms like
+        # the other envelope times; the max is effectively 'sustained'.
+        _slider('fm_op%d_decay' % _fm_op, _fm_grp, 'decay', 0, 150000, 150000,
+                'basic', _op_env(_fm_osc), unit='ms', truth=TRUTH_PATCH,
+                curve='log'))
+
+
 PARAM_BY_NAME = {d['name']: d for d in PARAMS}
+# FM controls resolve through PARAM_BY_NAME (apply path, value/curve helpers,
+# curated view lookups) without polluting the generic PARAMS iteration.
+PARAM_BY_NAME.update({d['name']: d for d in FM_PARAMS})
 
 
 def _env_defaults(which):
@@ -829,7 +923,7 @@ def fx_tabbed_groups():
 def validate():
     """Sanity-check the table (used by tests). Returns True or raises."""
     names = set()
-    for d in PARAMS:
+    for d in PARAMS + FM_PARAMS:        # FM controls share the name space
         for k in ('name', 'group', 'type', 'default', 'tier', 'apply'):
             assert k in d, "param missing %s: %r" % (k, d)
         assert d['name'] not in names, "duplicate param %s" % d['name']
@@ -907,6 +1001,7 @@ def synth_send_calls(params, penv=None):
     coefmap = {}                    # (osc, arg) -> {coef: value}
     scalars = []                    # (osc, arg, value)  -- coef is None
     env = {'amp': {}, 'filter': {}}
+    op_env = {}                     # osc -> decay ms (per-operator bp0, FM)
     eq = [None, None, None]
 
     for name, val in merged.items():
@@ -929,6 +1024,8 @@ def synth_send_calls(params, penv=None):
                     coefmap.setdefault((osc, arg), {})[coef] = val
         elif kind == 'env':
             env[ap['env']][ap['slot']] = val
+        elif kind == 'op_env':
+            op_env[ap['osc']] = val
         elif kind == 'eq':
             eq[ap['index']] = val
 
@@ -956,6 +1053,10 @@ def synth_send_calls(params, penv=None):
         calls.append({'osc': OSC_CTL,
                       'bp1': _adsr_string('filter', env['filter'],
                                           (penv or {}).get('filter'))})
+    # Per-operator amp envelope: each is a complete two-point bp0 on its own
+    # operator osc (0 ms attack to full, linear decay to silence over <ms>).
+    for osc, ms in op_env.items():
+        calls.append({'osc': osc, 'bp0': "0,1,%s,0" % _fmt(ms)})
     if any(v is not None for v in eq):
         calls.append({'eq': "%s,%s,%s" % tuple(
             _fmt(v if v is not None else 0) for v in eq)})
