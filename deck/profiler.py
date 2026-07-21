@@ -15,6 +15,8 @@ import tulip
 import deckui as dk
 import lvgl as lv
 import profilerdata as pd
+import deckhw as hw   # firmware-capability shim: render_cyc lives behind this
+                      # now, not a direct tulip.* probe (task #86 decoupling)
 
 _TICK_MS = 300            # ~3 Hz: live enough to read, cheap enough not to
                           # become the load it's measuring
@@ -243,7 +245,7 @@ def _refresh():
     now = _now_ms()
     do_reset = (now - _s['last_reset']) >= _WORST_RESET_MS
 
-    rc = pd.read_render_cyc(tulip)
+    rc = hw.render_cyc()
     if rc is None:
         na = "n/a (needs newer firmware)"
         _bar_set(labels['c0'], 0, na, color_key='na')
@@ -264,7 +266,7 @@ def _refresh():
                  "%s / %s" % (pcts['core1_last'], pcts['core1_worst']),
                  color_key=pd.load_bar_color(c1_pct))
         if do_reset:
-            pd.reset_worst(tulip)
+            hw.render_cyc_reset()
     if do_reset:
         _s['last_reset'] = now
 

@@ -6406,3 +6406,149 @@ def test_dk_confirm_runs_on_yes_and_dismisses(dk_env):
     clicked[-1](_Ev())                        # last CLICKED handler = yes button
     assert ran == [1]
     assert dk._confirm_open is None           # dismissed
+
+
+# ---------------------------------------------------------------------------
+# deckhw.py -- the firmware-capability SHIM (task #86, DECOUPLING.md sec 6a).
+#
+# Two mock firmware profiles are the decoupling ORACLE:
+#   * 'stock' builds tulip/amy/midi WITHOUT any fork-only symbol,
+#   * 'fork'  includes every fork-only symbol.
+# Every wrapper MUST return its documented fallback under 'stock' (never raise
+# AttributeError) and forward the live value under 'fork'. A shim that silently
+# forwarded a missing binding would blow up under 'stock' and fail here, so the
+# 'stock' profile guards against the vacuous-verification trap.
+# ---------------------------------------------------------------------------
+_FORK_TULIP_SYMS = ('render_cyc', 'amy_level', 'flash_freq', 'flash_fence_auto',
+                    'flash_fence', 'display_partial', 'display_vsync',
+                    'num_midi_devices', 'midi_activity', 'midi_in_drops',
+                    'midi_routes', 'piano_partials', 'amy_send_batch')
+
+
+def _fresh_deckhw(profile):
+    """Import deckhw fresh against a 'stock' or 'fork' mock firmware.
+    Returns (deckhw_module, rec) where rec['calls'] records forwarded calls
+    under the 'fork' profile (empty list under 'stock')."""
+    _install_hw_mocks()
+    tulip = sys.modules['tulip']
+    amy = sys.modules['amy']
+    midi = sys.modules['midi']
+    # Clean slate: the base mock sets a few fork-ish symbols (num_midi_devices,
+    # configure_mpe) -- strip EVERY fork-only symbol so 'stock' is truly stock.
+    for s in _FORK_TULIP_SYMS:
+        tulip.__dict__.pop(s, None)
+    amy.__dict__.pop('override_send', None)
+    midi.__dict__.pop('configure_mpe', None)
+    midi.__dict__.pop('MPE_MEMBER_CHANNELS', None)
+    rec = {'calls': []}
+    if profile == 'fork':
+        def _log(name):
+            return lambda *a, **k: rec['calls'].append((name, a, k))
+        tulip.render_cyc = lambda *a: (rec['calls'].append(('render_cyc', a, {}))
+                                       or (10, 20, 30, 40))
+        tulip.amy_level = lambda: 0.25
+        tulip.flash_freq = lambda: '80m'
+        tulip.flash_fence_auto = _log('flash_fence_auto')
+        tulip.flash_fence = _log('flash_fence')
+        tulip.display_partial = _log('display_partial')
+        tulip.display_vsync = _log('display_vsync')
+        tulip.num_midi_devices = lambda: 3
+        tulip.midi_activity = lambda: 7
+        tulip.midi_in_drops = lambda: (2, 5)
+        tulip.midi_routes = _log('midi_routes')
+        tulip.piano_partials = _log('piano_partials')
+        tulip.amy_send_batch = _log('amy_send_batch')
+        amy.override_send = lambda m: None
+        midi.configure_mpe = _log('configure_mpe')
+    sys.modules.pop('deckhw', None)
+    return importlib.import_module('deckhw'), rec
+
+
+def test_deckhw_caps_all_false_on_stock():
+    hw, _ = _fresh_deckhw('stock')
+    c = hw.CAPS
+    assert not any([c.profiling, c.level_meter, c.c_midi_router, c.batch_send,
+                    c.display_tuning, c.flash_fence, c.flash_freq,
+                    c.num_devices, c.piano_tuning, c.mpe])
+
+
+def test_deckhw_caps_all_true_on_fork():
+    hw, _ = _fresh_deckhw('fork')
+    c = hw.CAPS
+    assert all([c.profiling, c.level_meter, c.c_midi_router, c.batch_send,
+                c.display_tuning, c.flash_fence, c.flash_freq,
+                c.num_devices, c.piano_tuning, c.mpe])
+
+
+def test_deckhw_stock_fallbacks():
+    """Every wrapper returns its DOCUMENTED fallback on stock, no raise."""
+    hw, _ = _fresh_deckhw('stock')
+    assert hw.render_cyc() is None
+    hw.render_cyc_reset()                    # must not raise
+    assert hw.amy_level() is None
+    assert hw.flash_freq() is None
+    assert hw.flash_fence_auto() is False
+    assert hw.flash_fence(1) is False
+    assert hw.display_partial(True) is False
+    assert hw.display_vsync(True) is False
+    assert hw.num_midi_devices() == 1        # single-device assumption
+    assert hw.has_c_router() is False
+    assert hw.midi_routes({}, 0, False) is False
+    assert hw.midi_activity() == 0           # screensaver treats as idle
+    assert hw.midi_in_drops() is None
+    assert hw.piano_partials(5) is False
+    assert hw.amy_send_batch('a\nb') is False
+    assert hw.mpe_configure(15, master=1) is False
+
+
+def test_deckhw_fork_forwards_live_values():
+    hw, rec = _fresh_deckhw('fork')
+    assert hw.render_cyc() == (10, 20, 30, 40)
+    assert hw.amy_level() == 0.25
+    assert hw.flash_freq() == '80m'
+    assert hw.flash_fence_auto() is True
+    assert hw.num_midi_devices() == 3
+    assert hw.has_c_router() is True
+    assert hw.midi_activity() == 7
+    assert hw.midi_in_drops() == (2, 5)
+    # calls that forward return True and actually reach the binding
+    assert hw.flash_fence(1) is True
+    assert hw.display_partial(True) is True
+    assert hw.display_vsync(False) is True
+    assert hw.midi_routes({1: 2}, 3, True) is True
+    assert hw.piano_partials(6) is True
+    assert hw.amy_send_batch('a\nb') is True
+    assert hw.mpe_configure(15, master=1) is True
+    names = [c[0] for c in rec['calls']]
+    for n in ('flash_fence', 'display_partial', 'display_vsync', 'midi_routes',
+              'piano_partials', 'amy_send_batch', 'configure_mpe'):
+        assert n in names
+
+
+def test_deckhw_render_cyc_reset_passes_one_on_fork():
+    hw, rec = _fresh_deckhw('fork')
+    hw.render_cyc_reset()
+    assert ('render_cyc', (1,), {}) in rec['calls']
+
+
+def test_deckhw_wrappers_swallow_binding_exceptions():
+    """A binding that RAISES must degrade to the fallback, not propagate."""
+    hw, _ = _fresh_deckhw('fork')
+    tulip = sys.modules['tulip']
+
+    def _boom(*a, **k):
+        raise RuntimeError('binding blew up')
+    tulip.render_cyc = _boom
+    tulip.amy_level = _boom
+    tulip.num_midi_devices = _boom
+    tulip.midi_activity = _boom
+    # deckhw cached the callables at import; re-point the cached refs so the
+    # wrappers hit the raising binding (mirrors a firmware call failing live).
+    hw._render_cyc = _boom
+    hw._amy_level = _boom
+    hw._num_midi_devices = _boom
+    hw._midi_activity = _boom
+    assert hw.render_cyc() is None
+    assert hw.amy_level() is None
+    assert hw.num_midi_devices() == 1
+    assert hw.midi_activity() == 0

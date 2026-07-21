@@ -19,6 +19,9 @@
 
 import tulip
 import lvgl as lv
+import deckhw as hw   # midi_activity() (C-router counter) goes through the
+                      # firmware-capability shim now (task #86 decoupling):
+                      # returns 0 on stock instead of raising AttributeError.
 
 DIM_LEVEL = 2       # brightness (1..9) while dimmed
 SLEEP_LEVEL = 0     # brightness while asleep: 0 = backlight fully off (needs the
@@ -86,7 +89,7 @@ def _tick(x=None):
     woke = _state.get('midi_seen', False)
     _state['midi_seen'] = False
     try:
-        act = tulip.midi_activity()
+        act = hw.midi_activity()
         if act != _state.get('last_act'):
             _state['last_act'] = act
             woke = True

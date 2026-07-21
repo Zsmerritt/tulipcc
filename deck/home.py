@@ -204,6 +204,8 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'update',
                  # Debug mode: Profiler + Logs tiles (Settings > System)
                  'profiler', 'profilerdata', 'logs', 'logtail',
+                 # firmware-capability shim (task #86 UI decoupling)
+                 'deckhw',
                  # deck <-> AMYboard transport (USB-MIDI working, UART skeleton)
                  # + the framed transport and firmware-updater built on it
                  'boardlink', 'boardxport', 'boardfw',
