@@ -424,6 +424,7 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
     -Wno-unused-const-variable
     -fsingle-precision-constant
     -Wno-strict-aliasing
+    -fwrapv
     -DESP_PLATFORM
     -DSTATIC=static
     -DLFS2_NO_DEBUG

@@ -696,6 +696,22 @@ STATIC mp_obj_t tulip_amy_lag1(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_lag1_obj, tulip_amy_lag1);
 
+// tulip.amy_rms() -- TRUE digital RMS (0..1) of AMY's final int16 output over
+// the current probe window. Read amy_rms() FIRST, then amy_lag1() to snapshot
+// and reset. Tells "quiet" (low RMS) apart from "full peak, low duty" that a
+// peak meter (amy_level) cannot -- the DX7/piano loudness bug's real metric.
+#ifndef AMY_IS_EXTERNAL
+extern float amy_get_rms(void);
+#endif
+STATIC mp_obj_t tulip_amy_rms(void) {
+#ifndef AMY_IS_EXTERNAL
+    return mp_obj_new_float((mp_float_t)amy_get_rms());
+#else
+    return mp_obj_new_float((mp_float_t)0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_rms_obj, tulip_amy_rms);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
 // AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
@@ -2218,6 +2234,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_lag1), MP_ROM_PTR(&tulip_amy_lag1_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_rms), MP_ROM_PTR(&tulip_amy_rms_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
