@@ -679,6 +679,23 @@ STATIC mp_obj_t tulip_amy_level(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_level_obj, tulip_amy_level);
 
+// tulip.amy_lag1() -- DEVICE-CONFIRM PROBE for the DX7/piano "digital-full but
+// inaudible" bug. Lag-1 autocorrelation of AMY's final int16 output stream:
+// +1 => in-band/audible, -1 => alternating/near-Nyquist (codec filters it out).
+// Distinguishes a genuinely quiet render from full-magnitude near-Nyquist
+// garbage that amy_level (a peak meter) reads as full. Resets on read.
+#ifndef AMY_IS_EXTERNAL
+extern float amy_get_lag1(void);
+#endif
+STATIC mp_obj_t tulip_amy_lag1(void) {
+#ifndef AMY_IS_EXTERNAL
+    return mp_obj_new_float((mp_float_t)amy_get_lag1());
+#else
+    return mp_obj_new_float((mp_float_t)0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_lag1_obj, tulip_amy_lag1);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
 // AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
@@ -2200,6 +2217,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
 #endif
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_lag1), MP_ROM_PTR(&tulip_amy_lag1_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
