@@ -712,6 +712,22 @@ STATIC mp_obj_t tulip_amy_rms(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_rms_obj, tulip_amy_rms);
 
+// tulip.amy_hpf_rms() -- AUDIBLE RMS: the final int16 output after a shadow
+// ~25 Hz high-pass, i.e. what a DC-coupled DAC actually passes. amy_hpf_rms/amy_rms
+// is the "audible fraction"; a value far below 1 means the digital output is
+// dominated by inaudible near-DC/LF excursion (the DX7/piano loudness bug).
+#ifndef AMY_IS_EXTERNAL
+extern float amy_get_hpf_rms(void);
+#endif
+STATIC mp_obj_t tulip_amy_hpf_rms(void) {
+#ifndef AMY_IS_EXTERNAL
+    return mp_obj_new_float((mp_float_t)amy_get_hpf_rms());
+#else
+    return mp_obj_new_float((mp_float_t)0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_hpf_rms_obj, tulip_amy_hpf_rms);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
 // AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
@@ -2235,6 +2251,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_lag1), MP_ROM_PTR(&tulip_amy_lag1_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_rms), MP_ROM_PTR(&tulip_amy_rms_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_hpf_rms), MP_ROM_PTR(&tulip_amy_hpf_rms_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
