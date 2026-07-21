@@ -149,6 +149,12 @@ class PatchSynth:
 
     def release(self):
         """Called to terminate this synth and release its amy_voice resources."""
+        # Idempotent: a second release() would otherwise send
+        # amy.send(synth=None, num_voices=0), which raises ValueError('No arg
+        # for key synth') (amy/__init__.py). Matches amy's own release()
+        # guard semantics -- releasing an already-released synth is a no-op.
+        if self.synth is None:
+            return
         # Release the AMY synth by setting its num_voices to 0.
         self.amy_send(num_voices=0)
         # Recycle auto-allocated numbers (channel-pinned ones belong to

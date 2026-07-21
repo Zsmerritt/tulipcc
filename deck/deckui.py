@@ -780,7 +780,22 @@ def toast(screen, text, color=GREEN):
     lb.set_style_text_font(FONT_M, 0)
     lb.center()
 
+    # UAF guard (mirrors instrument.py's alive token / rack.kit_panel's
+    # kitgen): if the screen this toast lives on is quit within the 1.8s
+    # window, `screen.group` and the pill under it are freed; the deferred
+    # `_kill` would then call `.delete()` on an already-freed LVGL object -- a
+    # hard device crash the bare try/except does NOT reliably catch. LVGL fires
+    # the pill's own DELETE when it (or its parent) is torn down, so flag it and
+    # skip the redundant delete.
+    _st = {'dead': False}
+    try:
+        t.add_event_cb(lambda e: _st.update(dead=True), lv.EVENT.DELETE, None)
+    except Exception:
+        pass
+
     def _kill(x):
+        if _st['dead']:
+            return
         try:
             t.delete()
         except Exception:

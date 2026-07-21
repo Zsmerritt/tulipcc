@@ -440,10 +440,25 @@ def build_tabbed(parent, tabs, make_editor, x=0, y=0, w=None, h=None,
     if pages:
         _fill(*pages[0])
 
+    # UAF guard (mirrors rack.kit_panel's `kitgen` / instrument.py's alive
+    # token): the deferred per-tab fill chain spans ~25ms x (tabs-1). If the
+    # tabview is deleted (Back/panel teardown by homeshell.back) inside that
+    # window, a still-pending tick would build LVGL children onto a FREED
+    # tabview page -- a hard device crash that the bare try/except below does
+    # NOT reliably catch (the exact assumption disproved by the instrument.py
+    # E-1 fix). Bump a generation on DELETE and bail any stale-generation tick.
+    _gen = {'v': 0}
+    try:
+        tv.add_event_cb(lambda e: _gen.update(v=_gen['v'] + 1),
+                        lv.EVENT.DELETE, None)
+    except Exception:
+        pass
+    gen0 = _gen['v']
+
     def _fill_next(i):
         def _do(x):
-            if i >= len(pages):
-                return
+            if i >= len(pages) or _gen['v'] != gen0:
+                return                 # done, or tabview deleted mid-chain
             try:
                 _fill(*pages[i])       # throws if the tabview was deleted
             except Exception:

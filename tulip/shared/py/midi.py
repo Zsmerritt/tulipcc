@@ -69,7 +69,7 @@ class MidiConfig:
 
     def remove_arpeggiator(self, channel):
         if channel in self.arpeggiator_per_channel:
-            self.arpeggiator_per_channel.synth = None
+            self.arpeggiator_per_channel[channel].synth = None
             del self.arpeggiator_per_channel[channel]
 
     def program_change(self, channel, patch):
