@@ -12,6 +12,7 @@
 # Device-only (imports synth); not host-tested.
 
 import synth
+import samplepresets      # pure helpers (typed sample swaps + PCM one-shots)
 
 # (DrumSynth patch number, display name). 384 = the default TR-808.
 KITS = [
@@ -108,10 +109,23 @@ class SynthKit:
             from time import sleep_ms as _yield
         except ImportError:
             _yield = lambda ms: None
+        # SAMPLE swaps (Phase 2) are resident PCM one-shots, not corpus hits
+        # -- they can't containerize (kit_container would skip them silent), so
+        # split them out and build each as its OWN per-hit synth. In the
+        # container model that is exactly a FALLBACK pad, so fold them into the
+        # fallback set below and the per-hit loop plays them as one-shots.
+        sample_swaps = {}
+        corpus_swaps = {}
+        for n, v in self.hit_swaps.items():
+            if samplepresets.is_sample_swap(v):
+                sample_swaps[int(n)] = v
+            else:
+                corpus_swaps[n] = v
         # One container patch for the whole kit. Unresolvable hit keys are
         # skipped inside kit_container (KITS-1: bad pad silent, kit lives).
         patch, pads, fallback = synthkits.kit_container(
-            self.kit_key, self.hit_overrides, self.hit_swaps)
+            self.kit_key, self.hit_overrides, corpus_swaps)
+        fallback.update(sample_swaps)   # sample pads join the per-hit loop
         self.pads = pads
         self.note_hits = {n: p['hit'] for n, p in pads.items()}
         # Store the container at the kit's base slot (overwrites on rebuild;
@@ -130,6 +144,7 @@ class SynthKit:
         # guard as before -- a failing pad is skipped and never leaks a
         # partially-built synth). The slot window is the kit's stride; pads
         # beyond it are dropped loudly rather than corrupting a neighbour.
+        # SAMPLE pads ride this same loop (they were folded into fallback).
         slot = self.slot_base + 1
         slot_top = self.slot_base + synthkits.SLOT_KIT_STRIDE
         for note in sorted(fallback):
@@ -144,9 +159,24 @@ class SynthKit:
                 break
             _yield(2)
             hs = None
+            eff = None                 # the pad's effective hit identity
             try:
-                synthkits.store_patch(slot, synthkits.hit_patch_string(
-                    hit_key, self.hit_overrides.get(note)))
+                if samplepresets.is_sample_swap(hit_key):
+                    # SAMPLE pad (Phase 2): load the WAV into its resident PCM
+                    # preset, then arm a one-shot patch pointing at it. The
+                    # synth is created AFTER the load, so it has no live voice
+                    # yet -- no quiesce needed at BUILD time (unlike retweak).
+                    preset = samplepresets.swap_preset(hit_key)
+                    samplepresets.load_sample_into(
+                        preset, samplepresets.swap_path(hit_key))
+                    synthkits.store_patch(
+                        slot, samplepresets.one_shot_patch_string(preset))
+                else:
+                    # deterministic slot: store (overwrites on rebuild -- the
+                    # pool is finite and slots never free), then load by number
+                    synthkits.store_patch(slot, synthkits.hit_patch_string(
+                        hit_key, self.hit_overrides.get(note)))
+                eff = hit_key
                 hs = synth.PatchSynth(num_voices=1, patch=slot)
                 hs.deferred_init()
             except Exception:
@@ -156,7 +186,7 @@ class SynthKit:
                     except Exception:
                         pass
                 continue               # skip this pad; slot is reused next note
-            self.note_hits[note] = hit_key
+            self.note_hits[note] = eff
             self.hit_synths[note] = hs
             self.hit_slots[note] = slot
             slot += 1
@@ -210,8 +240,11 @@ class SynthKit:
         hot path) re-sends just that hit's osc params to the live container
         (and refreshes its note maps' velocity scale), so other pads' tails
         keep ringing. A hit SWAP (hit_key differs) changes the container
-        layout -> full kit rebuild. Fallback pads keep the legacy per-hit
-        reload."""
+        layout -> full kit rebuild -- and (re)pointing a pad at a typed SAMPLE
+        swap (Phase 2) is exactly such a swap, so it rebuilds too. Fallback
+        pads keep the legacy per-hit reload; sample pads don't yet apply
+        Tune/Decay/Level/Snap (samplepresets validation #3), so an
+        override-only tick on a sample pad is a no-op below."""
         import synthkits
         note = int(note)
         if overrides:
@@ -230,7 +263,13 @@ class SynthKit:
             return
         hs = self.hit_synths.get(note)
         if hs is not None:
-            # fallback pad: legacy per-hit reload
+            # fallback pad. A SAMPLE pad (Phase 2) is a fallback pad too, but
+            # its tune/decay/level/snap are not yet applied (samplepresets
+            # validation #3), and any actual sample SWAP already relayouted via
+            # _rebuild above -- so an override-only tick here is a no-op.
+            if samplepresets.is_sample_swap(hit_key):
+                return
+            # corpus fallback pad: legacy per-hit reload
             import amy
             slot = self.hit_slots[note]
             synthkits.store_patch(slot,

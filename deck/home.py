@@ -199,7 +199,7 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  'catalog', 'ticker', 'patchfx', 'patchparams', 'fwprogress',
                  'flashmode',
                  'flashlib', 'flash_fw', 'flash_ota', 'flash_stream',
-                 'flash_pingpong', 'mem_probe', 'presets',
+                 'flash_pingpong', 'mem_probe', 'presets', 'samplepresets',
                  # /user update engine (deck/UPGRADE.md Phase 1)
                  'update',
                  # Debug mode: Profiler + Logs tiles (Settings > System)

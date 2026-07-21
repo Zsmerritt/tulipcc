@@ -70,15 +70,28 @@ def _hit_key_for(note):
     return synthkits.kit_notes(_kit_key() or '').get(note)
 
 
+def _hit_display(key):
+    """Human name for a pad's hit -- the WAV basename for a sample swap, else
+    the corpus hit's display name."""
+    import samplepresets
+    if samplepresets.is_sample_swap(key):
+        return (samplepresets.swap_path(key) or '').rsplit('/', 1)[-1]
+    import synthkits
+    return synthkits.hit_name(key or '')
+
+
 def _audition(note):
     kit = _live_kit()
     try:
         if kit is not None:
             kit.note_on(note, 1.0)
         else:
-            import synthkits
+            import samplepresets
             key = _hit_key_for(note)
-            if key:
+            # a resident sample can only be auditioned through the live router
+            # (it plays from the pad's loaded PCM preset) -- skip off-router
+            if key and not samplepresets.is_sample_swap(key):
+                import synthkits
                 synthkits.audition(key, _overrides(note))
     except Exception:
         pass
@@ -174,11 +187,39 @@ def _set_swap_use_enabled(on):
         pass
 
 
+def _pad_toast(msg, color=None):
+    sh = _s.get('shell')
+    scr = getattr(sh, 'screen', None) if sh is not None else None
+    if scr is not None:
+        try:
+            dk.toast(scr, msg, color if color is not None else dk.ORANGE)
+        except Exception:
+            pass
+
+
+def _set_sample_swap(note, path):
+    """Commit a WAV as this pad's hit: allocate (or reuse) a user PCM preset,
+    then store a TYPED sample swap. drums_kit loads the WAV + arms a one-shot."""
+    import samplepresets
+    iid = deckcfg.active_instrument()
+    instr = deckcfg.get_instrument(iid) or {}
+    existing = (instr.get('hit_swaps') or {}).get(str(note)) \
+        or (instr.get('hit_swaps') or {}).get(note)
+    try:
+        preset = samplepresets.preset_for(deckcfg.instruments(), existing)
+    except ValueError as ex:
+        _pad_toast(str(ex), dk.RED)
+        return
+    _set_swap(note, samplepresets.make_sample_swap(path, preset))
+
+
 def swap_panel(parent, shell=None):
-    """Alternates picker: browse the whole hit corpus by pack, tap to
-    audition (with this pad's current overrides), then Use. The pad keeps
-    its Tune/Decay/Level/Snap tweaks across the swap."""
+    """Alternates picker with two SOURCES: the built-in hit CORPUS (browse by
+    pack, tap to audition) and user SAMPLES (browse the SD card for 16-bit mono
+    WAVs). Tap to select, then Use. The pad keeps its tweaks across a corpus
+    swap; sample pads play the WAV as a one-shot (see samplepresets)."""
     import synthkits
+    import samplepresets
     note = _s.get('note')
     if note is None:
         dk.label(parent, "Pick a pad first.", 24, 24, color=dk.MUTED)
@@ -186,40 +227,53 @@ def swap_panel(parent, shell=None):
     w = tulip.screen_size()[0]
     import homeshell
     H = tulip.screen_size()[1] - homeshell.BAR_H
-    _s['swap_sel'] = None
+    _s['swap_sel'] = None            # pending corpus key
+    _s['swap_sample'] = None         # pending validated WAV path
+    _s.setdefault('swap_src', 'packs')
+    _s.setdefault('sd_dir', samplepresets.SD_ROOT)
 
-    # The pushed panel has NO flex layout -- rows added straight to it all
-    # land at (0,0) and the opaque body occluded the action row entirely
-    # (X-1: the picker could audition but never COMMIT a swap). Explicit
-    # positions: action row on top, browser below it.
     top = dk.row(parent, h=64)
     top.set_pos(0, 0)
-    dk.label(top, "%s: tap a hit to hear it" % _NOTE_NAMES.get(note, 'Pad'),
-             color=dk.TEXT, font=dk.FONT_S)
-    ub = dk.button(top, "Use selected", w=200, h=52, bg=dk.GREEN,
-                   font=dk.FONT_S)
-    db = dk.button(top, "Kit default", w=180, h=52, bg=dk.SURFACE2,
+    # source toggle: Packs | Samples
+    src_seg = dk.hgroup(top, w=260, h=48)
+    ub = dk.button(top, "Use selected", w=190, h=52, bg=dk.GREEN, font=dk.FONT_S)
+    db = dk.button(top, "Kit default", w=170, h=52, bg=dk.SURFACE2,
                    font=dk.FONT_S)
     _s['swap_use_btn'] = ub
     _set_swap_use_enabled(False)    # nothing selected yet (UX11-3)
 
     body = dk.row(parent, h=H - 96)
     body.set_pos(0, 72)
-    # scroll_col, not bare lv.obj: without a flex column every pack/hit
+    # scroll_col, not bare lv.obj: without a flex column every pack/hit/sample
     # button stacked at (0,0) and only the last one showed.
     # Use scroll_col's DEFAULT row gap (12) -- the gap=8 override was the lone
     # deviation in the app, and at 8px the rows' rounded corners carved the dark
     # column bg into a right-pointing "funnel" wedge on RGB332 (UX12-1). The
     # patch and kit pickers use the default 12 with the same radius/colors and
     # show no funnel (verified: ux-review-12 shots 04 vs 05); match them.
-    packs = dk.scroll_col(body, 260, H - 110)
-    hits = dk.scroll_col(body, w - 320, H - 110)
-    # empty-state prompt so the right column isn't a bare void (F-7)
-    dk.label(hits, "Pick a pack to browse its hits", color=dk.MUTED,
-             font=dk.FONT_S)
+    # left/right (not packs/hits): both columns are rebuilt per SOURCE (packs
+    # vs SD samples), so the names are source-neutral. The empty-state prompt
+    # now lives in _build_packs/_build_samples (rebuilt on every source switch).
+    left = dk.scroll_col(body, 300, H - 110)
+    right = dk.scroll_col(body, w - 360, H - 110)
 
+    def _clear_sel():
+        _s['swap_sel'] = None
+        _s['swap_sample'] = None
+        _s['swap_btn'] = None
+        _set_swap_use_enabled(False)    # nothing selected -> dim Use (UX11-3)
+
+    # ---- corpus (packs) browser ----
     def _pick(key, btn):
+        _clear_sel()
         _s['swap_sel'] = key
+        _highlight(btn)
+        try:
+            synthkits.audition(key, _overrides(note))
+        except Exception:
+            pass
+
+    def _highlight(btn):
         old = _s.get('swap_btn')
         if old is not None:
             try:
@@ -227,15 +281,13 @@ def swap_panel(parent, shell=None):
             except Exception:
                 pass
         _s['swap_btn'] = btn
-        btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
-        _set_swap_use_enabled(True)     # a hit is now chosen (UX11-3)
+        _set_swap_use_enabled(True)     # a hit/sample is now chosen (UX11-3)
         try:
-            synthkits.audition(key, _overrides(note))
+            btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
         except Exception:
             pass
 
     def _show_pack(pack, pbtn=None):
-        # highlight the tapped pack (F-7) -- same 2-object recolor as hits
         old = _s.get('swap_packbtn')
         if old is not None:
             try:
@@ -245,7 +297,7 @@ def swap_panel(parent, shell=None):
         if pbtn is not None:
             _s['swap_packbtn'] = pbtn
             pbtn.set_style_bg_color(dk.c(dk.ACCENT), 0)
-        hits.clean()
+        right.clean()
         _s['swap_btn'] = None
         # mark the pad's CURRENT effective hit with the same accent the patch
         # and kit pickers use for the current row (UX11-4)
@@ -254,13 +306,11 @@ def swap_panel(parent, shell=None):
         seen = {}
         for key in keys[:150]:
             nm = synthkits.hit_name(key)
-            # suffix-stripping can collapse distinct hits to one display
-            # name; number the repeats (round-2 F-8 nit)
             seen[nm] = seen.get(nm, 0) + 1
             if seen[nm] > 1:
                 nm = "%s (%d)" % (nm, seen[nm])
             is_cur = (key == cur_hit)
-            b = dk.button(hits, nm, w=lv.pct(96), h=52,
+            b = dk.button(right, nm, w=lv.pct(96), h=52,
                           bg=(dk.ACCENT if is_cur else dk.SURFACE),
                           font=dk.FONT_S)
             b.add_event_cb(
@@ -272,23 +322,103 @@ def swap_panel(parent, shell=None):
                 # pickers do; Use stays disabled until an actual tap (UX11-3)
                 _s['swap_btn'] = b
         if len(keys) > 150:
-            dk.label(hits, "(+%d more in this pack)" % (len(keys) - 150),
+            dk.label(right, "(+%d more in this pack)" % (len(keys) - 150),
                      color=dk.MUTED, font=dk.FONT_S)
 
-    all_packs = sorted(synthkits._load().get('packs', {}))
-    for pack in all_packs:
-        b = dk.button(packs, pack.replace('_', ' '), w=lv.pct(96), h=52,
-                      bg=dk.SURFACE, font=dk.FONT_S)
-        b.add_event_cb(
-            (lambda p, pb: (lambda e: _show_pack(p, pb)
-                            if e.get_code() == lv.EVENT.CLICKED else None)
-             )(pack, b),
-            lv.EVENT.CLICKED, None)
+    def _build_packs():
+        left.clean()
+        right.clean()
+        dk.label(right, "Pick a pack to browse its hits", color=dk.MUTED,
+                 font=dk.FONT_S)
+        for pack in sorted(synthkits._load().get('packs', {})):
+            b = dk.button(left, pack.replace('_', ' '), w=lv.pct(96), h=52,
+                          bg=dk.SURFACE, font=dk.FONT_S)
+            b.add_event_cb(
+                (lambda p, pb: (lambda e: _show_pack(p, pb)
+                                if e.get_code() == lv.EVENT.CLICKED else None)
+                 )(pack, b), lv.EVENT.CLICKED, None)
+
+    # ---- samples (SD) browser ----
+    def _pick_wav(path, btn):
+        ok, info = samplepresets.validate(path)
+        if not ok:
+            _pad_toast("Not usable: %s" % info, dk.RED)
+            return
+        _clear_sel()
+        _s['swap_sample'] = path
+        _highlight(btn)
+        _pad_toast("Selected %s" % path.rsplit('/', 1)[-1], dk.GREEN)
+
+    def _show_dir(directory):
+        _s['sd_dir'] = directory
+        _build_samples()
+
+    def _build_samples():
+        left.clean()
+        right.clean()
+        directory = _s.get('sd_dir', samplepresets.SD_ROOT)
+        dk.label(left, directory, color=dk.MUTED, font=dk.FONT_S,
+                 w=290)
+        root = samplepresets.SD_ROOT
+        if directory.rstrip('/') != root.rstrip('/'):
+            up = dk.button(left, lv.SYMBOL.UP + " Up", w=lv.pct(96), h=48,
+                           bg=dk.SURFACE2, font=dk.FONT_S)
+            parent_dir = directory.rstrip('/').rsplit('/', 1)[0] or root
+            up.add_event_cb((lambda d: (lambda e: _show_dir(d)
+                            if e.get_code() == lv.EVENT.CLICKED else None))(
+                                parent_dir), lv.EVENT.CLICKED, None)
+        dirs, wavs = samplepresets.list_wavs(directory)
+        for d in dirs:
+            full = directory.rstrip('/') + '/' + d
+            b = dk.button(left, lv.SYMBOL.DIRECTORY + "  " + d, w=lv.pct(96),
+                          h=48, bg=dk.SURFACE, font=dk.FONT_S)
+            b.add_event_cb((lambda p: (lambda e: _show_dir(p)
+                            if e.get_code() == lv.EVENT.CLICKED else None))(
+                                full), lv.EVENT.CLICKED, None)
+        if not dirs and not wavs:
+            dk.label(right, "No WAV files here. 16-bit mono WAVs on the SD "
+                     "card show up in this list.", color=dk.MUTED,
+                     font=dk.FONT_S, w=w - 400)
+            return
+        for name in wavs:
+            full = directory.rstrip('/') + '/' + name
+            b = dk.button(right, name, w=lv.pct(96), h=52, bg=dk.SURFACE,
+                          font=dk.FONT_S)
+            b.add_event_cb((lambda p: (lambda e: _pick_wav(
+                p, e.get_target_obj())
+                if e.get_code() == lv.EVENT.CLICKED else None))(full),
+                lv.EVENT.CLICKED, None)
+
+    def _set_src(src):
+        if _s.get('swap_src') != src:
+            _s['swap_src'] = src
+            _clear_sel()
+        for lbl, val, b in _s.get('srcbtns', []):
+            try:
+                b.set_style_bg_color(dk.c(dk.ACCENT if val == src
+                                          else dk.SURFACE2), 0)
+            except Exception:
+                pass
+        if src == 'packs':
+            _build_packs()
+        else:
+            _build_samples()
+
+    _s['srcbtns'] = []
+    for lbl, val in (("Packs", 'packs'), ("Samples", 'samples')):
+        b = dk.button(src_seg, lbl, w=120, h=48, font=dk.FONT_S,
+                      bg=(dk.ACCENT if _s['swap_src'] == val else dk.SURFACE2))
+        b.add_event_cb((lambda v: (lambda e: _set_src(v)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(val),
+                       lv.EVENT.CLICKED, None)
+        _s['srcbtns'].append((lbl, val, b))
 
     def _use(e):
         if e.get_code() != lv.EVENT.CLICKED:
             return
-        if _s.get('swap_sel'):
+        if _s.get('swap_sample'):
+            _set_sample_swap(note, _s['swap_sample'])
+        elif _s.get('swap_sel'):
             _set_swap(note, _s['swap_sel'])
         sh = _s.get('shell')
         if sh is not None:
@@ -304,6 +434,7 @@ def swap_panel(parent, shell=None):
 
     ub.add_event_cb(_use, lv.EVENT.CLICKED, None)
     db.add_event_cb(_default, lv.EVENT.CLICKED, None)
+    _set_src(_s['swap_src'])          # build the initial source view
 
 
 def _select(note):
@@ -314,15 +445,15 @@ def _select(note):
     if card is None:
         return
     card.clean()
-    import synthkits
     key = _hit_key_for(note) or ''
     swapped = bool((_inst().get('hit_swaps') or {}).get(str(note)))
     dk.label(card, "%s  (note %d)" % (_NOTE_NAMES.get(note, 'Pad'), note),
              color=dk.WHITE, font=dk.FONT_M)
     r = dk.row(card, h=56, bg=dk.SURFACE2)
     # the hit NAME is a real value, not a placeholder -- TEXT, not MUTED (UX11-6,
-    # the UX-REVIEW-7 NEW-4 class the search fields already fixed)
-    nl = dk.label(r, synthkits.hit_name(key) + (' *' if swapped else ''),
+    # the UX-REVIEW-7 NEW-4 class the search fields already fixed). _hit_display
+    # is sample-aware: WAV basename for a sample swap, else the corpus hit name.
+    nl = dk.label(r, _hit_display(key) + (' *' if swapped else ''),
                   color=dk.TEXT, font=dk.FONT_S, w=_s['cw'] - 220)
     try:
         nl.set_long_mode(lv.label.LONG.DOT)
@@ -371,7 +502,8 @@ def panel(parent, shell=None):
     # returns early without rebuilding pads/card, and swap_btn/swap_packbtn
     # (set inside the pushed swap panel) are never re-set here -- all would
     # otherwise point at deleted LVGL objects on the next rebuild.
-    for _k in ('pads', 'card', 'swap_btn', 'swap_packbtn', 'swap_use_btn'):
+    for _k in ('pads', 'card', 'swap_btn', 'swap_packbtn', 'swap_use_btn',
+               'srcbtns'):
         _s.pop(_k, None)
     import synthkits
     kit_key = _kit_key()
