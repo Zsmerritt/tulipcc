@@ -728,6 +728,22 @@ STATIC mp_obj_t tulip_amy_hpf_rms(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_hpf_rms_obj, tulip_amy_hpf_rms);
 
+// tulip.amy_dump() -- the most-recent 1024 final int16 output samples (ch0,
+// exactly what AMY writes to I2S), little-endian, as bytes for host np.frombuffer/FFT.
+#ifndef AMY_IS_EXTERNAL
+extern int amy_get_dump(int16_t *dst, int n);
+#endif
+STATIC mp_obj_t tulip_amy_dump(void) {
+#ifndef AMY_IS_EXTERNAL
+    int16_t buf[1024];
+    int n = amy_get_dump(buf, 1024);
+    return mp_obj_new_bytes((const byte *)buf, (size_t)n * sizeof(int16_t));
+#else
+    return mp_obj_new_bytes((const byte *)"", 0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_dump_obj, tulip_amy_dump);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
 // AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
@@ -2252,6 +2268,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_amy_lag1), MP_ROM_PTR(&tulip_amy_lag1_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_rms), MP_ROM_PTR(&tulip_amy_rms_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_hpf_rms), MP_ROM_PTR(&tulip_amy_hpf_rms_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_dump), MP_ROM_PTR(&tulip_amy_dump_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
