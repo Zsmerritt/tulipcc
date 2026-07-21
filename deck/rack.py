@@ -252,6 +252,20 @@ def _voices_done(e):
     deckcfg.apply_instrument(iid)   # O-5: only this synth rebuilds
 
 
+def _nav(sh, builder, title, key):
+    """Open a sub-panel through the codebase's dedup convention (finding #5):
+    a repeat open of the SAME panel (e.g. a double-tapped row) rebuilds it in
+    place instead of pushing an orphaned, un-poppable duplicate. Mirrors
+    _open_edit / home.py / devices.open_fx, which all route through
+    sm.open_panel_action rather than an unconditional shell.push()."""
+    if sh is None:
+        return
+    if sm.open_panel_action(sh.top_key(), key) == 'rebuild':
+        sh.rebuild_top(builder, title, key=key)
+    else:
+        sh.push(builder, title, key=key)
+
+
 def _open_patch(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
@@ -260,17 +274,16 @@ def _open_patch(e):
         return
     instr = _active()
     if instr and instr.get('type') == 'drums':
-        sh.push(kit_panel, "Kit", key='kit')       # drums pick a kit, not a patch
+        _nav(sh, kit_panel, "Kit", 'kit')          # drums pick a kit, not a patch
     else:
         import instrument
-        sh.push(instrument.panel, "Patch", key='patch')
+        _nav(sh, instrument.panel, "Patch", 'patch')
 
 
 def _open_type(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
-        _s['shell'].push(type_panel, "Type", key='type')
+    _nav(_s.get('shell'), type_panel, "Type", 'type')
 
 
 def _set_type(t):
@@ -424,16 +437,14 @@ def type_panel(parent, shell=None):
 def _open_sound(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
-        _s['shell'].push(sound_panel, "Sound", key='sound')
+    _nav(_s.get('shell'), sound_panel, "Sound", 'sound')
 
 
 def _open_pads(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
-        import padeditor
-        _s['shell'].push(padeditor.panel, "Pads", key='pads')
+    import padeditor
+    _nav(_s.get('shell'), padeditor.panel, "Pads", 'pads')
 
 
 def _open_fx_row(e):
@@ -451,9 +462,8 @@ def _open_fx_row(e):
 def _open_mpe(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
-        import mpe
-        _s['shell'].push(mpe.panel, "MPE", key='mpe')
+    import mpe
+    _nav(_s.get('shell'), mpe.panel, "MPE", 'mpe')
 
 
 def _do_remove():
@@ -943,8 +953,7 @@ _pre = {}
 def _open_presets(e):
     if e.get_code() != lv.EVENT.CLICKED:
         return
-    if _s.get('shell') is not None:
-        _s['shell'].push(presets_panel, "Presets", key='presets')
+    _nav(_s.get('shell'), presets_panel, "Presets", 'presets')
 
 
 def _preset_toast(msg, color=None):
@@ -1069,8 +1078,7 @@ def _build_presets(parent):
 
 def _open_preset_detail(slug):
     _pre['slug'] = slug
-    if _s.get('shell') is not None:
-        _s['shell'].push(preset_detail_panel, "Preset", key='preset_detail')
+    _nav(_s.get('shell'), preset_detail_panel, "Preset", 'preset_detail')
 
 
 def _do_recall():

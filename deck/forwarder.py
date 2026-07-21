@@ -190,8 +190,18 @@ def _route_impl(m):
             _emit(m, dev)
 
 
-def _release_synths():
-    for syn in _state['synths'].values():
+def _release_synths(keep=()):
+    # Release every previously-built internal synth EXCEPT those the caller
+    # asks to keep alive (router-rebuild dropout fix): a kept synth's number is
+    # its channel (channel-pinned, never auto-allocated), so the allocator
+    # rewind below cannot collide with it. Returns {iid: synth} for the
+    # survivors so the rebuild can re-register them WITHOUT a release/recreate,
+    # which is what dropped notes on unrelated channels during a full rebuild.
+    kept = {}
+    for iid, syn in _state['synths'].items():
+        if iid in keep:
+            kept[iid] = syn
+            continue
         try:
             syn.release()
         except Exception:
@@ -211,6 +221,7 @@ def _release_synths():
         _synth.PatchSynth.amy_synth_allocated = set()
     except Exception:
         pass
+    return kept
 
 
 def _with_type_level(params, instr, amyparams):
@@ -606,7 +617,54 @@ def _start_once():
     instruments = cfg.get('instruments', [])
     mpe_on = deckcfg.mpe_enabled(cfg)      # global gate (C.4)
 
-    _release_synths()
+    # Pre-pass: channels with exactly ONE enabled internal instrument get a
+    # synth whose number == the channel, so AMY's C layer grabs and plays the
+    # notes directly (stock Tulip's zero-latency path). Layered channels
+    # (2+ internals) keep auto synth numbers and Python routing.
+    internal_count = {}
+    for instr in instruments:
+        if instr.get('enabled', True) and instr.get('device') == 'internal':
+            ch_ = instr.get('channel', 1)
+            internal_count[ch_] = internal_count.get(ch_, 0) + 1
+
+    # Reuse-pass (router-rebuild dropout fix): a full rebuild used to release
+    # EVERY synth up front and rebuild them sequentially, so a topology edit to
+    # ONE instrument briefly SILENCED unrelated channels -- worst for a C-owned
+    # solo instrument whose synth number == its channel and whose notes AMY's C
+    # layer plays directly. A solo, non-MPE, no-slot melodic instrument
+    # (juno6/dx7/piano) whose topology signature is unchanged can keep its live
+    # synth across the rebuild: its synth number is its channel (never touched
+    # by the auto-allocator we rewind), it owns no RAM patch slot (so nothing
+    # can collide with it), and its FX bus is reassigned non-destructively
+    # below. It is still reprogrammed in place (params + FX) exactly like a
+    # fresh build -- only the release + recreate + channel scrub, the
+    # note-dropping steps, are skipped. gm/gm2/drums are NOT reused here: they
+    # own RAM patch slots whose reuse needs slot-identity bookkeeping this fast
+    # path deliberately avoids (they fall back to the full rebuild).
+    reuse_iids = set()
+    _prev_synths = _state.get('synths') or {}
+    _prev_built = _state.get('built') or {}
+    for instr in instruments:
+        if (not instr.get('enabled', True)
+                or instr.get('device') != 'internal'):
+            continue
+        if instr.get('type', 'juno6') in ('drums', 'gm', 'gm2'):
+            continue                     # slot-owning types: full rebuild
+        ch_ = instr.get('channel', 1)
+        if internal_count.get(ch_, 0) != 1:
+            continue                     # layered channel: full rebuild
+        if mpe_on and (instr.get('mpe', {}) or {}).get('enabled'):
+            continue                     # MPE zone: needs full re-registration
+        iid_ = instr.get('id')
+        old = _prev_synths.get(iid_)
+        rec = _prev_built.get(iid_)
+        if old is None or rec is None or getattr(old, 'released', False):
+            continue
+        if _sig(instr, True) != rec.get('sig'):
+            continue                     # topology changed: rebuild it
+        reuse_iids.add(iid_)
+
+    _kept = _release_synths(reuse_iids)
     _state['routes'] = {}
     _state['notes'] = {}
     # Masters whose MPE zone was configured in AMY's C layer last rebuild.
@@ -636,16 +694,6 @@ def _start_once():
                            # BEFORE mpe_members is checked, so a board on a
                            # member channel is muted just like a layered
                            # internal instrument would be.
-
-    # Pre-pass: channels with exactly ONE enabled internal instrument get a
-    # synth whose number == the channel, so AMY's C layer grabs and plays the
-    # notes directly (stock Tulip's zero-latency path). Layered channels
-    # (2+ internals) keep auto synth numbers and Python routing.
-    internal_count = {}
-    for instr in instruments:
-        if instr.get('enabled', True) and instr.get('device') == 'internal':
-            ch_ = instr.get('channel', 1)
-            internal_count[ch_] = internal_count.get(ch_, 0) + 1
 
     import synth as _synth
     for instr in instruments:
@@ -683,8 +731,10 @@ def _start_once():
                                 "other instruments layered on ch%d will not sound" % (ch, ch))
                 except Exception:
                     pass
-            if c_own:
+            if c_own and instr['id'] not in reuse_iids:
                 # Scrub the channel's C-layer state before taking it over:
+                # (skipped when reusing a live synth -- it already owns the
+                # channel, so a scrub here would needlessly drop its notes.)
                 # AMY NOTE MAPS are keyed by channel and OUTLIVE the synth
                 # that registered them -- a drum kit's io entries (amps up
                 # to ~9) kept firing loud, note-off-ignoring one-shots into
@@ -775,9 +825,19 @@ def _start_once():
                         nv = min(nv or 4, 4)
                     else:
                         nv = nv or 10
-                    syn = _synth.PatchSynth(patch=instr.get('patch', 0),
-                                            num_voices=nv,
-                                            channel=(ch if c_own else None))
+                    if instr['id'] in reuse_iids:
+                        # Keep the live synth (router-rebuild dropout fix): no
+                        # release/recreate/scrub, so notes already sounding on
+                        # this channel never drop. It is still reprogrammed in
+                        # place (deferred_init/params/FX) below, exactly like a
+                        # fresh build.
+                        syn = _kept.get(instr['id'])
+                    else:
+                        syn = None
+                    if syn is None:
+                        syn = _synth.PatchSynth(patch=instr.get('patch', 0),
+                                                num_voices=nv,
+                                                channel=(ch if c_own else None))
                 _state['synths'][instr['id']] = syn
                 if instr.get('type') == 'piano':
                     try:

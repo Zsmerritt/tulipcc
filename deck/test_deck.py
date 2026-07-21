@@ -2394,6 +2394,83 @@ def test_rebuild_one_reuses_slot_and_skips_others(deck):
     assert forwarder._state['synths'][other] is not other_syn  # rebuilt all
 
 
+def test_full_rebuild_preserves_unrelated_c_owned_synths(deck):
+    """Router-rebuild dropout fix (finding #3): a topology edit to ONE
+    instrument used to release EVERY synth up front (num_voices=0) and rebuild
+    them sequentially, briefly SILENCING unrelated channels -- worst for a
+    C-owned solo instrument whose synth number == its channel and whose notes
+    AMY's C layer plays directly. Editing/adding one instrument must now KEEP
+    the live synths of unrelated solo, non-MPE, no-slot melodic instruments."""
+    deckcfg, forwarder = deck
+    iid1 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid1, 'type', 'juno6')
+    deckcfg.set_instrument(iid1, 'channel', 1)
+    iid10 = deckcfg.add_instrument(device='internal', channel=10,
+                                   type='juno6')['id']
+    forwarder.start()
+    syn1 = forwarder._state['synths'][iid1]
+    syn10 = forwarder._state['synths'][iid10]
+    assert not syn1.released and not syn10.released
+    # both are solo, so both are C-owned
+    assert forwarder._state['c_channels'] == {1, 10}
+
+    # ADD a third, unrelated instrument -> topology edit -> full start().
+    iid5 = deckcfg.add_instrument(device='internal', channel=5,
+                                  type='juno6')['id']
+    forwarder.start()
+    # the two pre-existing C-owned synths are the SAME live objects, never
+    # released -> their channels kept sounding through the edit
+    assert forwarder._state['synths'][iid1] is syn1
+    assert forwarder._state['synths'][iid10] is syn10
+    assert not syn1.released and not syn10.released
+    syn5 = forwarder._state['synths'][iid5]
+    assert not syn5.released
+
+    # CHANGE the edited instrument's channel: it (and only it) rebuilds; the
+    # unrelated synths survive.
+    deckcfg.set_instrument(iid5, 'channel', 7)
+    forwarder.start()
+    assert forwarder._state['synths'][iid1] is syn1        # untouched
+    assert forwarder._state['synths'][iid10] is syn10      # untouched
+    assert not syn1.released and not syn10.released
+    assert syn5.released                                   # topology changed
+    assert forwarder._state['synths'][iid5] is not syn5    # rebuilt
+
+    # DISABLE one instrument: the others' synths stay alive; its own is freed.
+    deckcfg.set_instrument(iid10, 'enabled', False)
+    forwarder.start()
+    assert forwarder._state['synths'][iid1] is syn1
+    assert not syn1.released
+    assert syn10.released                                  # removed from mix
+    assert iid10 not in forwarder._state['synths']
+
+
+def test_full_rebuild_does_not_reuse_slot_owning_or_layered_synths(deck):
+    """The reuse fast path is deliberately scoped: gm/gm2/drums own RAM patch
+    slots (slot-identity bookkeeping the fast path avoids) and layered channels
+    use the auto-allocator we rewind -- both fall back to the full rebuild, so
+    their synths are released and recreated on any topology edit."""
+    deckcfg, forwarder = deck
+    iid1 = deckcfg.instruments()[0]['id']
+    deckcfg.set_instrument(iid1, 'type', 'gm')       # slot-owning type
+    deckcfg.set_instrument(iid1, 'channel', 1)
+    # two instruments on ch 3 => layered (auto-numbered) channel
+    a = deckcfg.add_instrument(device='internal', channel=3, type='juno6')['id']
+    b = deckcfg.add_instrument(device='internal', channel=3, type='juno6')['id']
+    forwarder.start()
+    gm_syn = forwarder._state['synths'][iid1]
+    lay_a = forwarder._state['synths'][a]
+    lay_b = forwarder._state['synths'][b]
+    assert 3 not in forwarder._state['c_channels']   # layered, not C-owned
+
+    # unrelated edit -> full start(): none of these are reused
+    deckcfg.add_instrument(device='internal', channel=8, type='juno6')
+    forwarder.start()
+    assert gm_syn.released                            # slot type: rebuilt
+    assert lay_a.released and lay_b.released           # layered: rebuilt
+    assert forwarder._state['synths'][iid1] is not gm_syn
+
+
 def test_real_synth_free_list_recycles_auto_numbers(deck):
     """F-1 (round 2): the REAL tulip/shared/py/synth.py allocator. The stub
     PatchSynth above never modeled numbering, so the free-list fix had no
