@@ -208,7 +208,10 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  # + the framed transport and firmware-updater built on it
                  'boardlink', 'boardxport', 'boardfw',
                  # DX7/FM algorithm picker (modal diagram) + its routing table
-                 'algopicker', 'dx7algos')
+                 'algopicker', 'dx7algos',
+                 # "move instrument to another device": pure planner + one-call
+                 # orchestration (plan/commit/enroll/apply)
+                 'instmove')
 
 
 def deck_modules_set():

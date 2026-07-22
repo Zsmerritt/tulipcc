@@ -719,13 +719,49 @@ def run_sketch():
 
 # --- Tulip Deck durable fleet listener ------------------------------------
 # Baked into firmware so it survives sketch edits, wipes and factory reset. If
-# the board has been enrolled (a channel stored in NVS), it listens on that
-# channel for Program Change -> patch and a CC map -> AMY params, independent of
-# whatever sketch is loaded. Unenrolled boards are completely unaffected.
+# the board has been enrolled (channels stored in NVS), it listens on EACH of
+# those channels for Program Change -> patch and a CC map -> AMY params,
+# independent of whatever sketch is loaded. Unenrolled boards are completely
+# unaffected.
+#
+# Multi-channel: the deck can host several instruments on one board, each on its
+# own MIDI channel. The board used to listen on exactly one channel, so a second
+# instrument moved here on a different channel could never sound. We now store a
+# channel LIST (NVS blob 'chs' / file user/deck_channels, csv) and add one synth
+# per channel. The legacy single 'ch' / user/deck_channel is still read as a
+# migration fallback so a board enrolled by old firmware keeps working.
 _deck_installed = False
+_deck_synth_channels = set()   # channels we currently have a PatchSynth bound to
+# Cached enrolled-channel set for the per-message deck callback. The callback
+# ran a full _deck_channels() -- an NVS blob read + csv parse, plus a file open
+# when the blob was empty -- on EVERY MIDI message, and CC streams push 100+
+# msgs/sec (this firmware has been bitten by per-message flash work before).
+# Re-enrollment ALWAYS flows through deck_set_channels -> _deck_listener_install,
+# which refreshes this, so the cache can never go stale. None = not yet primed.
+_deck_channels_cache = None
 
 
-def _deck_channel():
+def _parse_channels(s):
+    """Parse a csv of MIDI channels into a sorted, deduped list clamped to
+    1..16 (invalid or out-of-range entries dropped). Shared by every read
+    path so NVS, file and legacy sources normalize identically."""
+    out = []
+    for part in str(s).replace(' ', '').split(','):
+        if not part:
+            continue
+        try:
+            c = int(part)
+        except Exception:
+            continue
+        if 1 <= c <= 16 and c not in out:
+            out.append(c)
+    out.sort()
+    return out
+
+
+def _legacy_channel():
+    """The single channel written by pre-multi-channel firmware (NVS 'ch' /
+    user/deck_channel). Read only as a migration fallback; 0 = absent."""
     try:
         import esp32
         return esp32.NVS('deck').get_i32('ch')
@@ -734,42 +770,130 @@ def _deck_channel():
     try:
         return int(open(tulip.root_dir() + 'user/deck_channel').read().strip())
     except Exception:
-        return 0   # 0 = not enrolled
+        return 0
 
 
-def deck_set_channel(ch):
-    """Enroll this board: store its listening channel durably and (re)install.
-    Called by the Tulip during enrollment via the control-API zP."""
-    ch = max(1, min(16, int(ch)))
+def _deck_channels():
+    """The enrolled MIDI channels, sorted; [] = not enrolled."""
+    # Preferred: NVS blob 'chs' (csv). NVS can't hold a list and a single
+    # set_i32 can't hold a csv, so we serialize the list to a blob.
+    try:
+        import esp32
+        buf = bytearray(64)
+        n = esp32.NVS('deck').get_blob('chs', buf)
+        chs = _parse_channels(bytes(buf[:n]).decode())
+        if chs:
+            return chs
+    except Exception:
+        pass
+    # File fallback (csv), same role as the NVS blob for boards without NVS.
+    try:
+        chs = _parse_channels(open(tulip.root_dir() + 'user/deck_channels').read())
+        if chs:
+            return chs
+    except Exception:
+        pass
+    # Migration: honour a single channel enrolled by old firmware.
+    return _parse_channels(str(_legacy_channel()))
+
+
+def _deck_channel():
+    """Back-compat shim: the FIRST enrolled channel, or 0 if unenrolled. Kept
+    because the single-channel accessor was the public one; new code should use
+    _deck_channels()."""
+    chs = _deck_channels()
+    return chs[0] if chs else 0
+
+
+def deck_set_channels(chs):
+    """Enroll this board on a LIST of channels durably and (re)install.
+
+    Replaces the one-channel deck_set_channel: several deck instruments can live
+    on one board, each on its own channel, and every one must sound. Stores the
+    sorted/deduped csv in both NVS and a file (mirroring the old dual-write) so
+    it survives sketch wipes / factory reset."""
+    chs = _parse_channels(','.join(str(int(c)) for c in chs))
+    csv = ','.join(str(c) for c in chs)
     try:
         import esp32
         n = esp32.NVS('deck')
-        n.set_i32('ch', ch)
+        n.set_blob('chs', csv.encode())
         n.commit()
     except Exception:
         pass
     try:
-        open(tulip.root_dir() + 'user/deck_channel', 'w').write(str(ch))
+        open(tulip.root_dir() + 'user/deck_channels', 'w').write(csv)
+    except Exception:
+        pass
+    # Clear the LEGACY single-channel store now that the new one is authoritative.
+    # WHY: de-enrolling to [] writes an EMPTY new store, but _deck_channels()
+    # parses empty and falls through to _legacy_channel() -- so a board first
+    # enrolled by OLD firmware could never be fully de-enrolled: the stale 'ch'
+    # would RESURRECT a channel and keep its synth sounding forever. An empty
+    # enrollment frame is now load-bearing (it is how the deck releases a fully
+    # vacated board), so the legacy key/file must go with the new write.
+    try:
+        import esp32
+        nv = esp32.NVS('deck')
+        nv.erase_key('ch')     # raises if absent -- guarded, that is fine
+        nv.commit()
+    except Exception:
+        pass
+    try:
+        import os
+        os.remove(tulip.root_dir() + 'user/deck_channel')
     except Exception:
         pass
     _deck_listener_install(force=True)
 
 
+def deck_set_channel(ch):
+    """Back-compat: enroll on a single channel. Old enrollment frames and old
+    Tulips call this; it now delegates to the multi-channel store."""
+    deck_set_channels([ch])
+
+
 def _deck_listener_install(force=False):
-    global _deck_installed
-    ch = _deck_channel()
-    if not ch:
+    global _deck_installed, _deck_synth_channels, _deck_channels_cache
+    chs = set(_deck_channels())
+    # Prime/refresh the per-message cache from the durable store. This is the
+    # single place that (re)reads enrollment, and every enrollment change routes
+    # here (deck_set_channels -> install), so the callback can trust the cache.
+    _deck_channels_cache = chs
+    # Unenrolled board with nothing bound: stay completely inert (don't import
+    # amy/midi/synth, don't register a callback) -- preserve "unenrolled boards
+    # are unaffected".
+    if not chs and not _deck_synth_channels:
         return
     import amy, midi, synth
-    # a synth on our channel so the default MIDI handler plays note on/off
-    midi.config.add_synth(synth.PatchSynth(patch=0, num_voices=8), channel=ch)
+    # Release synths for channels that fell OUT of the enrolled set (an
+    # instrument moved away) so a de-enrolled channel stops sounding.
+    for ch in (_deck_synth_channels - chs):
+        try:
+            midi.config.release_synth_for_channel(ch)
+        except Exception:
+            pass
+    # One synth per newly-enrolled channel so the default MIDI handler plays
+    # note on/off for each; channels already bound keep their pushed state.
+    for ch in (chs - _deck_synth_channels):
+        midi.config.add_synth(synth.PatchSynth(patch=0, num_voices=8), channel=ch)
+    _deck_synth_channels = set(chs)
 
     def _deck_cb(m):
         if not m:
             return
         status = m[0] & 0xF0
         mch = (m[0] & 0x0F) + 1
-        if mch != _deck_channel():
+        # Check the CACHED enrolled set, not a fresh _deck_channels() -- that ran
+        # an NVS read + csv parse (and a file open on an empty blob) per MIDI
+        # message. Re-enrollment refreshes the cache via _deck_listener_install,
+        # so it stays correct; prime it once here if we somehow ran before install.
+        global _deck_channels_cache
+        chs = _deck_channels_cache
+        if chs is None:
+            chs = set(_deck_channels())
+            _deck_channels_cache = chs
+        if mch not in chs:
             return
         if status == 0xC0:                     # Program Change -> patch
             s = midi.config.get_synth(mch)

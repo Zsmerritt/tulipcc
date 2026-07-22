@@ -251,7 +251,10 @@ def uipatch():
 def deck(tmp_path):
     """Fresh deckcfg + forwarder with hardware mocked and a temp config file."""
     _install_hw_mocks()
-    for m in ('deckcfg', 'forwarder'):
+    # amyfleet holds a module-level `import tulip`; drop it so the board push
+    # (forwarder -> amyfleet.push_instrument) binds to THIS test's tulip mock
+    # and its midi_out lands in this test's `sent`, not a stale one.
+    for m in ('deckcfg', 'forwarder', 'amyfleet'):
         sys.modules.pop(m, None)
     deckcfg = importlib.import_module('deckcfg')
     deckcfg.PATH = str(tmp_path / 'deck_config.json')
@@ -705,6 +708,15 @@ def _install_and_reset_sent():
     sent = sys.modules['tulip']._sent
     sent.clear()
     return sent
+
+
+def _zp_code(data):
+    """The Python line inside an AMYboard zP control-API SysEx frame
+    (F0 00 03 45 'zP' <code> 'Z' F7), or None if `data` is not one."""
+    b = bytes(data)
+    if len(b) < 8 or b[:6] != b'\xf0\x00\x03\x45zP' or b[-2:] != b'Z\xf7':
+        return None
+    return b[6:-2].decode()
 
 
 def test_cc_and_bend_forwarded_to_board_only(deck):
@@ -1971,16 +1983,17 @@ def test_forwarder_reapply_params_reuses_synth(deck):
                for k in amy._sends)
 
 
-def test_forwarder_reapply_params_board_instrument_is_noop(deck):
+def test_forwarder_reapply_params_board_pushes_and_never_rebuilds(deck):
     # A board instrument never gets a local synth (_state['synths']), so the
-    # old code fell through to a full start() -- an ~80-200ms router rebuild
-    # -- on EVERY parameditor slider tick during a drag, for zero benefit
-    # (board params aren't pushed here; that's a separate feature). It must
-    # now no-op instead of rebuilding.
+    # old code fell through to a full start() -- an ~80-200ms router rebuild --
+    # on EVERY parameditor slider tick during a drag. It must instead push JUST
+    # the params overlay to the board (zP amy.send) and NEVER call start().
     deckcfg, forwarder = deck
     b = deckcfg.add_instrument(device=0, channel=2)['id']
+    deckcfg.set_instrument(b, 'params', {'resonance': 8})
     forwarder.start()
     assert b not in forwarder._state['synths']
+    sent = _install_and_reset_sent()
     calls = []
     orig_start = forwarder.start
     forwarder.start = lambda: calls.append(1)
@@ -1989,6 +2002,9 @@ def test_forwarder_reapply_params_board_instrument_is_noop(deck):
         assert calls == []                      # no rebuild triggered
     finally:
         forwarder.start = orig_start
+    # the params overlay reached the board (device 0) as a zP amy.send line
+    codes = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert any('resonance=8' in c and 'amy.send' in c for c in codes), codes
 
 
 def test_forwarder_reapply_params_internal_missing_synth_still_rebuilds(deck):
@@ -2016,6 +2032,70 @@ def test_forwarder_reapply_fx(deck):
     amy._sends.clear()
     forwarder.reapply_fx()
     assert any(k.get('reverb') == '0.4,0.85,0.5' for k in amy._sends)
+
+
+# --- A: board device FX push (amyfleet.push_fx + forwarder wiring) ---
+def test_push_fx_chorus_reverb_and_eq(deck):
+    # A user chorus+reverb config emits bus-less amy.send lines (bus 0 on the
+    # board); EQ is per-synth (synth number == channel), one line per channel.
+    deckcfg, forwarder = deck
+    import amyfleet
+    fx = {'chorus': {'level': 0.5}, 'reverb': {'level': 0.4},
+          'eq': {'low': -3}}
+    sent = _install_and_reset_sent()
+    n = amyfleet.push_fx(0, fx, channels=(2, 5))
+    codes = [_zp_code(d) for d, dev in sent if dev == 0]
+    assert codes and all(c is not None for c in codes)
+    assert any('amy.send(chorus=' in c for c in codes), codes
+    assert any("amy.send(reverb='0.4,0.85,0.5')" in c for c in codes), codes
+    eq_lines = [c for c in codes if 'eq=' in c]
+    assert any('synth=2' in c for c in eq_lines), eq_lines
+    assert any('synth=5' in c for c in eq_lines), eq_lines
+    assert n == len(codes)                     # every emitted line is counted
+    # empty fx -> no frames, zero returned
+    sent.clear()
+    assert amyfleet.push_fx(0, {}) == 0
+    assert sent == []
+
+
+def test_push_fx_skips_unset_reverb(deck):
+    # The auto-room is an internal-only convenience -- push_fx must NOT send a
+    # reverb line when the user never configured the reverb dict.
+    deckcfg, forwarder = deck
+    import amyfleet
+    sent = _install_and_reset_sent()
+    amyfleet.push_fx(0, {'chorus': {'level': 0.5}}, channels=(2,))
+    codes = [_zp_code(d) for d, dev in sent if dev == 0]
+    assert any('chorus=' in c for c in codes), codes
+    assert not any('reverb=' in c for c in codes), codes
+
+
+def test_forwarder_reapply_fx_pushes_board_fx(deck):
+    # reapply_fx (Devices>FX editor's _fx_apply) now reaches boards: no stored
+    # board FX -> nothing pushed; stored board FX -> the frames go to the board.
+    deckcfg, forwarder = deck
+    deckcfg.add_instrument(device=0, channel=2)
+    forwarder.start()
+    sent = _install_and_reset_sent()
+    forwarder.reapply_fx()
+    assert not any((_zp_code(d) or '').find('chorus=') >= 0
+                   for d, dev in sent if dev == 0), 'no board FX stored yet'
+    deckcfg.set_device_fx(0, 'chorus', 'level', 0.5)
+    sent = _install_and_reset_sent()
+    forwarder.reapply_fx()
+    codes = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert any('amy.send(chorus=' in c for c in codes), codes
+
+
+def test_forwarder_start_pushes_board_fx(deck):
+    # A router rebuild restores each board device's stored FX (boot / move).
+    deckcfg, forwarder = deck
+    deckcfg.add_instrument(device=0, channel=2)
+    deckcfg.set_device_fx(0, 'chorus', 'level', 0.5)
+    sent = _install_and_reset_sent()
+    forwarder.start()
+    codes = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert any('amy.send(chorus=' in c for c in codes), codes
 
 
 # --- D3.2: force synth allocation before per-bus routing ---
@@ -4361,58 +4441,268 @@ def test_board_instrument_not_on_member_channel_no_warning(deck):
             sys.modules['decklog'] = prev
 
 
-# --- amyfleet: enroll_from_config dedups by device -- a conflicting 2nd
-# instrument on the same board is silently never enrolled (its notes never
-# sound); that drop must be logged, not silent.
-def test_amyfleet_enroll_conflict_channel_is_warned(deck):
+# --- amyfleet: multi-channel enrollment -------------------------------------
+# A board can host several deck instruments, each on its own channel. Enrollment
+# used to assign ONE channel per board, so a second instrument moved to a board
+# on a different channel could never sound. enroll_channels/enroll_from_config
+# now enroll a board on its FULL channel list in a single zP frame.
+
+def test_enroll_channels_one_frame_carries_both_channels(deck):
     deckcfg, _ = deck
     sys.modules.pop('amyfleet', None)
     amyfleet = importlib.import_module('amyfleet')
-    # two instruments routed to the SAME board (device 0) on DIFFERENT
-    # channels -- enroll_from_config dedups by device, so only the first is
-    # ever enrolled; the conflict must be logged, not dropped silently.
+    sent = _install_and_reset_sent()
+    amyfleet.enroll_channels(0, [2, 5])
+    frames = [(_zp_code(d), dev) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert len(frames) == 1, frames                # exactly one enrollment frame
+    code = frames[0][0]
+    assert '[2, 5]' in code, code                  # both channels, as a list
+    # degrade shape: works on firmware without deck_set_channels
+    assert 'deck_set_channels' in code and 'deck_set_channel(' in code
+    assert 'getattr' in code
+
+
+def test_enroll_from_config_two_channels_one_board_single_frame(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    # two instruments on the SAME board (device 0), channels 2 and 5 -- both
+    # must be enrolled (the old code enrolled only the first).
     deckcfg.add_instrument(device=0, channel=2)
     deckcfg.add_instrument(device=0, channel=5)
-    logs = []
-    fake = types.ModuleType('decklog')
-    fake.log = lambda m: logs.append(m)
-    fake.dbg = lambda *a, **k: None
-    fake.err = lambda *a, **k: None
-    prev = sys.modules.get('decklog')
-    sys.modules['decklog'] = fake
-    try:
-        n = amyfleet.enroll_from_config()
-        assert n == 1                              # dedup behaviour unchanged
-        assert any('ch2' in m and 'ch5' in m for m in logs)
-    finally:
-        if prev is None:
-            sys.modules.pop('decklog', None)
-        else:
-            sys.modules['decklog'] = prev
+    sent = _install_and_reset_sent()
+    n = amyfleet.enroll_from_config()
+    assert n == 1                                  # one device enrolled
+    frames = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert len(frames) == 1, frames                # ONE frame carrying both
+    assert '[2, 5]' in frames[0], frames
 
 
-def test_amyfleet_enroll_no_warning_when_channels_match(deck):
+def test_enroll_from_config_two_boards_one_frame_each(deck):
     deckcfg, _ = deck
     sys.modules.pop('amyfleet', None)
     amyfleet = importlib.import_module('amyfleet')
     deckcfg.add_instrument(device=0, channel=2)
-    deckcfg.add_instrument(device=0, channel=2)   # same device+channel: no conflict
-    logs = []
-    fake = types.ModuleType('decklog')
-    fake.log = lambda m: logs.append(m)
-    fake.dbg = lambda *a, **k: None
-    fake.err = lambda *a, **k: None
-    prev = sys.modules.get('decklog')
-    sys.modules['decklog'] = fake
-    try:
-        n = amyfleet.enroll_from_config()
-        assert n == 1
-        assert logs == []
-    finally:
-        if prev is None:
-            sys.modules.pop('decklog', None)
-        else:
-            sys.modules['decklog'] = prev
+    deckcfg.add_instrument(device=1, channel=5)
+    sent = _install_and_reset_sent()
+    n = amyfleet.enroll_from_config()
+    assert n == 2                                  # two devices enrolled
+    d0 = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    d1 = [_zp_code(d) for d, dev in sent if dev == 1 and _zp_code(d)]
+    assert len(d0) == 1 and '[2]' in d0[0], d0
+    assert len(d1) == 1 and '[5]' in d1[0], d1
+
+
+def test_enroll_from_config_ignores_internal_instruments(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    # default config is a single internal instrument (device='internal'); it has
+    # no board to enroll, so nothing is sent.
+    sent = _install_and_reset_sent()
+    n = amyfleet.enroll_from_config()
+    assert n == 0
+    assert [d for _, d in sent] == []
+
+
+def test_enroll_single_channel_backcompat_still_emits(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    sent = _install_and_reset_sent()
+    amyfleet.enroll(0, 3)                           # back-compat single-channel path
+    frames = [_zp_code(d) for d, dev in sent if dev == 0 and _zp_code(d)]
+    assert len(frames) == 1, frames
+    assert '[3]' in frames[0], frames
+
+
+# --- amyfleet: push an instrument's FULL sound state to a board -------------
+# Boards used to get only `patch & 0x7F`, aliasing DX7 130 -> Juno 2 and
+# dropping params + voice count. push_instrument/push_params send the real
+# thing over the zP control-API instead.
+
+def test_push_instrument_dx7_carries_full_patch_not_alias(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    instr = deckcfg.add_instrument(device=0, channel=2, type='dx7')
+    deckcfg.set_instrument(instr['id'], 'patch', 130)   # a DX7 patch
+    instr = deckcfg.get_instrument(instr['id'])
+    sent = _install_and_reset_sent()
+    assert amyfleet.push_instrument(0, instr) is True
+    codes = [_zp_code(d) for d, dev in sent if dev == 0]
+    # the FULL patch number 130 must appear -- and NEVER as a & 0x7F alias
+    assert any(c and 'patch=130' in c for c in codes), codes
+    # no raw Program Change (0xC0..0xCF) with the aliased value 130 & 0x7F == 2
+    for d, dev in sent:
+        b = bytes(d)
+        assert not (len(b) == 2 and (b[0] & 0xF0) == 0xC0 and b[1] == 2), b
+
+
+def test_push_instrument_carries_num_voices(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    instr = deckcfg.add_instrument(device=0, channel=2, type='juno6',
+                                   num_voices=7)
+    instr = deckcfg.get_instrument(instr['id'])
+    sent = _install_and_reset_sent()
+    amyfleet.push_instrument(0, instr)
+    codes = [_zp_code(d) for d, dev in sent]
+    assert any(c and 'num_voices=7' in c for c in codes), codes
+
+
+def test_push_instrument_skips_drums_and_gm(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    for t in ('drums', 'gm', 'gm2'):
+        instr = {'device': 0, 'channel': 2, 'type': t, 'patch': 130,
+                 'num_voices': 10, 'params': {}}
+        sent = _install_and_reset_sent()
+        assert amyfleet.push_instrument(0, instr) is False
+        assert sent == []                       # nothing pushed for non-melodic
+
+
+def test_push_params_emits_amy_send_for_stored_param(deck):
+    deckcfg, _ = deck
+    sys.modules.pop('amyfleet', None)
+    amyfleet = importlib.import_module('amyfleet')
+    # 'resonance' is a real amyparams.PARAMS scalar
+    instr = {'device': 0, 'channel': 2, 'type': 'juno6', 'patch': 10,
+             'num_voices': 10, 'params': {'resonance': 8}}
+    sent = _install_and_reset_sent()
+    assert amyfleet.push_params(0, instr) >= 1
+    codes = [_zp_code(d) for d, dev in sent if dev == 0]
+    assert any(c and 'amy.send' in c and 'resonance=8' in c for c in codes), codes
+    # addressed as synth == channel (verified vs midi.py/synth.py)
+    assert any(c and 'synth=2' in c for c in codes), codes
+
+
+def test_forwarder_start_board_pushes_full_state_no_alias(deck):
+    deckcfg, forwarder = deck
+    instr = deckcfg.add_instrument(device=0, channel=2, type='dx7')
+    deckcfg.set_instrument(instr['id'], 'patch', 130)
+    sent = _install_and_reset_sent()
+    forwarder.start()
+    codes = [_zp_code(d) for d, dev in sent if dev == 0]
+    assert any(c and 'patch=130' in c for c in codes), codes
+    # the &0x7F alias (0xC1 program change, value 2) must be gone
+    for d, dev in sent:
+        b = bytes(d)
+        assert not (len(b) == 2 and (b[0] & 0xF0) == 0xC0), b
+
+
+# --- instmove: move_instrument orchestration (plan + commit + enroll + apply) --
+# instmove.move_instrument is the ONE-CALL move: plan_move first, then (only on
+# an ok+changed plan) commit device+channel to deckcfg, re-enroll the affected
+# boards on their FULL post-move channel list, and rebuild the router (apply_all,
+# which also pushes each board instrument's full sound state). A not-ok or
+# same-device plan mutates nothing.
+
+def _mv():
+    sys.modules.pop('instmove', None)
+    return importlib.import_module('instmove')
+
+
+def _enroll_codes(sent, dev):
+    """zP frames to `dev` that are enrollment (deck_set_channels) frames."""
+    return [c for d, x in sent if x == dev
+            and (c := _zp_code(d)) and 'deck_set_channels' in c]
+
+
+def test_move_internal_to_board_enrolls_and_pushes(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    # board 0 already hosts one instrument on ch 2; move a DX7 internal onto it.
+    deckcfg.add_instrument(device=0, channel=2, type='juno6')
+    mv = deckcfg.add_instrument(device='internal', channel=1, type='dx7')
+    deckcfg.set_instrument(mv['id'], 'patch', 130)
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(mv['id'], 0)
+    assert plan['ok'] and plan['changed'] and plan['device'] == 0
+    # config reflects the plan
+    mi = deckcfg.get_instrument(mv['id'])
+    assert mi['device'] == 0 and mi['channel'] == plan['channel'] == 1
+    # ONE enrollment frame for board 0 carrying BOTH channels now on it
+    enroll = _enroll_codes(sent, 0)
+    assert len(enroll) == 1, enroll
+    assert '[1, 2]' in enroll[0], enroll
+    # the moved instrument's full state (patch 130, not the &0x7F alias) is
+    # pushed to the board by the apply_all router rebuild
+    push = [c for d, dev in sent if dev == 0 and (c := _zp_code(d))]
+    assert any('patch=130' in c for c in push), push
+
+
+def test_move_board_to_internal_releases_source_and_rebuilds(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    # board 0's ONLY instrument moves to internal -> source re-enrolled EMPTY.
+    b = deckcfg.add_instrument(device=0, channel=2, type='juno6')
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(b['id'], 'internal')
+    assert plan['ok'] and plan['changed']
+    assert deckcfg.get_instrument(b['id'])['device'] == 'internal'
+    # source board re-enrolled WITHOUT the vacated channel -> the empty release
+    enroll = _enroll_codes(sent, 0)
+    assert len(enroll) == 1, enroll
+    assert '[]' in enroll[0], enroll
+    # the router rebuilt with the instrument now internal (a synth exists for it)
+    assert b['id'] in forwarder._state['synths']
+
+
+def test_move_board_a_to_board_b_reenrolls_both(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    b = deckcfg.add_instrument(device=0, channel=2, type='juno6')
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(b['id'], 1)
+    assert plan['ok'] and plan['changed'] and plan['device'] == 1
+    # source board 0 emptied -> empty release; target board 1 gains the channel
+    e0 = _enroll_codes(sent, 0)
+    e1 = _enroll_codes(sent, 1)
+    assert len(e0) == 1 and '[]' in e0[0], e0
+    assert len(e1) == 1 and '[2]' in e1[0], e1
+
+
+def test_move_to_full_device_is_rejected_and_leaves_config(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    # fill board 0 with all 16 channels (non-MPE: one channel each)
+    for ch in range(1, 17):
+        deckcfg.add_instrument(device=0, channel=ch, type='juno6')
+    mv = deckcfg.add_instrument(device='internal', channel=1, type='juno6')
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(mv['id'], 0)
+    assert plan == {'ok': False, 'reason': 'full', 'device': 0}
+    # config untouched: still internal on its channel, and NOTHING was sent
+    mi = deckcfg.get_instrument(mv['id'])
+    assert mi['device'] == 'internal' and mi['channel'] == 1
+    assert [c for d, dev in sent if _zp_code(d)] == []
+
+
+def test_move_unsupported_type_to_board_is_rejected(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    mv = deckcfg.add_instrument(device='internal', channel=1, type='drums')
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(mv['id'], 0)
+    assert plan['ok'] is False and plan['reason'] == 'unsupported_type'
+    mi = deckcfg.get_instrument(mv['id'])
+    assert mi['device'] == 'internal' and mi['channel'] == 1
+    assert [c for d, dev in sent if _zp_code(d)] == []
+
+
+def test_move_same_device_is_noop(deck):
+    deckcfg, forwarder = deck
+    instmove = _mv()
+    mv = deckcfg.add_instrument(device='internal', channel=1, type='juno6')
+    sent = _install_and_reset_sent()
+    plan = instmove.move_instrument(mv['id'], 'internal')
+    assert plan['ok'] is True and plan['changed'] is False
+    mi = deckcfg.get_instrument(mv['id'])
+    assert mi['device'] == 'internal' and mi['channel'] == 1
+    assert sent == []                          # no enroll, no apply, no push
 
 
 # --- update engine: manifest-driven /user apply (deck/UPGRADE.md Phase 1) ---
@@ -6406,3 +6696,119 @@ def test_dk_confirm_runs_on_yes_and_dismisses(dk_env):
     clicked[-1](_Ev())                        # last CLICKED handler = yes button
     assert ran == [1]
     assert dk._confirm_open is None           # dismissed
+# instmove.py -- pure "move instrument to another device" planning (no hardware)
+# ---------------------------------------------------------------------------
+import instmove
+
+
+def _mv_instr(iid, ch, device='internal', type='juno6', mpe=None,
+              enabled=True, name=None):
+    d = {'id': iid, 'channel': ch, 'device': device, 'type': type,
+         'enabled': enabled, 'name': name or iid}
+    if mpe is not None:
+        d['mpe'] = mpe
+    return d
+
+
+def test_instmove_not_found():
+    insts = [_mv_instr('a', 1)]
+    plan = instmove.plan_move(insts, 'nope', 0)
+    assert plan == {'ok': False, 'reason': 'not_found', 'device': 0}
+
+
+def test_instmove_same_device_is_noop():
+    insts = [_mv_instr('a', 5, device='internal')]
+    plan = instmove.plan_move(insts, 'a', 'internal')
+    assert plan == {'ok': True, 'channel': 5, 'changed': False}
+
+
+def test_instmove_keeps_current_channel_when_free_on_target():
+    # 'a' lives on board 0 ch7; board 1 has nothing on ch7 -> keep ch7.
+    insts = [_mv_instr('a', 7, device=0),
+             _mv_instr('b', 3, device=1)]
+    plan = instmove.plan_move(insts, 'a', 1)
+    assert plan == {'ok': True, 'channel': 7, 'changed': True}
+
+
+def test_instmove_current_channel_taken_picks_lowest_free():
+    # 'a' is on ch1 (internal); target board 0 already has ch1 and ch2 taken.
+    insts = [_mv_instr('a', 1, device='internal'),
+             _mv_instr('x', 1, device=0),
+             _mv_instr('y', 2, device=0)]
+    plan = instmove.plan_move(insts, 'a', 0)
+    assert plan == {'ok': True, 'channel': 3, 'changed': True}
+
+
+def test_instmove_full_device_reports_full():
+    # target board 0 fully occupied: 16 single-channel instruments on 1..16.
+    insts = [_mv_instr('a', 1, device='internal')]
+    for ch in range(1, 17):
+        insts.append(_mv_instr('t%d' % ch, ch, device=0))
+    plan = instmove.plan_move(insts, 'a', 0)
+    assert plan == {'ok': False, 'reason': 'full', 'device': 0}
+
+
+def test_instmove_disabled_instruments_dont_block():
+    # ch1 on target is held only by a DISABLED instrument -> it doesn't reserve
+    # the channel (channels.occupancy skips enabled=False), so 'a' keeps ch1.
+    insts = [_mv_instr('a', 1, device='internal'),
+             _mv_instr('off', 1, device=0, enabled=False)]
+    plan = instmove.plan_move(insts, 'a', 0)
+    assert plan == {'ok': True, 'channel': 1, 'changed': True}
+
+
+def test_instmove_mpe_zone_picks_fitting_master():
+    # 'lead' is a 3-member MPE instrument (needs a 4-channel zone). Target
+    # internal has a single instrument parked on ch2, blocking a zone at ch1.
+    lead = _mv_instr('lead', 1, device=0,
+                     mpe={'enabled': True, 'members': 3})
+    blocker = _mv_instr('blk', 2, device='internal')
+    insts = [lead, blocker]
+    plan = instmove.plan_move(insts, 'lead', 'internal', mpe_on=True)
+    # ch1 zone {1,2,3,4} collides on ch2; lowest fitting master is ch3 ({3..6}).
+    assert plan == {'ok': True, 'channel': 3, 'changed': True}
+
+
+def test_instmove_mpe_no_zone_fits_is_full_despite_free_singles():
+    # 'lead' needs a 4-channel zone (members=3). Occupy channels 1,4,7,10,13,16
+    # on the target: no run of 4 contiguous free channels exists (and the clamped
+    # top zone hits ch16), yet plenty of single channels remain free.
+    lead = _mv_instr('lead', 1, device=0,
+                     mpe={'enabled': True, 'members': 3})
+    insts = [lead]
+    for ch in (1, 4, 7, 10, 13, 16):
+        insts.append(_mv_instr('b%d' % ch, ch, device='internal'))
+    plan = instmove.plan_move(insts, 'lead', 'internal', mpe_on=True)
+    assert plan == {'ok': False, 'reason': 'full', 'device': 'internal'}
+    # sanity: single channels ARE free (2,3,5,...) -- non-MPE move would fit.
+    plan_plain = instmove.plan_move(insts, 'lead', 'internal', mpe_on=False)
+    assert plan_plain['ok'] and plan_plain['channel'] == 2
+
+
+def test_instmove_existing_mpe_zone_on_target_blocks_channels():
+    # An MPE instrument already on the target claims a whole zone {1..5}; a plain
+    # instrument moving in must skip past those channels to ch6.
+    resident = _mv_instr('res', 1, device='internal',
+                         mpe={'enabled': True, 'members': 4})
+    mover = _mv_instr('m', 1, device=0)
+    insts = [resident, mover]
+    plan = instmove.plan_move(insts, 'm', 'internal', mpe_on=True)
+    assert plan == {'ok': True, 'channel': 6, 'changed': True}
+
+
+def test_instmove_board_rejects_gm_and_drums():
+    for t in ('gm', 'gm2', 'drums'):
+        insts = [_mv_instr('a', 1, device='internal', type=t)]
+        plan = instmove.plan_move(insts, 'a', 0)
+        assert plan == {'ok': False, 'reason': 'unsupported_type', 'device': 0}
+    # internal accepts every type.
+    insts = [_mv_instr('a', 1, device=0, type='drums')]
+    plan = instmove.plan_move(insts, 'a', 'internal')
+    assert plan['ok'] and plan['channel'] == 1 and plan['changed']
+
+
+def test_instmove_unsupported_reason_text():
+    drums = _mv_instr('d', 1, type='drums')
+    gm = _mv_instr('g', 1, type='gm')
+    assert 'sample banks' in instmove.unsupported_reason_text(drums, 0)
+    assert 'soundfont' in instmove.unsupported_reason_text(gm, 0).lower()

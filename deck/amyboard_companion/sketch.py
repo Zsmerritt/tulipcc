@@ -1,20 +1,25 @@
 # AMYboard Sketch -- Tulip Deck companion
 # Top-level code runs once at boot. loop() is called every 32nd note.
-# DESCRIPTION: listen on an assigned MIDI channel; Program Change -> patch,
-# a documented CC set -> AMY params. Channel persists across reboots and is set
+# DESCRIPTION: listen on the assigned MIDI channel(s); Program Change -> patch,
+# a documented CC set -> AMY params. Channels persist across reboots and are set
 # by the Tulip during enrollment (see "Enrollment" below), so each board in the
 # fleet can be addressed and fully controlled independently.
 #
-# Deploy this as the board's sketch (AMYboard Online "write to sketch", or the
-# control API zT to /user/current/sketch.py). One copy per board; the channel
-# makes them distinct.
+# Multi-channel: the deck can host several instruments on one board, each on its
+# own channel. This sketch used to listen on exactly ONE channel, so a second
+# instrument moved here on a different channel could never sound. It now keeps a
+# LIST of channels and per-channel state, adding one synth per channel.
 #
-# Enrollment: the Tulip assigns this board a channel by sending, to THIS USB
+# Deploy this as the board's sketch (AMYboard Online "write to sketch", or the
+# control API zT to /user/current/sketch.py). One copy per board; the channels
+# make them distinct.
+#
+# Enrollment: the Tulip assigns this board its channels by sending, to THIS USB
 # device only (tulip.midi_out(sysex, device=N)), a control-API zP that writes
 # the channel file and restarts the sketch -- see deck/amyfleet.py. On boot we
 # read that file, so the assignment sticks.
 #
-# CC map (received on our channel):
+# CC map (received on any of our channels):
 #   PC (program change) -> patch (0-127 Juno, 128-255 DX7, 256 piano)
 #   CC 74 -> filter cutoff / brightness
 #   CC 71 -> resonance
@@ -25,90 +30,141 @@
 
 import amy, midi, synth
 
-CH_FILE = '/user/deck_channel'
-DEFAULT_CHANNEL = 1
+CH_FILE = '/user/deck_channels'        # csv of channels; was a single int
+LEGACY_CH_FILE = '/user/deck_channel'  # pre-multi-channel single int (migration)
+DEFAULT_CHANNELS = [1]
 DEFAULT_PATCH = 0
 DEFAULT_VOICES = 8
 
-state = {
-    'channel': DEFAULT_CHANNEL,
-    'patch': DEFAULT_PATCH,
-    'voices': DEFAULT_VOICES,
-    'reson': 1.0,
-}
+# Per-channel synth state, keyed by MIDI channel. The board can host several
+# deck instruments, each on its own channel -- the single global `state` the
+# one-channel sketch kept could only ever serve one.
+channels = {}   # ch -> {'patch':, 'voices':, 'reson':}
 
 
-def _load_channel():
+def _parse_channels(s):
+    # Normalize a csv (or a bare legacy int) into a sorted, deduped 1..16 list.
+    out = []
+    for part in str(s).replace(' ', '').split(','):
+        if not part:
+            continue
+        try:
+            c = int(part)
+        except Exception:
+            continue
+        if 1 <= c <= 16 and c not in out:
+            out.append(c)
+    out.sort()
+    return out
+
+
+def _new_state():
+    return {'patch': DEFAULT_PATCH, 'voices': DEFAULT_VOICES, 'reson': 1.0}
+
+
+def _load_channels():
+    for path in (CH_FILE, LEGACY_CH_FILE):   # new csv first, then legacy int
+        try:
+            chs = _parse_channels(open(path).read())
+            if chs:
+                return chs
+        except Exception:
+            pass
+    return list(DEFAULT_CHANNELS)
+
+
+def _save_channels(chs):
     try:
-        return max(1, min(16, int(open(CH_FILE).read().strip())))
-    except Exception:
-        return DEFAULT_CHANNEL
-
-
-def _save_channel(ch):
-    try:
-        open(CH_FILE, 'w').write(str(ch))
+        open(CH_FILE, 'w').write(','.join(str(c) for c in chs))
     except Exception:
         pass
 
 
-def _apply():
-    # Put our synth on the assigned channel so the default MIDI handler plays
-    # note on/off for us; our callback below adds patch + CC control.
+def _apply_channel(ch):
+    # Put a synth on `ch` so the default MIDI handler plays note on/off for it;
+    # our callback below adds patch + CC control per channel.
+    st = channels.get(ch)
+    if st is None:
+        return
     try:
-        midi.config.release_synth_for_channel(state['channel'])
+        midi.config.release_synth_for_channel(ch)
     except Exception:
         pass
     midi.config.add_synth(
-        synth.PatchSynth(patch=state['patch'], num_voices=state['voices']),
-        channel=state['channel'])
+        synth.PatchSynth(patch=st['patch'], num_voices=st['voices']),
+        channel=ch)
+
+
+def _apply():
+    for ch in channels:
+        _apply_channel(ch)
+
+
+def set_channels(chs):
+    chs = _parse_channels(','.join(str(c) for c in chs)) or list(DEFAULT_CHANNELS)
+    # Drop synths for channels we're no longer enrolled on, so they go silent.
+    for ch in list(channels):
+        if ch not in chs:
+            try:
+                midi.config.release_synth_for_channel(ch)
+            except Exception:
+                pass
+            channels.pop(ch, None)
+    for ch in chs:
+        if ch not in channels:
+            channels[ch] = _new_state()
+    _save_channels(chs)
+    _apply()
 
 
 def set_channel(ch):
-    ch = max(1, min(16, int(ch)))
-    try:
-        midi.config.release_synth_for_channel(state['channel'])
-    except Exception:
-        pass
-    state['channel'] = ch
-    _save_channel(ch)
-    _apply()
+    # Back-compat: enroll on a single channel.
+    set_channels([ch])
 
 
-def set_patch(p):
-    state['patch'] = int(p)
-    _apply()
+def set_patch(ch, p):
+    st = channels.get(ch)
+    if st is None:
+        return
+    st['patch'] = int(p)
+    _apply_channel(ch)
 
 
-def set_voices(n):
-    state['voices'] = max(1, min(16, int(n)))
-    _apply()
+def set_voices(ch, n):
+    st = channels.get(ch)
+    if st is None:
+        return
+    st['voices'] = max(1, min(16, int(n)))
+    _apply_channel(ch)
 
 
-def _try_send(**kw):
+def _try_send(ch, **kw):
     # amy.send with best-effort params: never let an unsupported kwarg on this
     # firmware break MIDI handling.
     try:
-        amy.send(synth=state['channel'], **kw)
+        amy.send(synth=ch, **kw)
     except Exception:
         pass
 
 
-def _cc(control, value):
+def _cc(ch, control, value):
     v = value / 127.0
+    st = channels.get(ch)
     if control == 74:      # filter cutoff / brightness
-        _try_send(filter_freq=100.0 + v * 6000.0)
+        _try_send(ch, filter_freq=100.0 + v * 6000.0)
     elif control == 71:    # resonance
-        state['reson'] = 0.1 + v * 8.0
-        _try_send(resonance=state['reson'])
+        r = 0.1 + v * 8.0
+        if st is not None:
+            st['reson'] = r
+        _try_send(ch, resonance=r)
     elif control == 70:    # detune (best-effort)
-        _try_send(detune=v * 0.5)
+        _try_send(ch, detune=v * 0.5)
     elif control == 73:    # amp attack (best-effort)
-        _try_send(bp0='%d,1.0,%d,0.0' % (int(v * 2000), 200))
+        _try_send(ch, bp0='%d,1.0,%d,0.0' % (int(v * 2000), 200))
     elif control == 72:    # amp release (best-effort)
-        _try_send(bp0='0,1.0,%d,0.0' % int(50 + v * 3000))
+        _try_send(ch, bp0='0,1.0,%d,0.0' % int(50 + v * 3000))
     elif control == 75:    # polyphony
-        set_voices(1 + int(v * 15))
+        set_voices(ch, 1 + int(v * 15))
 
 
 def midi_cb(m):
@@ -116,12 +172,12 @@ def midi_cb(m):
         return
     status = m[0] & 0xF0
     ch = (m[0] & 0x0F) + 1
-    if ch != state['channel']:
-        return  # not addressed to this board
+    if ch not in channels:
+        return  # not one of this board's enrolled channels
     if status == 0xC0:                     # Program Change -> patch
-        set_patch(m[1])
+        set_patch(ch, m[1])
     elif status == 0xB0 and len(m) > 2:    # Control Change -> params
-        _cc(m[1], m[2])
+        _cc(ch, m[1], m[2])
 
 
 # --- firmware over-the-wire update (Tulip-driven) ---------------------------
@@ -213,7 +269,8 @@ def ota_sysex(raw):
 
 
 # --- boot ---
-state['channel'] = _load_channel()
+for _ch in _load_channels():
+    channels[_ch] = _new_state()
 _apply()
 midi.add_callback(midi_cb)
 try:

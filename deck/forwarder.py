@@ -348,14 +348,20 @@ def _apply_device_fx(cfg, targets, prev_buses=()):
 def reapply_params(iid):
     """Re-send one instrument's params to its EXISTING synth (no rebuild), for
     live audition while editing. Falls back to a full start() if it has no synth
-    yet -- UNLESS it's a board instrument, which never has one: board params
-    aren't pushed over MIDI here (that's a separate feature), so calling
-    start() on every parameditor slider tick would pay a full ~80-200ms router
-    rebuild for zero effect. Just no-op instead."""
+    yet -- UNLESS it's a board instrument, which never has a local synth: its
+    params live on the board, so we push JUST the params overlay there (via the
+    zP control-API) instead of paying a full ~80-200ms router rebuild -- or the
+    old silent no-op that left board edits inaudible until the next start()."""
     syn = _state['synths'].get(iid)
     if syn is None:
         instr = deckcfg.get_instrument(iid) or {}
         if instr.get('device') != 'internal':
+            # Board instrument: push the params overlay to it, no rebuild.
+            try:
+                import amyfleet
+                amyfleet.push_params(instr.get('device'), instr)
+            except Exception:
+                pass
             return
         start()
         return
@@ -511,9 +517,40 @@ def refresh_room():
         pass
 
 
+def _push_board_fx(cfg):
+    """Push each board device's stored device-FX overrides to the board (A).
+
+    The Devices>FX editor stores FX for a board just like the internal device,
+    but only internal FX was ever transmitted -- a board's FX config was
+    placebo. Group board instruments by device -> their channels (EQ is
+    per-synth == per-channel), and for each device that has stored FX push it
+    via the zP control-API. Lazy import + fully guarded: an FX push must never
+    take down a rebuild."""
+    try:
+        import amyfleet
+    except Exception:
+        return
+    by_dev = {}
+    for instr in deckcfg.instruments(cfg):
+        dev = instr.get('device')
+        if isinstance(dev, int) and instr.get('enabled', True):
+            by_dev.setdefault(dev, set()).add(int(instr.get('channel', 2)))
+    for dev, chs in by_dev.items():
+        try:
+            fx = deckcfg.device_fx(dev, cfg)
+            if fx:
+                amyfleet.push_fx(dev, fx, channels=sorted(chs))
+        except Exception:
+            pass
+
+
 def reapply_fx():
-    """Re-apply the per-bus FX to the live synths (live audition)."""
-    _apply_device_fx(deckcfg.load(), _state.get('fx_targets') or [])
+    """Re-apply the per-bus FX to the live synths (live audition). Also pushes
+    every board device's stored FX (A): the Devices>FX editor's _fx_apply calls
+    this, so its board-FX edits go live with no change to devices.py."""
+    cfg = deckcfg.load()
+    _apply_device_fx(cfg, _state.get('fx_targets') or [])
+    _push_board_fx(cfg)
 
 
 def start():
@@ -857,9 +894,14 @@ def _start_once():
                 except Exception:
                     pass
         else:
-            # Board: push its patch (Program Change) then forward notes to it.
+            # Board: push its FULL sound state, then forward notes to it. The
+            # old bare Program Change sent `patch & 0x7F`, which aliased every
+            # DX7 patch (130 -> Juno 2) and carried no params/voice count.
+            # push_instrument goes through tulip.midi_out (zP), NOT amy.send, so
+            # it is unaffected by the _AmyBatch context that wraps this build.
             try:
-                _emit((0xC0 | ((ch - 1) & 0x0F), instr.get('patch', 0) & 0x7F), dev)
+                import amyfleet
+                amyfleet.push_instrument(dev, instr)
             except Exception:
                 pass
             route[1].append(dev)
@@ -892,6 +934,9 @@ def _start_once():
                 pass
 
     _apply_device_fx(cfg, _state['fx_targets'], prev_fx_buses)
+    # Restore each board device's stored FX too (A): board FX must survive a
+    # boot / rebuild / instrument move, not just live edits via reapply_fx.
+    _push_board_fx(cfg)
     _upload_c_routes()   # C router table matches the routes just built (O-2)
 
     # Re-assert the configured GLOBAL VOLUME: the synth rebuild resets AMY
