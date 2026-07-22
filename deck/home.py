@@ -195,7 +195,9 @@ _DECK_MODULES = ('boot', 'home', 'settings', 'instrument', 'mpe', 'files',
                  # Debug mode: Profiler + Logs tiles (Settings > System)
                  'profiler', 'profilerdata', 'logs', 'logtail',
                  # deck <-> AMYboard transport (USB-MIDI working, UART skeleton)
-                 'boardlink')
+                 'boardlink',
+                 # pure "move instrument to another device" planning
+                 'instmove')
 
 
 def deck_modules_set():

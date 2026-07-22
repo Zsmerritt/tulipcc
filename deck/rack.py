@@ -215,16 +215,38 @@ def _rebuild_edit():
 
 
 def _set_device(dev):
+    # ONE call does the whole move: instmove.move_instrument plans (does the
+    # target even fit this instrument / this KIND of sound?), commits device +
+    # channel, re-enrolls the affected boards, and rebuilds the router. We used
+    # to blindly set device + next_free_channel + apply_all here, which (a) never
+    # told the user when a board had no free channel (the instrument silently
+    # vanished onto ch 1 of a full device) and (b) let GM/drums land on a bare
+    # board that can't host them. Now a failure raises a modal instead.
+    import instmove
     iid = deckcfg.active_instrument()
-    deckcfg.set_instrument(iid, 'device', dev)
-    # land on the next free channel on the new device (keep the user's name)
-    deckcfg.set_instrument(iid, 'channel',
-                           deckcfg.next_free_channel(dev, exclude_iid=iid))
-    deckcfg.apply_all()
-    if _s.get('shell') is not None:
-        _s['shell'].refresh_chips()
-    _refresh_list()
-    _rebuild_edit()
+    plan = instmove.move_instrument(iid, dev)
+    if plan.get('ok'):
+        if not plan.get('changed'):
+            _rebuild_edit()        # same-device tap: just keep the highlight
+            return
+        if _s.get('shell') is not None:
+            _s['shell'].refresh_chips()
+        _refresh_list()
+        _rebuild_edit()
+        return
+    reason = plan.get('reason')
+    if reason == 'not_found':
+        return                     # stale callback over a removed instrument
+    name = sm.device_name(dev)
+    if reason == 'full':
+        dk.choice("Device full",
+                  "%s has no free MIDI channels. Pick another device." % name,
+                  [("OK", dk.SURFACE2, None)])
+    elif reason == 'unsupported_type':
+        instr = deckcfg.get_instrument(iid)
+        dk.choice("Can't move to a board",
+                  instmove.unsupported_reason_text(instr, dev),
+                  [("OK", dk.SURFACE2, None)])
 
 
 def _channel_cb(ch):
