@@ -4198,9 +4198,10 @@ def test_piano_velocity_remap_on_forward_path():
         'c_channels': set(), 'notes': {}, 'mpe_members': set(), 'seen': 0})
     forwarder._route(bytes((0x90, 60, 100)))
     vel = 100 / 127.0
-    # piano gets vel**0.5 (sqrt lift -> mf audible); every other type unchanged
-    assert forwarder.PIANO_VEL_POW == 0.5
-    assert piano.got == [pytest.approx(vel ** 0.5)]
+    # piano gets vel**PIANO_VEL_POW (gentle lift -> mf audible without the
+    # over-boost of the old 0.5 sqrt); every other type unchanged
+    assert forwarder.PIANO_VEL_POW == 0.8
+    assert piano.got == [pytest.approx(vel ** forwarder.PIANO_VEL_POW)]
     assert other.got == [pytest.approx(vel)]
 
 

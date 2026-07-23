@@ -30,11 +30,15 @@ import deckcfg
 # amp is scaled, not stomped) brings them to parity. A user-stored `level`
 # param still wins (it's already in params, so the inject is skipped).
 GM_TYPE_GAIN = 1.7
-# Piano velocity curve (levels/#96): the piano engine's response is ~vel**3.5,
-# so mezzo-forte played nearly silent. sqrt-remap (vel**0.5) lifts vel 0.5 to
-# ~juno parity WITHOUT adding ff clipping (vel 1.0 -> 1.0). Applied on the deck
-# forward path (_route) to piano instruments only; carried on the synth object.
-PIANO_VEL_POW = 0.5
+# Piano velocity curve (levels/#97): the piano engine's response is ~vel**3.5,
+# which leaves mezzo-forte thin, so _route remaps vel -> vel**PIANO_VEL_POW on
+# piano instruments only (vel 1.0 -> 1.0, so no ff clipping); carried on the
+# synth object. HISTORY: this was 0.5 (sqrt), but that was calibrated while the
+# X32 monitor rig was L-R phase-cancelling the centered piano signal -- the
+# reference was falsely quiet, and 0.5 (~+10.5 dB at mf) over-boosted once the
+# rig was fixed. 0.8 keeps a gentle lift (~+4 dB at mf, effective loudness
+# exponent ~2.8 instead of the raw ~3.5) without the over-boost.
+PIANO_VEL_POW = 0.8
 
 _state = {
     'on': False,
@@ -142,8 +146,8 @@ def _route_impl(m):
                 syn = synths.get(iid)
                 if syn is not None:
                     try:
-                        # piano velocity curve (PIANO_VEL_POW): vel**0.5 on
-                        # piano instruments only, carried on the synth. Other
+                        # piano velocity curve: vel**PIANO_VEL_POW on piano
+                        # instruments only, carried on the synth. Other
                         # types render vel unchanged. (C-owned solo channels
                         # play in AMY's C layer and never reach here.)
                         vp = getattr(syn, 'vel_pow', None)
@@ -448,7 +452,7 @@ def rebuild_one(iid):
         _state['synths'][iid] = syn
         if instr.get('type') == 'piano':
             try:
-                syn.vel_pow = PIANO_VEL_POW       # _route applies vel**0.5
+                syn.vel_pow = PIANO_VEL_POW       # _route applies vel**vel_pow
             except Exception:
                 pass
         di = getattr(syn, 'deferred_init', None)
@@ -818,7 +822,7 @@ def _start_once():
                 _state['synths'][instr['id']] = syn
                 if instr.get('type') == 'piano':
                     try:
-                        syn.vel_pow = PIANO_VEL_POW   # _route applies vel**0.5
+                        syn.vel_pow = PIANO_VEL_POW   # _route applies vel**vel_pow
                     except Exception:
                         pass
                 if c_own:
