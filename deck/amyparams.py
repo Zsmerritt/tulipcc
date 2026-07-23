@@ -352,7 +352,39 @@ PARAMS = [
     # tulip.piano_partials(); synth_send_calls skips it.
     _slider('piano_quality', 'FX', 'partial detail', 8, 40, 40, 'advanced',
             {'kind': 'piano_quality'}, truth=TRUTH_DECK),
+
+    # Piano SUSTAIN: how long the note rings. The interp-partials engine bakes
+    # the decay as breakpoint TIMES; tulip.piano_sustain() time-stretches them
+    # so the note plays the same spectral trajectory more slowly (longer ring,
+    # same timbre). The slider reads in SECONDS and DEFAULTS TO THE MAX (5 s):
+    # a fresh piano rings long and the user drags DOWN to shorten -- there is
+    # deliberately no infinite/hold toggle. Device-global (the C engine has one
+    # multiplier); forwarder applies kind 'piano_sustain' via
+    # piano_sustain_arg() -> tulip.piano_sustain(); synth_send_calls skips it.
+    _slider('piano_sustain', 'FX', 'sustain', 0.0, 5.0, 5.0, 'basic',
+            {'kind': 'piano_sustain'}, scale=10, unit='s', truth=TRUTH_DECK),
 ]
+
+
+# --- piano SUSTAIN seconds -> engine stretch -------------------------------
+#
+# The 'piano_sustain' slider stores SECONDS; the engine (tulip.piano_sustain)
+# takes a time-stretch multiplier * 1000 for the baked piano envelope. The
+# natural, un-stretched piano rings ~1 s audibly, so as a FIRST GUESS the
+# desired ring in seconds maps ~1:1 onto the stretch factor (5 s => stretch
+# 5.0 => arg 5000). The C side clamps the arg to 250..8000 (0.25x..8x).
+#
+# THIS IS THE ONE TUNABLE CONSTANT. The orchestrator measures the real ring on
+# the device at the 5 s default and adjusts _SUSTAIN_S_TO_STRETCH so the top of
+# the slider lands on ~5 s of audible ring. Nothing else needs to change.
+_SUSTAIN_S_TO_STRETCH = 1.0   # engine stretch factor per second of desired ring
+
+
+def piano_sustain_arg(seconds):
+    """Map the piano 'sustain' slider's SECONDS to tulip.piano_sustain()'s
+    stretch*1000 integer argument. Pure + deterministic so the router and the
+    tests agree. (The C binding re-clamps to 250..8000.)"""
+    return int(round(float(seconds) * _SUSTAIN_S_TO_STRETCH * 1000.0))
 
 # --- FM / DX7 operator schema (feature #98) -------------------------------
 #
@@ -1086,7 +1118,7 @@ def synth_send_calls(params, penv=None):
             continue
         ap = d['apply']
         kind = ap['kind']
-        if kind in ('bus_send', 'piano_quality'):
+        if kind in ('bus_send', 'piano_quality', 'piano_sustain'):
             continue        # router-applied kinds, not amy.send(synth=...)
         if kind == 'osc':
             for osc, arg, coef in ap['targets']:

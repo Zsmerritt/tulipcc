@@ -1843,6 +1843,28 @@ def test_the_honesty_marker_is_scoped_by_evidence_not_sprayed():
     assert not any(ap.is_fabricated(d, 'default') for d in ap.fx_defs())
 
 
+def test_piano_sustain_maps_seconds_to_engine_stretch():
+    # The piano 'sustain' slider reads in SECONDS and DEFAULTS TO THE MAX (5 s):
+    # a fresh piano rings long, the user drags DOWN to shorten (no infinite
+    # toggle). amyparams.piano_sustain_arg() turns those seconds into the
+    # stretch*1000 int the forwarder feeds tulip.piano_sustain().
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME['piano_sustain']
+    assert (d['min'], d['max'], d['default']) == (0.0, 5.0, 5.0)
+    assert d['unit'] == 's'
+    # deck-side construct no patch can set: truthful, never a fabricated guess
+    assert d['truth'] == ap.TRUTH_DECK
+    assert ap.is_fabricated(d, 'default') is False
+    # seconds -> stretch*1000 (first-guess 1:1; the C binding re-clamps 250..8000)
+    assert ap.piano_sustain_arg(d['default']) == 5000    # default 5 s -> 5.0x
+    assert ap.piano_sustain_arg(5.0) == 5000
+    assert ap.piano_sustain_arg(1.0) == 1000             # natural ~1 s -> 1.0x
+    assert ap.piano_sustain_arg(2.5) == 2500
+    assert ap.piano_sustain_arg(0.0) == 0                # binding clamps up to 250
+    # router-applied kind: never emitted as an amy.send(synth=...) kwarg
+    assert ap.synth_send_calls({'piano_sustain': 3.0}) == []
+
+
 def test_pan_matches_the_pan_amy_actually_implements():
     import amyparams as ap
     # AMY's pan is 0..1 and CLAMPED (lgain_of_pan/rgain_of_pan floor it at 0),

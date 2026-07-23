@@ -308,6 +308,18 @@ def _apply_params(syn, params, instr=None):
                 tulip.piano_partials(int(pq))
         except Exception:
             pass
+    # piano SUSTAIN (envelope time-stretch): device-global engine multiplier.
+    # Slider is in seconds; amyparams.piano_sustain_arg maps that to the
+    # stretch*1000 int the C binding wants (single tunable constant lives there).
+    ps = (params or {}).get('piano_sustain')
+    if ps is not None:
+        try:
+            import tulip
+            if hasattr(tulip, 'piano_sustain'):
+                import amyparams
+                tulip.piano_sustain(amyparams.piano_sustain_arg(ps))
+        except Exception:
+            pass
 
 
 def _apply_device_fx(cfg, targets, prev_buses=()):
