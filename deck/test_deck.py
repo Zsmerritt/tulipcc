@@ -4220,6 +4220,34 @@ def test_start_tags_only_piano_synth_with_vel_pow(deck):
     assert getattr(syn, 'vel_pow', None) is None
 
 
+def test_piano_voices_follow_slider_up_to_osc_budget_cap(deck):
+    # The piano used to be hard-capped at 4 voices, so the rack voices slider
+    # had no effect and 6-8 note chords dropped notes. Each piano voice is a
+    # 25-osc interp_partials block out of AMY's 250, so the cap is now
+    # PIANO_MAX_VOICES (osc budget with layering headroom), and num_voices
+    # drives the synth up to it.
+    deckcfg, forwarder = deck
+    assert forwarder.PIANO_MAX_VOICES == 8
+    iid = deckcfg.load()['instruments'][0]['id']
+    deckcfg.set_instrument(iid, 'type', 'piano')
+    deckcfg.set_instrument(iid, 'patch', 256)
+    # slider value below the cap is honored as-is
+    deckcfg.set_instrument(iid, 'num_voices', 6)
+    forwarder.start()
+    assert forwarder._state['synths'][iid].num_voices == 6
+    # values at/above the cap clamp to it (incl. the config default of 10)
+    deckcfg.set_instrument(iid, 'num_voices', 32)
+    forwarder.start()
+    assert forwarder._state['synths'][iid].num_voices == \
+        forwarder.PIANO_MAX_VOICES
+    # non-piano types are untouched by the cap
+    deckcfg.set_instrument(iid, 'type', 'juno6')
+    deckcfg.set_instrument(iid, 'patch', 0)
+    deckcfg.set_instrument(iid, 'num_voices', 12)
+    forwarder.start()
+    assert forwarder._state['synths'][iid].num_voices == 12
+
+
 def test_kitcaps_table_shape_and_gain():
     import kitcaps
     # the peak cap scales every baked velscale so the loudest measured hit

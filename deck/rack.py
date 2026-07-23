@@ -650,9 +650,15 @@ def _build_edit(parent, shell):
         dk.label(r, "Voices", color=dk.TEXT)
         dk.label(r, "1 (fixed by kit)", color=dk.MUTED)
     else:
-        _s['vlabel'] = dk.label(r, "%d voices" % instr.get('num_voices', 10),
-                                color=dk.TEXT)
-        dk.slider(r, instr.get('num_voices', 10), 1, 32, w=250, cb=_voices_cb,
+        # The piano's voices are osc-budget-limited (25 oscs each, see
+        # forwarder.PIANO_MAX_VOICES); cap the slider there so every position
+        # the user can pick actually takes effect instead of silently clamping.
+        import forwarder
+        vmax = (forwarder.PIANO_MAX_VOICES
+                if instr.get('type') == 'piano' else 32)
+        v = min(instr.get('num_voices', 10), vmax)
+        _s['vlabel'] = dk.label(r, "%d voices" % v, color=dk.TEXT)
+        dk.slider(r, v, 1, vmax, w=250, cb=_voices_cb,
                   color=dk.GREEN, on_release=_voices_done)
 
     # Reset patch: clear this instrument's sound-design overrides (params,

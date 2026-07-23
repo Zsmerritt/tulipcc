@@ -35,6 +35,17 @@ GM_TYPE_GAIN = 1.7
 # ~juno parity WITHOUT adding ff clipping (vel 1.0 -> 1.0). Applied on the deck
 # forward path (_route) to piano instruments only; carried on the synth object.
 PIANO_VEL_POW = 0.5
+# Piano polyphony ceiling. Each piano voice (patch 256, interp_partials) claims
+# a fixed block of 25 oscs (1 control + 24 partials; amy patch_oscs[256]=25 --
+# the partial-detail knob does NOT shrink this, the full span is reserved
+# regardless). The whole build has 250 oscs total (amy/src/api.c
+# amy_default_config: max_oscs=250; tulip's amy_connector.c doesn't override
+# it). 8 voices = 200 oscs, leaving 50 for a layered second instrument -- e.g.
+# a juno at 8 voices (6 oscs/voice = 48), a dx7 at 6 (8/voice = 48), or a
+# sampled drum kit (1 voice, ~42 oscs). 10 voices would eat the entire pool and
+# the failed allocations play as silently SKIPPED notes, so keep real headroom.
+# The rack "voices" slider drives num_voices up to this cap for the piano.
+PIANO_MAX_VOICES = 8
 
 _state = {
     'on': False,
@@ -438,7 +449,10 @@ def rebuild_one(iid):
                                         channel=(ch if c_own else None))
             else:
                 nv = instr.get('num_voices')
-                nv = min(nv or 4, 4) if instr.get('type') == 'piano' else (nv or 10)
+                # osc-budget cap for the piano (see PIANO_MAX_VOICES); the
+                # rack voices slider drives nv up to that ceiling.
+                nv = (min(nv or PIANO_MAX_VOICES, PIANO_MAX_VOICES)
+                      if instr.get('type') == 'piano' else (nv or 10))
                 syn = _synth.PatchSynth(patch=instr.get('patch', 0),
                                         num_voices=nv,
                                         channel=(ch if c_own else None))
@@ -801,15 +815,13 @@ def _start_once():
                         num_voices=instr.get('num_voices', 10),
                         channel=(ch if c_own else None))
                 else:
-                    # the piano engine claims ~25 oscs per voice internally
-                    # (interp_partials) -- 10 voices would want 250 of AMY's
-                    # 250 oscs (amy/src/api.c: max_oscs), leaving zero
-                    # headroom for anything else and the failed allocations
-                    # played as SKIPPED NOTES. 4 voices is the engine's
-                    # practical ceiling.
+                    # osc-budget cap for the piano: 25 oscs/voice, capped at
+                    # PIANO_MAX_VOICES (see the comment there) so a layered
+                    # second instrument keeps headroom. The rack voices slider
+                    # drives nv up to that ceiling.
                     nv = instr.get('num_voices')
                     if instr.get('type') == 'piano':
-                        nv = min(nv or 4, 4)
+                        nv = min(nv or PIANO_MAX_VOICES, PIANO_MAX_VOICES)
                     else:
                         nv = nv or 10
                     syn = _synth.PatchSynth(patch=instr.get('patch', 0),
