@@ -757,6 +757,22 @@ STATIC mp_obj_t tulip_piano_partials(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_obj, 1, 1, tulip_piano_partials);
+
+// tulip.piano_sustain(stretch_x1000) -- SUSTAIN for the interp-partials
+// (piano) engine: time-stretch the baked per-partial envelope so notes ring
+// longer with the same timbre. The arg is the stretch multiplier * 1000
+// (5000 => 5.0x ~= 5x longer ring), clamped to 250..8000 (0.25x..8x). 1000
+// (== 1.0x) is the natural, bit-identical default. Device-global; like
+// piano_partials it affects only NEW note-ons, so the router applies it on
+// rebuild while no piano notes are held.
+STATIC mp_obj_t tulip_piano_sustain(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 250) n = 250;
+    if (n > 8000) n = 8000;
+    amy_partials_time_stretch = (float)n / 1000.0f;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_sustain_obj, 1, 1, tulip_piano_sustain);
 #endif
 
 // tulip.num_midi_devices() -- count of connected USB-MIDI OUT devices (fleet size,
@@ -2308,6 +2324,7 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_audio_tap_read), MP_ROM_PTR(&tulip_audio_tap_read_obj) },
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_sustain), MP_ROM_PTR(&tulip_piano_sustain_obj) },
 #endif
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
