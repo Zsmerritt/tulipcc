@@ -120,6 +120,20 @@ def _merge_instrument(index, d):
         # Migrate instruments saved before 'type' existed: infer it from the patch.
         if not d.get('type'):
             instr['type'] = type_of_patch(instr.get('patch', 0))
+        # Migrate RETIRED param names/units in the stored sound overlay (today:
+        # 'piano_quality' harmonic limit -> 'piano_detail' partial count). Done
+        # here, on the one path every persisted instrument takes, so no reader
+        # downstream ever sees an old name. A failure must not cost the user
+        # their config, so it degrades to "leave the params alone".
+        try:
+            import amyparams
+            amyparams.migrate_params(instr.get('params'))
+        except Exception as e:
+            try:
+                import decklog
+                decklog.dbg("deckcfg: param migration skipped: %r" % (e,))
+            except Exception:
+                pass
     return instr
 
 

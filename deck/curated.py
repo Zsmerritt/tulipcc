@@ -49,14 +49,14 @@ _VIEWS = {
         'name': 'Piano',
         'tabs': [
             ('Tone', ['level', 'filter_freq', 'resonance', 'pan',
-                      'reverb_send', 'piano_sustain', 'piano_quality']),
+                      'reverb_send', 'piano_sustain', 'piano_detail']),
             ('Dynamics', ['amp_attack', 'amp_decay', 'amp_sustain',
                           'amp_release']),
         ],
         'labels': {
             'level': 'volume', 'filter_freq': 'brightness',
             'resonance': 'hardness', 'pan': 'pan',
-            'piano_sustain': 'sustain', 'piano_quality': 'partial detail',
+            'piano_sustain': 'sustain', 'piano_detail': 'partial detail',
             'amp_attack': 'strike', 'amp_decay': 'body',
             'amp_sustain': 'sustain', 'amp_release': 'release',
         },

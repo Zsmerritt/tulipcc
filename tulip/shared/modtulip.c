@@ -746,9 +746,14 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_activity_obj, 0, 0, tulip_
 #ifndef __EMSCRIPTEN__
 // tulip.piano_partials(n) -- cap the interp-partials (piano) engine at
 // harmonic n (8..40). Each held piano note renders ~24 partial oscs at
-// full detail (~14% of a core); the deck's "partial detail" param trades
-// top-end air for polyphony headroom (OPT-8). Apply while no piano notes
-// are held (the router applies it on rebuild).
+// full detail (~14% of a core); lowering this trades top-end air for
+// polyphony headroom (OPT-8). Apply while no piano notes are held (the
+// router applies it on rebuild).
+//
+// NOTE: n is a harmonic INDEX, NOT the number of partials rendered -- the
+// engine's static map is sparse above harmonic 17, so n=20 renders 18 and
+// n>=37 all render the same 24. Kept for compatibility; new callers should
+// use piano_partials_count() below, which speaks in partials rendered.
 STATIC mp_obj_t tulip_piano_partials(size_t n_args, const mp_obj_t *args) {
     int n = mp_obj_get_int(args[0]);
     if (n < 8) n = 8;
@@ -757,6 +762,32 @@ STATIC mp_obj_t tulip_piano_partials(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_obj, 1, 1, tulip_piano_partials);
+
+// tulip.piano_partials_count(n) -- the SAME engine knob as piano_partials(),
+// but n is the number of partials that actually SOUND (8..24), not a harmonic
+// index. The two differ because the engine's static use_this_partial_map is
+// sparse above harmonic 17: a harmonic limit of 20 renders 18 partials, 24
+// renders 19, and every limit from 35 up renders the same 24 -- so the old
+// number both misreported the cost and stopped doing anything over its top
+// third. amy_partials_limit_for_count() inverts the map (in AMY, walking the
+// map itself, so nothing here mirrors it) and clamps out-of-range requests to
+// the achievable end. Like piano_partials() this affects only NEW note-ons.
+STATIC mp_obj_t tulip_piano_partials_count(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 1) n = 1;
+    amy_partials_harmonic_limit = (uint8_t)amy_partials_limit_for_count((uint16_t)n);
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_count_obj, 1, 1, tulip_piano_partials_count);
+
+// tulip.piano_partials_max() -- how many partials full detail renders (24
+// today). The deck's "partials" slider takes its top from this rather than
+// hardcoding it, so the control keeps telling the truth if the engine's map
+// ever changes.
+STATIC mp_obj_t tulip_piano_partials_max(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(amy_partials_max_count());
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_max_obj, 0, 0, tulip_piano_partials_max);
 
 // tulip.piano_sustain(stretch_x1000) -- SUSTAIN for the interp-partials
 // (piano) engine: time-stretch the baked per-partial envelope so notes ring
@@ -2324,6 +2355,8 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_audio_tap_read), MP_ROM_PTR(&tulip_audio_tap_read_obj) },
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_partials_count), MP_ROM_PTR(&tulip_piano_partials_count_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_partials_max), MP_ROM_PTR(&tulip_piano_partials_max_obj) },
     { MP_ROM_QSTR(MP_QSTR_piano_sustain), MP_ROM_PTR(&tulip_piano_sustain_obj) },
 #endif
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },

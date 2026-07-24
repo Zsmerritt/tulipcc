@@ -1832,7 +1832,7 @@ def test_the_honesty_marker_is_scoped_by_evidence_not_sprayed():
         assert d['truth'] == ap.TRUTH_AMY, name
         assert ap.is_fabricated(d, 'default') is False, name
     # deck-side constructs no patch can set: true by construction
-    for name in ('reverb_send', 'piano_quality'):
+    for name in ('reverb_send', 'piano_detail'):
         assert ap.PARAM_BY_NAME[name]['truth'] == ap.TRUTH_DECK
         assert ap.is_fabricated(ap.PARAM_BY_NAME[name], 'default') is False
     # a user or patch value is never marked, whatever its truth class
@@ -1863,6 +1863,229 @@ def test_piano_sustain_maps_seconds_to_engine_stretch():
     assert ap.piano_sustain_arg(0.0) == 0                # binding clamps up to 250
     # router-applied kind: never emitted as an amy.send(synth=...) kwarg
     assert ap.synth_send_calls({'piano_sustain': 3.0}) == []
+
+
+# ---------------------------------------------------------------------------
+# piano partial detail: the slider number IS the partial count.
+#
+# It used to be amy_partials_harmonic_limit -- a harmonic INDEX (8..40), which
+# is not what gets rendered because AMY's use_this_partial_map is sparse above
+# harmonic 17. "20" bought 18 partials and everything from 35 up bought the
+# same 24, so the top third of the travel did nothing.
+# ---------------------------------------------------------------------------
+def _c_partial_map():
+    """The LIVE use_this_partial_map parsed out of the AMY source, or None when
+    the submodule is not checked out. This is the oracle the frozen deck-side
+    migration table is checked against -- deriving it from the deck's own table
+    would prove nothing."""
+    import os
+    import re
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), 'amy', 'src', 'interp_partials.c')
+    try:
+        with open(path) as f:
+            src = f.read()
+    except OSError:
+        return None
+    m = re.search(r'use_this_partial_map\[MAX_NUM_HARMONICS\]\s*=\s*\{(.*?)\}',
+                  src, re.S)
+    if not m:
+        return None
+    body = re.sub(r'//[^\n]*', '', m.group(1))
+    return [int(x) for x in re.findall(r'[01]', body)]
+
+
+def test_piano_detail_slider_reads_in_partials_actually_rendered():
+    import amyparams as ap
+    d = ap.PARAM_BY_NAME['piano_detail']
+    # the RANGE is the partial count, and it defaults to FULL detail: the user
+    # drags DOWN to buy CPU, they never have to discover a missing top end
+    assert (d['min'], d['max'], d['default']) == (8, 24, 24)
+    assert (ap.PIANO_DETAIL_MIN, ap.PIANO_DETAIL_MAX) == (8, 24)
+    assert d['unit'] == 'partials'
+    assert d['type'] == 'slider' and d['scale'] == 1
+    assert d['apply'] == {'kind': 'piano_detail'}
+    # deck-side construct no patch can set: truthful, never a fabricated guess
+    assert d['truth'] == ap.TRUTH_DECK
+    assert ap.is_fabricated(d, 'default') is False
+    # router-applied kind: never emitted as an amy.send(synth=...) kwarg
+    assert ap.synth_send_calls({'piano_detail': 12}) == []
+    # the retired name is GONE from the schema, so an un-migrated value can
+    # never be silently read back as if it were in the new units
+    assert 'piano_quality' not in ap.PARAM_BY_NAME
+    # ...and the curated Piano view shows the new one (curated pulls in the
+    # lvgl-backed ParamEditor at import; stub it, as the DX7 view test does)
+    pe = types.ModuleType('parameditor')
+
+    class _PE:
+        def __init__(self, *a, **k):
+            pass
+    pe.ParamEditor = _PE
+    saved_pe = sys.modules.get('parameditor')
+    saved_cur = sys.modules.get('curated')
+    sys.modules['parameditor'] = pe
+    sys.modules.pop('curated', None)
+    try:
+        import curated
+        piano = curated._VIEWS['piano']
+        assert 'piano_detail' in piano['tabs'][0][1]
+        assert 'piano_quality' not in piano['tabs'][0][1]
+        assert 'piano_quality' not in piano['labels']
+        assert piano['labels']['piano_detail'] == 'partial detail'
+    finally:
+        sys.modules.pop('curated', None)
+        if saved_pe is not None:
+            sys.modules['parameditor'] = saved_pe
+        else:
+            sys.modules.pop('parameditor', None)
+        if saved_cur is not None:
+            sys.modules['curated'] = saved_cur
+
+
+def test_every_piano_detail_value_is_a_distinct_achievable_partial_count():
+    # THE POINT OF THE CHANGE: each step of the slider must remove exactly one
+    # rendered partial. Check it against the harmonic limits the engine would
+    # actually be set to -- distinct limits AND distinct rendered counts.
+    import amyparams as ap
+    limits, counts = [], []
+    for n in range(ap.PIANO_DETAIL_MIN, ap.PIANO_DETAIL_MAX + 1):
+        h = ap.legacy_limit_for_detail(n)
+        limits.append(h)
+        counts.append(ap._LEGACY_PARTIALS_BELOW[h])
+    assert counts == list(range(ap.PIANO_DETAIL_MIN, ap.PIANO_DETAIL_MAX + 1))
+    assert len(set(limits)) == len(limits)          # no two values collide
+    assert limits == sorted(limits)                 # monotonic
+    # the top of the slider really is full detail (the map's whole budget)
+    assert ap._LEGACY_PARTIALS_BELOW[-1] == ap.PIANO_DETAIL_MAX
+    # round trip: count -> limit -> count is the identity over the range
+    for n in range(ap.PIANO_DETAIL_MIN, ap.PIANO_DETAIL_MAX + 1):
+        assert ap.piano_detail_from_legacy(ap.legacy_limit_for_detail(n)) == n
+
+
+def test_legacy_piano_quality_limits_convert_to_the_count_they_rendered():
+    import amyparams as ap
+    # the numbers from the mislabelled slider, and what they REALLY rendered
+    for limit, count in ((8, 8), (15, 15), (20, 18), (24, 19), (29, 21),
+                         (40, 24)):
+        assert ap.piano_detail_from_legacy(limit) == count, limit
+    # the table is a prefix sum: non-decreasing, one entry per limit 0..40
+    t = ap._LEGACY_PARTIALS_BELOW
+    assert len(t) == 41
+    assert all(t[i] <= t[i + 1] <= t[i] + 1 for i in range(len(t) - 1))
+    # junk / out-of-range never raises and never invents a thinner piano
+    for junk in (None, 'x', 999, -5, 0, 3.7):
+        v = ap.piano_detail_from_legacy(junk)
+        assert ap.PIANO_DETAIL_MIN <= v <= ap.PIANO_DETAIL_MAX
+
+
+def test_frozen_migration_table_still_matches_amys_partial_map():
+    # The deck's migration table is a FROZEN snapshot of AMY's
+    # use_this_partial_map prefix sums. It is deliberately not regenerated (it
+    # reinterprets values written under the old map), but while the map is
+    # unchanged the two must agree -- if this fails, AMY's map moved and that
+    # is a decision to make consciously, not a silent drift.
+    import amyparams as ap
+    amy_map = _c_partial_map()
+    if amy_map is None:
+        pytest.skip('amy submodule not checked out')
+    assert len(amy_map) == 40
+    expect, run = [0], 0
+    for bit in amy_map:
+        run += bit
+        expect.append(run)
+    assert list(ap._LEGACY_PARTIALS_BELOW) == expect
+    assert ap.PIANO_DETAIL_MAX == sum(amy_map)    # == amy_partials_max_count()
+
+
+def test_stored_piano_quality_is_migrated_on_config_and_preset_load(deck,
+                                                                   tmp_path):
+    # A user with saved sound edits must keep the SAME sound: a stored
+    # harmonic limit of 20 rendered 18 partials, so it becomes detail 18.
+    deckcfg, _ = deck
+    import json
+    with open(deckcfg.PATH, 'w') as f:
+        json.dump({'instruments': [
+            {'id': 0, 'device': 'internal', 'channel': 1, 'type': 'piano',
+             'patch': 256, 'params': {'piano_quality': 20, 'level': 0.5}},
+            {'id': 1, 'device': 0, 'channel': 2, 'type': 'piano', 'patch': 256,
+             'params': {'piano_quality': 40}},
+        ]}, f)
+    a, b = deckcfg.instruments()
+    assert a['params'] == {'piano_detail': 18, 'level': 0.5}
+    assert b['params'] == {'piano_detail': 24}
+    assert 'piano_quality' not in a['params']
+
+    # ...and the same on the preset library path
+    import presets as P
+    P.PRESETS_DIR = str(tmp_path / 'presets')
+    import os
+    os.makedirs(P.PRESETS_DIR, exist_ok=True)
+    with open(os.path.join(P.PRESETS_DIR, 'old.json'), 'w') as f:
+        json.dump({'v': 1, 'name': 'Old', 'type': 'piano', 'patch': 256,
+                   'params': {'piano_quality': 24}}, f)
+    rec = P.load('old')
+    assert rec['params'] == {'piano_detail': 19}
+    assert rec['v'] == P.RECORD_VERSION == 2
+    # capture migrates on the way IN too, so a stale in-RAM instrument can't
+    # freeze the retired name into a brand-new preset file
+    assert P.capture({'type': 'piano', 'patch': 256,
+                      'params': {'piano_quality': 15}})['params'] == \
+        {'piano_detail': 15}
+
+
+def test_migrate_params_is_idempotent_and_never_overwrites_new_units():
+    import amyparams as ap
+    p = {'piano_quality': 20}
+    assert ap.migrate_params(p) is p and p == {'piano_detail': 18}
+    assert ap.migrate_params(p) == {'piano_detail': 18}      # idempotent
+    # an explicit NEW value wins; the retired key is still dropped so it can
+    # never be read again
+    p = {'piano_quality': 20, 'piano_detail': 12}
+    assert ap.migrate_params(p) == {'piano_detail': 12}
+    # untouched params, and non-dicts, are left alone
+    assert ap.migrate_params({'level': 0.5}) == {'level': 0.5}
+    assert ap.migrate_params(None) is None
+
+
+def test_piano_detail_apply_falls_back_on_firmware_without_the_count_api():
+    # The deck's Python is deployed independently of the firmware, so this file
+    # can run against a build that only has the OLD piano_partials(limit)
+    # binding. It must still set an equivalent limit -- not feed a partial
+    # COUNT into a harmonic-limit argument (which would thin every piano).
+    _install_hw_mocks()
+    for m in ('deckcfg', 'forwarder'):
+        sys.modules.pop(m, None)
+    import forwarder
+    import amyparams as ap
+    tulip = sys.modules['tulip']
+
+    class _Syn:
+        synth = 42
+
+    got = []
+    try:
+        # NEW firmware: the count goes through untouched
+        tulip.piano_partials_count = lambda n: got.append(('count', n))
+        tulip.piano_partials = lambda n: got.append(('limit', n))
+        forwarder._apply_params(_Syn(), {'piano_detail': 18},
+                                {'type': 'piano', 'patch': 256})
+        assert got == [('count', 18)]
+        # OLD firmware: no count binding -> the legacy limit that renders 18
+        got.clear()
+        del tulip.piano_partials_count
+        forwarder._apply_params(_Syn(), {'piano_detail': 18},
+                                {'type': 'piano', 'patch': 256})
+        assert got == [('limit', ap.legacy_limit_for_detail(18))]
+        assert ap._LEGACY_PARTIALS_BELOW[got[0][1]] == 18   # same 18 partials
+        # ANCIENT firmware: neither binding -> silent no-op, never an exception
+        got.clear()
+        del tulip.piano_partials
+        forwarder._apply_params(_Syn(), {'piano_detail': 18},
+                                {'type': 'piano', 'patch': 256})
+        assert got == []
+    finally:
+        for attr in ('piano_partials_count', 'piano_partials'):
+            tulip.__dict__.pop(attr, None)
 
 
 def test_pan_matches_the_pan_amy_actually_implements():

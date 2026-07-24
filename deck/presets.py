@@ -35,7 +35,10 @@ import deckcfg
 # every call so a test override takes effect without reimporting.
 PRESETS_DIR = '/user/var/presets'
 
-RECORD_VERSION = 1
+# Bumped to 2 when the piano partial-detail param changed name and units
+# ('piano_quality' harmonic limit -> 'piano_detail' partial count). load()
+# migrates older records through amyparams.migrate_params(); see _migrate().
+RECORD_VERSION = 2
 
 # The fields that make up a preset, mirroring the rack "Reset patch" clear-set
 # (params/reverb_send/hits/hit_swaps) plus the sound identity (type/patch, and
@@ -93,6 +96,19 @@ def _path(sl):
     return PRESETS_DIR.rstrip('/') + '/' + sl + '.json'
 
 
+def _migrated_copy(params):
+    """A copy of a params dict with retired param names/units brought current
+    (amyparams.migrate_params). Falls back to a plain copy if amyparams is
+    unavailable -- capturing a preset must never fail on a schema import."""
+    out = dict(params or {})
+    try:
+        import amyparams
+        amyparams.migrate_params(out)
+    except Exception:
+        pass
+    return out
+
+
 def capture(instr, name=None):
     """Build a versioned preset record from an instrument dict.
 
@@ -105,7 +121,10 @@ def capture(instr, name=None):
         'name': _clean_name(name if name is not None else instr.get('name')),
         'type': instr.get('type', 'juno6'),
         'patch': instr.get('patch', 0),
-        'params': dict(instr.get('params') or {}),
+        # migrate on the way IN too: an instrument dict that reached RAM by
+        # some path other than deckcfg.load() must not freeze a retired param
+        # name into a brand-new preset file (idempotent on migrated params).
+        'params': _migrated_copy(instr.get('params')),
         'reverb_send': instr.get('reverb_send', 0.0),
         'hits': dict(instr.get('hits') or {}),
         'hit_swaps': dict(instr.get('hit_swaps') or {}),
@@ -204,14 +223,35 @@ def save(name, instr):
     return rec
 
 
+def _migrate(rec):
+    """Bring one just-read record up to RECORD_VERSION in place.
+
+    v1 -> v2: the piano partial-detail param changed NAME AND UNITS
+    ('piano_quality', a harmonic index limit -> 'piano_detail', a count of
+    partials actually rendered). amyparams.migrate_params() converts the value
+    through a frozen table so a v1 preset recalls the SAME sound it was saved
+    with. Never raises: a preset that cannot be migrated is still better
+    returned as-is (its unknown param name is ignored downstream) than lost."""
+    try:
+        import amyparams
+        amyparams.migrate_params(rec.get('params'))
+        rec['v'] = RECORD_VERSION
+    except Exception:
+        pass
+    return rec
+
+
 def load(sl):
-    """Read one preset record by slug (with 'slug' attached), or None."""
+    """Read one preset record by slug (with 'slug' attached), or None.
+
+    Records are migrated to RECORD_VERSION on the way out, so every reader
+    (list_presets, recall) sees current param names and units."""
     try:
         with open(_path(sl)) as f:
             rec = json.load(f)
         if isinstance(rec, dict):
             rec['slug'] = sl
-            return rec
+            return _migrate(rec)
     except (OSError, ValueError):
         pass
     return None
