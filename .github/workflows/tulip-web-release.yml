@@ -26,6 +26,9 @@ concurrency:
 
 jobs:
   web:
+    # Vercel-only job: skip on forks (no VERCEL_TOKEN -> guaranteed failure
+    # email on every push to main otherwise).
+    if: github.repository == 'shorepine/tulipcc'
     runs-on: ubuntu-latest
     permissions:
       contents: read

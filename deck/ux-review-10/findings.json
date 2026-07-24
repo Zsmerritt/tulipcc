@@ -1,0 +1,207 @@
+{
+  "review": "ux-review-10",
+  "round": 1,
+  "build": "deck-next @ 905e0ed1",
+  "device": "TULIP4_R11 1024x600, COM11",
+  "session": "2026-07-18 19:21-20:10",
+  "numbering_note": "Brief said UX7-N; repo's highest existing dir is ux-review-9, so highest-N+1 convention gives review 10 / UX10-N.",
+  "findings": [
+    {
+      "id": "UX10-1",
+      "severity": "CRITICAL",
+      "title": "WDT reboots during ordinary UI use (3 in one session)",
+      "screen": "instrument editor (Remove confirm) / Apps > Keyboard / System > Settings",
+      "repro": "1) confirm modal up + tulip.screenshot() flash write -> Core 1 'Guru Meditation Error: Core 1 panic'ed (Interrupt wdt timeout on CPU1)', ISR context; 2) Apps Keyboard tile -> orphan keyboard -> WDT within ~15s, host port closed (no serial involvement); 3) Settings tap -> rst:0x8 TG1WDT_SYS_RST, both CPUs, intermittent (1 of 3 opens).",
+      "evidence": ["shots/32-after-orphan-kb.png", "deck.log: 3x '=== deck boot === reset_cause=WDT'"],
+      "fix": "Top-priority firmware bug. Start from crash #2 (clean user-reachable repro); audit overlay-up core work + draw recursion; extend flash-write quiet gate to cover writes while overlays render.",
+      "cost": "bugfix"
+    },
+    {
+      "id": "UX10-2",
+      "severity": "CRITICAL",
+      "title": "Apps > Keyboard tile opens orphan keyboard bypassing kbmgr; preceded crash #2",
+      "screen": "System > Apps",
+      "repro": "Tap Keyboard tile (home.py _APPS wires tulip.keyboard raw). ui.lv_soft_kb True, kbmgr.is_open() False, no textarea bound; keys go to tulip.key_send (REPL under UI); nav guards can't close it; WDT followed in ~15s.",
+      "evidence": ["shots/31-apps.png", "shots/32-after-orphan-kb.png"],
+      "fix": "Remove the tile from the deck Apps grid (or route through kbmgr with an explicit target).",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-3",
+      "severity": "HIGH",
+      "title": "Zombie keyboard stays painted after tab-switch close in Settings",
+      "screen": "Settings, tab switch with keyboard up",
+      "repro": "Focus Wi-Fi password -> keyboard up -> tap Display tab. Keyboard object deleted (tree clean) but pixels persist 60+s; taps hit invisible widgets underneath. lv.screen_active().invalidate() clears it.",
+      "evidence": ["shots/20-settings-display.png", "shots/21-zombie-kb-persist.png", "shots/22-after-invalidate.png"],
+      "fix": "kbmgr._hide_overlay(): invalidate the vacated rect/screen once after tulip.keyboard() teardown.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-4",
+      "severity": "HIGH",
+      "title": "Patch picker stuck in collapsed layout after keyboard's own hide key",
+      "screen": "instrument editor > Patch Browse",
+      "repro": "Open search keyboard (collapse ok) -> close via keyboard-glyph hide key -> header stays hidden, list stays ~300px, bottom half dead. instrument._layout_list only fires from panel kb button / ta focus events.",
+      "evidence": ["shots/06-patch-selected-trumpet.png", "shots/07-patch-fav-star.png"],
+      "fix": "Add a close-listener hook to kbmgr (_teardown_binding tail); picker registers relayout; Settings can reuse for UX10-3.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-5",
+      "severity": "HIGH",
+      "title": "Password field hidden under the echo strip while typing",
+      "screen": "Settings > Network > Wi-Fi password",
+      "repro": "Focus password field: kbmgr scrolls to clear the keyboard top (300px) but not the 34px echo strip above it; field left ~20px visible; eye button half covered.",
+      "evidence": ["shots/19-password-echo-reveal.png"],
+      "fix": "_ensure_visible: clearance line = kb_top - echo_height - margin when the strip is shown.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-6",
+      "severity": "HIGH",
+      "title": "Reset patch wipes sound-design edits with no confirm and no feedback",
+      "screen": "instrument editor",
+      "repro": "Tap Reset patch: params/reverb_send/hits/hit_swaps cleared instantly; layer_top empty (no confirm/toast, verified on-device).",
+      "evidence": ["shots/02-instrument-editor.png"],
+      "fix": "dk.confirm gate (exists) + completion toast, mirroring Remove instrument.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-7",
+      "severity": "MED",
+      "title": "Keyboard checkmark (OK) key is dead",
+      "screen": "all soft-keyboard uses",
+      "repro": "Press the check key: ui.lv_soft_kb_cb has no SYMBOL.OK branch, nothing listens for READY; keyboard stays up, no commit signal.",
+      "evidence": ["on-device: kb still open after OK press"],
+      "fix": "kbmgr._kb_event_cb: detect SYMBOL.OK -> close() (already self-delete-safe).",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-8",
+      "severity": "MED",
+      "title": "Eye toggle doesn't refresh the echo strip until next keystroke",
+      "screen": "Settings Wi-Fi password echo strip",
+      "repro": "Toggle eye: field unmasks, echo keeps bullets; next keystroke repaints cleartext.",
+      "evidence": ["on-device: pwmode False + echo bullets, then 'xyz' after keystroke"],
+      "fix": "Expose kbmgr.refresh_echo(); call from settings _toggle_eye/_mask_pw.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-9",
+      "severity": "MED",
+      "title": "Debug tiles (Profiler/Logs) don't appear until Settings reopened",
+      "screen": "Settings > System",
+      "repro": "Debug ON -> no new rows until leaving Settings and reopening the tab; no hint they exist.",
+      "evidence": ["shots/23-settings-system.png", "shots/24-profiler.png", "shots/25-logs.png"],
+      "fix": "Rebuild the System tab page on toggle (or append rows live), or mention tiles in the switch subtitle.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-10",
+      "severity": "LOW",
+      "title": "Debug status-bar readout lingers after Debug off",
+      "screen": "top bar",
+      "repro": "Debug off 19:55; 'WDT py 9238K int 41K' still painted 19:57+. Cleared only by reboot.",
+      "evidence": ["on-device label capture"],
+      "fix": "_debug_switch(False) path must clear/hide the readout label explicitly.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-11",
+      "severity": "LOW",
+      "title": "Sound editor forgets active tab on Basic/Advanced switch",
+      "screen": "instrument editor > Sound",
+      "repro": "VCF tab -> tap Advanced -> lands on DCO.",
+      "evidence": ["shots/10-sound-vcf.png", "shots/11-sound-advanced.png"],
+      "fix": "Carry active tab index across the view rebuild.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-12",
+      "severity": "LOW",
+      "title": "Disabled nav buttons look enabled (MPE Per-note expression)",
+      "screen": "MPE panel, Enable MPE off",
+      "repro": "Edit > button has DISABLED state but paints like enabled; sliders in same panel do gray out.",
+      "evidence": ["shots/27-mpe-panel.png"],
+      "fix": "Flat DISABLED colors for dk.button (same treatment dk.switch got).",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-13",
+      "severity": "LOW",
+      "title": "boot.py Wi-Fi join dies on stray ^C, stranding deck at REPL",
+      "screen": "boot",
+      "repro": "KeyboardInterrupt during tulip.wifi() escapes 'except Exception' (not a subclass) -> boot.py aborts -> bare REPL until manual reboot. Observed live after crash #2.",
+      "evidence": ["shots/32-after-orphan-kb.png"],
+      "fix": "except BaseException around the join (log + continue), or micropython.kbd_intr(-1) during boot.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-14",
+      "severity": "NIT",
+      "title": "Home root status line duplicates the rack row",
+      "screen": "Home root",
+      "repro": "'Tulip  A11 Brass Set 1 | vol 1' under a row+footer already showing the same info.",
+      "evidence": ["shots/01-home-rack.png"],
+      "fix": "Drop it or add non-duplicate info (IP, clock-sync, free channel).",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-15",
+      "severity": "NIT",
+      "title": "Protected-file Delete disabled without explanation",
+      "screen": "Files",
+      "repro": "Select amyfleet.py: Delete disabled, status line shows only the filename.",
+      "evidence": ["shots/29-files.png", "shots/30-files-delete-confirm.png"],
+      "fix": "Status suffix: 'amyfleet.py — system file'.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-16",
+      "severity": "NIT",
+      "title": "Profiler load bar renders as a dot at low %",
+      "screen": "Profiler",
+      "repro": "5-7% fills draw as a circle (fill width < corner radius).",
+      "evidence": ["shots/24-profiler.png"],
+      "fix": "Clamp minimum fill width or reduce radius.",
+      "cost": "ZERO"
+    },
+    {
+      "id": "UX10-17",
+      "severity": "NIT",
+      "title": "Interrupted boots leave half-entries in deck.log",
+      "screen": "deck.log",
+      "repro": "Crash #2 boot logged only the '=== deck boot ===' line (boot.py died before the second line).",
+      "evidence": ["deck.log tail"],
+      "fix": "Doc-only: a lone boot line means boot did not finish.",
+      "cost": "ZERO"
+    }
+  ],
+  "passed": [
+    "kbmgr echo strip: typing/backspace tracking, masked echo, last-char reveal + 1.2s re-mask, no reveal on backspace/mode switch",
+    "kbmgr structural guard: Back/tab-switch with keyboard up never crashed; state resets fully; close idempotent; 4x rapid toggle stable",
+    "patch search live filter + collapsed header + field lift",
+    "add/remove instrument + confirm modals + cancel",
+    "files two-tap delete, disarm on selection change, protected-module guard, disabled action buttons",
+    "steppers/sliders instant readout; volume/brightness strip",
+    "devices panel, FX editor, presets empty state, MIDI monitor pause/resume, profiler/logs debug panels, type selector"
+  ],
+  "not_covered": [
+    "Terminal/REPL app switch, Calibrate, Editor/Wordpad/Tulip World",
+    "screensaver firing, live MIDI decode, audio-audible checks",
+    "drums/synthkit pad editor + kit picker, preset save flow",
+    "Wi-Fi Connect, firmware Upgrade/Safe update, Factory reset (forbidden)",
+    "real-finger touch latency (all taps synthetic)",
+    "per-key redraw visual confirmation (transient; needs video/eyeball)"
+  ],
+  "crashes_verbatim": {
+    "crash1_guru": "Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1). / Core  1 was running in ISR context: / EXCCAUSE: 0x00000006 / Backtrace: ...0x42012a5f:0x3fce6870 0x4201a309... (repeating) / ELF file SHA256: f151f4dba / Rebooting... / rst:0xc (RTC_SW_CPU_RST)",
+    "crash2_decklog": "[1532] === deck boot === reset_cause=WDT (no 'boot: reset cause' follow-up: boot killed by ^C -> KeyboardInterrupt at boot.py:148/_boot:73/tulip.py:388 wifi)",
+    "crash3_banner": "rst:0x8 (TG1WDT_SYS_RST) / W (38) boot.esp32s3: PRO CPU has been reset by WDT. / W (38) boot.esp32s3: APP CPU has been reset by WDT. / DECKLOG [1549] === deck boot === reset_cause=WDT / [10942] boot: reset cause WDT"
+  },
+  "restoration": {
+    "config": "deck_config.json restored byte-for-byte, sha8 fc0804c0, then soft reboot",
+    "harness_files_deleted": ["/user/_drv.py", "/user/_s.png"],
+    "final_state": "clean boot to Home verified"
+  }
+}

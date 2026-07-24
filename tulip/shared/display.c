@@ -21,7 +21,9 @@ uint8_t mouse_pointer_status = 0;
 uint8_t tfb_active;
 uint8_t tfb_y_row; 
 uint8_t tfb_x_col;
-int32_t vsync_count;
+// volatile: written by the display/vsync task, spin-read across vTaskDelay by
+// the PARTIAL-mode flush (lv_flush_cb_8b) -- must not be cached in a register.
+volatile int32_t vsync_count;
 uint8_t brightness;
 float reported_fps;
 float reported_gpu_usage;
@@ -1024,18 +1026,28 @@ void display_teardown(void) {
 volatile uint8_t render_mode = 0;
 volatile uint8_t render_vsync = 1;
 uint8_t * partial_buf = NULL;
+uint32_t partial_buf_bytes = 0;
 
 void lv_flush_cb_8b(lv_display_t * display, const lv_area_t * area, unsigned char * px_map)
 {
     if(render_mode == 1) {
 #ifdef ESP_PLATFORM
-        if(render_vsync) {
-            // wait for the next frame boundary so the compositor doesn't scan a
-            // half-copied tile (bounded; yields so we don't starve audio)
+        // Gate on vsync at most ONCE per LVGL refresh cycle, before its first
+        // tile. The old per-tile wait cost up to a full frame period PER TILE,
+        // so a multi-tile redraw (any big change) stalled for hundreds of ms --
+        // the "PARTIAL feels sluggish" problem. One gate still lands the
+        // common single-tile touch update tear-free; later tiles of a big
+        // redraw follow immediately (at worst a transient seam, never the
+        // full-screen flash of DIRECT mode).
+        static uint8_t waited_this_cycle = 0;
+        if(render_vsync && !waited_this_cycle) {
+            // bounded; yields so we don't starve audio
             int32_t v = vsync_count;
             int guard = 0;
             while(vsync_count == v && guard++ < 40) vTaskDelay(1);
+            waited_this_cycle = 1;
         }
+        if(lv_display_flush_is_last(display)) waited_this_cycle = 0;
 #endif
         const int32_t bg_stride = (H_RES + OFFSCREEN_X_PX) * BYTES_PER_PIXEL;
         const int32_t w = (area->x2 - area->x1 + 1);
@@ -1162,10 +1174,17 @@ void setup_lvgl() {
 void display_set_partial(int on) {
     if(on) {
         if(partial_buf == NULL) {
-            partial_buf = (uint8_t*)malloc_caps(PARTIAL_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            // PSRAM only: Tulip's internal heap is designed-full at steady
+            // state (AMY/I2S/USB/sprites claim it at boot; ~0 bytes free), so
+            // the old prefer-internal attempt failed on EVERY first enable,
+            // firing the alloc-failed logger inside the keyboard-open tick
+            // (UX-REVIEW-7 NEW-1 / L8).
+            partial_buf_bytes = PARTIAL_BUF_BYTES;
+            partial_buf = (uint8_t*)malloc_caps(partial_buf_bytes,
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         }
-        if(partial_buf == NULL) return;  // alloc failed: stay in DIRECT
-        lv_display_set_buffers(lv_display, partial_buf, NULL, PARTIAL_BUF_BYTES,
+        if(partial_buf == NULL) { partial_buf_bytes = 0; return; }  // stay in DIRECT
+        lv_display_set_buffers(lv_display, partial_buf, NULL, partial_buf_bytes,
                                LV_DISPLAY_RENDER_MODE_PARTIAL);
         render_mode = 1;
     } else {
@@ -1174,7 +1193,12 @@ void display_set_partial(int on) {
                                LV_DISPLAY_RENDER_MODE_DIRECT);
         render_mode = 0;
     }
-    lv_obj_invalidate(lv_screen_active());  // force a full redraw after the switch
+    // NO full-screen invalidate on the switch: `bg` is already current in both
+    // directions (DIRECT renders straight into it; PARTIAL copies every flush
+    // into it), so the old forced invalidate only bought a whole-screen
+    // software repaint -- tiled through the PARTIAL buffer -- inside the same
+    // tick as the keyboard build: the biggest single contributor to the
+    // keyboard-open WDT window (UX-REVIEW-7 NEW-1).
 }
 
 // Toggle vsync-gating of the partial-mode copy (tear-free vs lower latency).

@@ -16,6 +16,7 @@
 #include "amy_midi.h"
 #endif
 #include "amy_connector.h"
+#include "midi_router.h"
 #include "tsequencer.h"
 #if !defined(AMYBOARD) && !defined(AMYBOARD_WEB)
 #include "ui.h"
@@ -26,8 +27,13 @@
 #include "genhdr/mpversion.h"
 
 #ifdef ESP_PLATFORM
+#include "sdkconfig.h"
 #include "tasks.h"
 #include "driver/rtc_io.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_heap_caps.h"
+#include "esp_mmu_map.h"
 #endif
 
 
@@ -44,6 +50,50 @@ STATIC mp_obj_t tulip_ticks_ms(size_t n_args, const mp_obj_t *args) {
     return mp_obj_new_int(get_ticks_ms());
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_ticks_ms_obj, 0, 0, tulip_ticks_ms);
+
+#ifdef ESP_PLATFORM
+// tulip.flash_fence(1/0): raise/drop AMY's flash fence around filesystem
+// writes. While up, PCM renders whose samples live in memory-mapped flash
+// emit silence (phase held) -- a flash program/erase suspends the cache
+// those fetches go through while the render task keeps running from PSRAM,
+// and one mapped fetch inside the write window hard-crashes the chip.
+// Everything else (computed voices, PSRAM banks) keeps sounding. Callers
+// should wait ~2 render blocks (>=12ms) after raising it before writing so
+// an in-flight block that already passed the check can finish. ESP-only:
+// other platforms' filesystems don't fight the sample banks for a cache.
+#if !defined(AMYBOARD)
+// flash_fence_wrap.c (every tulip/esp32s3 board, not the amyboard build)
+extern void tulip_flash_fence_manual_drop(void);
+#endif
+STATIC mp_obj_t tulip_flash_fence(size_t n_args, const mp_obj_t *args) {
+    uint8_t v = (uint8_t)mp_obj_get_int(args[0]);
+    if(v) {
+        amy_flash_fence = 1;
+    } else {
+#if !defined(AMYBOARD)
+        // A bare store here could drop the fence while a C-WRAPPED flash op
+        // is mid-write (fence_depth > 0) -- reopening the exact dual-core WDT
+        // window the fence exists to close. The C layer only lowers it when
+        // no wrapped write is active; a pending manual drop then rides out on
+        // the wrapper's own deferred drop.
+        tulip_flash_fence_manual_drop();
+#else
+        amy_flash_fence = 0;   // no wrap layer on amyboard: nothing to defer to
+#endif
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_obj, 1, 1, tulip_flash_fence);
+
+// tulip.flash_fence_auto(): True -- marker that this firmware fences EVERY
+// partition write/erase in C (flash_fence_wrap.c linker wraps), so Python
+// write paths need no fence/quiet machinery of their own. Probe with
+// hasattr(); manual flash_fence() remains as an override.
+STATIC mp_obj_t tulip_flash_fence_auto(size_t n_args, const mp_obj_t *args) {
+    return mp_const_true;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_auto_obj, 0, 0, tulip_flash_fence_auto);
+#endif
 
 STATIC mp_obj_t tulip_stderr_write(size_t n_args, const mp_obj_t *args) {
     const char *msg = mp_obj_str_get_str(args[0]);
@@ -82,7 +132,155 @@ STATIC mp_obj_t tulip_board(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_board_obj, 0, 0, tulip_board);
 
 
-mp_obj_t midi_callback = NULL;
+// tulip.flash_freq(): the MSPI flash clock this image was COMPILED to run at,
+// e.g. '80m' or '120m' -- the single source of truth for the ping-pong
+// dual-frequency update scheme (deck/PINGPONG.md), where the running image has
+// to know whether it is the 80MHz "flasher" build or the 120MHz "play" build
+// WITHOUT trusting which OTA slot it booted from. deck/flashmode.py picks this
+// up automatically and falls back to '120m' (= play) where it returns None, so
+// desktop/web builds -- which have no ESPTOOLPY config at all -- stay sane.
+//
+// MUST NOT read the CONFIG_ESPTOOLPY_FLASHFREQ *string*: that is the image
+// header's BOOT frequency, which the IDF caps at "80m" even for 120MHz builds
+// (components/esptool_py/Kconfig.projbuild: default '80m' if
+// ESPTOOLPY_FLASHFREQ_120M -- "max boot frequency"). The chip boots at 80MHz
+// and MSPI timing tuning raises the clock to 120MHz during startup, so a real
+// 120MHz play build reports "80m" there (verified on hardware AND in the
+// resolved build/sdkconfig, 2026-07-16). The frequency CHOICE symbols below
+// are the true compile-time selection.
+STATIC mp_obj_t tulip_flash_freq(void) {
+#if defined(CONFIG_ESPTOOLPY_FLASHFREQ_120M)
+    return mp_obj_new_str("120m", 4);
+#elif defined(CONFIG_ESPTOOLPY_FLASHFREQ_80M)
+    return mp_obj_new_str("80m", 3);
+#elif defined(CONFIG_ESPTOOLPY_FLASHFREQ)
+    // Unusual frequency (40m/20m/...): fall back to the header string, which
+    // is only capped for the 120MHz case.
+    return mp_obj_new_str(CONFIG_ESPTOOLPY_FLASHFREQ, strlen(CONFIG_ESPTOOLPY_FLASHFREQ));
+#else
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_flash_freq_obj, tulip_flash_freq);
+
+
+// tulip.render_cyc([reset]): OPT-9 core-split probe readout (amy branch
+// core-split-probe, counters defined in amy/src/i2s.c).  AMY splits each
+// 256-sample block statically at AMY_OSCS/2 across the two cores; voices
+// allocate from LOW osc numbers, so core 0 (which also runs the display)
+// loads up first while core 1 may idle.  The amy branch keeps, per core, the
+// worst (max) and most recent CCOUNT delta around that core's amy_render().
+//
+// tulip.render_cyc()      -> (core0_worst, core1_worst, core0_last, core1_last)
+// tulip.render_cyc(1)     -> same snapshot, then zeroes BOTH worst counters
+//                            (read-and-reset; last-block values are left alone,
+//                            they refresh every ~5.8ms block anyway)
+//
+// Block budget is ~1.39M cycles/core (256 samples / 44100Hz at 240MHz).  ESP
+// only; on desktop/web builds the amy symbols don't exist / aren't linkable
+// from here, so degrade to returning None like flash_freq does.
+#ifdef ESP_PLATFORM
+extern volatile uint32_t amy_render_worst_cyc[2];  // defined in amy/src/i2s.c
+extern volatile uint32_t amy_render_last_cyc[2];
+#endif
+STATIC mp_obj_t tulip_render_cyc(size_t n_args, const mp_obj_t *args) {
+#ifdef ESP_PLATFORM
+    mp_obj_t items[4] = {
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_worst_cyc[1]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[0]),
+        mp_obj_new_int_from_uint(amy_render_last_cyc[1]),
+    };
+    if (n_args == 1 && mp_obj_is_true(args[0])) {
+        amy_render_worst_cyc[0] = 0;
+        amy_render_worst_cyc[1] = 0;
+    }
+    return mp_obj_new_tuple(4, items);
+#else
+    (void)n_args; (void)args;
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_render_cyc_obj, 0, 1, tulip_render_cyc);
+
+
+// tulip.flash_fence_stats() -> (bailouts, max_wait_ticks): observability for
+// the flash-fence acquire handshake (flash_fence_wrap.c, FW-16).  `bailouts`
+// counts how many times the bounded handshake timed out and the write PROCEEDED
+// with a render possibly still fetching from the mmap'd bank -- the surviving
+// both-CPU TG1WDT path.  Nonzero means margin is being spent; a rising value
+// means the 100-tick bound is too low or a render is genuinely stuck.
+// `max_wait_ticks` is the worst tick-wait actually observed on a bailout.  Only
+// the C wrap layer (non-amyboard esp32s3) keeps these, so degrade to None
+// everywhere else the same way render_cyc / flash_freq do.
+#if defined(ESP_PLATFORM) && !defined(AMYBOARD)
+extern volatile uint32_t tulip_flash_fence_bailouts;        // flash_fence_wrap.c
+extern volatile uint32_t tulip_flash_fence_max_wait_ticks;
+#endif
+STATIC mp_obj_t tulip_flash_fence_stats(size_t n_args, const mp_obj_t *args) {
+    (void)n_args; (void)args;
+#if defined(ESP_PLATFORM) && !defined(AMYBOARD)
+    mp_obj_t items[2] = {
+        mp_obj_new_int_from_uint(tulip_flash_fence_bailouts),
+        mp_obj_new_int_from_uint(tulip_flash_fence_max_wait_ticks),
+    };
+    return mp_obj_new_tuple(2, items);
+#else
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_flash_fence_stats_obj, 0, 0, tulip_flash_fence_stats);
+
+
+// tulip.eq_silent_skip([0|1]): live A/B switch for AMY's EQ silent-bus skip
+// (amy eq-silent-skip-toggle branch: volatile uint8_t amy_eq_silent_skip,
+// default 1). With no arg, returns the current value. With an int arg, sets
+// it: 1 = skip enabled (a silent bus's EQ stops after its tail countdown,
+// biquad state frozen at the zero-input fixed point); 0 = pre-skip behavior
+// (non-unity EQ keeps filtering zero blocks forever). Host-proven: flipping
+// mid-run switches behavior at the next block, bit-exact to the respective
+// build, no click. Not linked on the web build -- AMY lives in a separate
+// module there (see the amy externs above), so mirror flash_freq and degrade
+// to returning None.
+#ifndef __EMSCRIPTEN__
+extern volatile uint8_t amy_eq_silent_skip;   // defined in amy/src/amy.c
+#endif
+STATIC mp_obj_t tulip_eq_silent_skip(size_t n_args, const mp_obj_t *args) {
+#ifndef __EMSCRIPTEN__
+    if (n_args == 1) {
+        amy_eq_silent_skip = mp_obj_get_int(args[0]) ? 1 : 0;
+    }
+    return mp_obj_new_int(amy_eq_silent_skip);
+#else
+    (void)n_args; (void)args;
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_eq_silent_skip_obj, 0, 1, tulip_eq_silent_skip);
+
+
+// GC-rooted callback stores (see tsequencer.h aliases): as plain C globals
+// the collector couldn't see them, so a lambda whose only reference was a
+// defer/sequencer/midi slot got COLLECTED and its reused heap block was
+// later CALLED (the "TypeError: 'float' object isn't callable" that fired
+// per save/rebuild -- those trigger GC), and a collected MIDI drain closure
+// silently killed all MIDI until reboot. All four registrations live here
+// because root-pointer collection only scans QSTR-bearing sources.
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_sequencer_callbacks[SEQUENCER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_defer_callbacks[DEFER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_defer_args[DEFER_SLOTS]);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_midi_callback_obj_ref);
+// Same hazard, same fix, for the frame/touch/keyboard/UI/AMY-block callbacks
+// (aliases in keyscan.h and below). Registered UNCONDITIONALLY: a root
+// pointer declaration must not vary by board or the slot indices shift under
+// the aliases -- an unused slot costs 4 bytes.
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_frame_callback_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_frame_arg_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_touch_callback_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_keyboard_callback_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_ui_quit_callback_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_ui_switch_callback_ref);
+MP_REGISTER_ROOT_POINTER(mp_obj_t tulip_amy_block_done_callback_ref);
 
 STATIC mp_obj_t tulip_midi_callback(size_t n_args, const mp_obj_t *args) {
     midi_callback = args[0];
@@ -99,7 +297,10 @@ extern int amy_get_output_buffer(int16_t *samples);
 extern int amy_get_input_buffer(int16_t *samples);
 extern void amy_set_external_input_buffer(int16_t * samples);
 
-mp_obj_t amy_block_done_callback = NULL;
+// GC-rooted (see the registrations above). Aliased here rather than in
+// keyscan.h because that header is only included on non-AMYBOARD builds,
+// while this store exists for every non-web build.
+#define amy_block_done_callback MP_STATE_PORT(tulip_amy_block_done_callback_ref)
 
 STATIC mp_obj_t tulip_amy_block_done_callback(size_t n_args, const mp_obj_t *args) {
     if(n_args==0) {
@@ -182,10 +383,13 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_dump_state_obj, tulip_amy_dump_state)
 
 #ifdef ESP_PLATFORM
 extern uint8_t * external_map;
+extern void tulip_recompute_cv_active(void);
 STATIC mp_obj_t tulip_amy_set_external_channel(size_t n_args, const mp_obj_t *args) {
     uint16_t osc = mp_obj_get_int(args[0]);
     uint8_t ch = mp_obj_get_int(args[1]);
-    external_map[osc] = ch;
+    // external_map is NULL if its alloc failed in run_amy -- don't deref
+    if(external_map != NULL) external_map[osc] = ch;
+    tulip_recompute_cv_active();   // keep the render early-out gate honest (FW-7)
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_set_external_channel_obj, 2, 2, tulip_amy_set_external_channel);
@@ -198,6 +402,7 @@ STATIC mp_obj_t tulip_set_cv_synth(size_t n_args, const mp_obj_t *args) {
     uint8_t cv_channel = mp_obj_get_int(args[1]);  // 1 = CV1, 2 = CV2, 0 = clear
     if (synth < MAX_CV_SYNTHS) {
         cv_synth_map[synth] = cv_channel;
+        tulip_recompute_cv_active();   // FW-7
     }
     return mp_const_none;
 }
@@ -212,10 +417,15 @@ STATIC mp_obj_t tulip_defer(size_t n_args, const mp_obj_t *args) {
         }
     }
     if(index>=0) {
-        defer_callbacks[index] = args[0];
+        // PUBLISH ORDER matters (review F-5): the AMY-task hook on the
+        // other core gates on defer_callbacks[i] != NULL -- if the pointer
+        // lands before the deadline/arg, the hook can fire the callback
+        // immediately with the previous occupant's arg. Deadline and arg
+        // first, compiler barrier, THEN the pointer.
         defer_args[index] = args[1];
         defer_sysclock[index] = get_ticks_ms() + mp_obj_get_int(args[2]);
-
+        __asm__ volatile("" ::: "memory");
+        defer_callbacks[index] = args[0];
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("No more defer slots available"));
     }
@@ -233,8 +443,13 @@ STATIC mp_obj_t tulip_seq_add_callback(size_t n_args, const mp_obj_t *args) {
         }
     }
     if(index>=0) {
+        // PUBLISH ORDER matters (same as tulip_defer, review F-5): the AMY
+        // hook on the esp_timer task gates on sequencer_period[i] != 0 and
+        // then CALLS sequencer_callbacks[i] -- if the period store lands
+        // first, the hook fires the slot's stale (or NULL) callback.
         sequencer_callbacks[index] = args[0];
         sequencer_tick[index] = mp_obj_get_int(args[1]);
+        __asm__ volatile("" ::: "memory");
         sequencer_period[index] = mp_obj_get_int(args[2]);
     } else {
         index = -1;
@@ -246,8 +461,11 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_seq_add_callback_obj, 3, 3, tul
 STATIC mp_obj_t tulip_seq_remove_callback(size_t n_args, const mp_obj_t *args) {
     int8_t index = mp_obj_get_int(args[0]);
     if(index>=0 && index <SEQUENCER_SLOTS) {
-        sequencer_callbacks[index] = NULL;
+        // RETIRE ORDER is the mirror of add (F-5): retire the gate first, so
+        // the hook can never observe period != 0 with a NULL callback.
         sequencer_period[index] = 0;
+        __asm__ volatile("" ::: "memory");
+        sequencer_callbacks[index] = NULL;
         sequencer_tick[index] = 0;
     }
     return mp_const_none;
@@ -257,8 +475,10 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_seq_remove_callback_obj, 1, 1, 
 
 STATIC mp_obj_t tulip_seq_remove_callbacks(size_t n_args, const mp_obj_t *args) {
     for(uint8_t i=0;i<SEQUENCER_SLOTS;i++) {
-        sequencer_callbacks[i] = NULL;
+        // gate first, then the callback (F-5): never period != 0 + NULL cb
         sequencer_period[i] = 0;
+        __asm__ volatile("" ::: "memory");
+        sequencer_callbacks[i] = NULL;
         sequencer_tick[i] = 0;
     }
     return mp_const_none;
@@ -277,25 +497,166 @@ STATIC mp_obj_t tulip_seq_ticks(size_t n_args, const mp_obj_t *args) {
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_seq_ticks_obj, 0, 0, tulip_seq_ticks);
 
-extern uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];
-extern uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
-
-extern int16_t midi_queue_head;
-extern int16_t midi_queue_tail ;
+// last_midi/last_midi_len and midi_queue_head/midi_queue_tail (with their
+// build-dependent types) are declared in amy_midi.h -- no local externs, so
+// a type change there cannot silently disagree here.
+#include "midi_in_ring.h"
 
 STATIC mp_obj_t tulip_midi_in(size_t n_args, const mp_obj_t *args) {
 
-    if(midi_queue_head != midi_queue_tail) {
-        int16_t prev_head = midi_queue_head;
-        // Step on the head, hope no-one notices before we pop it.
-        midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
-        return mp_obj_new_bytes(last_midi[prev_head],
-                                last_midi_len[prev_head]);
-    } 
-    return mp_const_none;
+#ifdef AMY_MIDI_MPSC
+    // MPSC build: consume via the pop protocol in midi_in_ring.h (copy, then
+    // release the slot via len=0, then advance head). Same clear-then-RECHECK
+    // dance for the coalesced scheduler flag as below (review F-6).
+    uint8_t tmp[MAX_MIDI_BYTES_PER_MESSAGE];
+    uint8_t n;
+    if (!midi_in_ring_pop_mpsc(last_midi, last_midi_len,
+            &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, tmp, &n)) {
+        tulip_midi_py_pending = 0;
+        if (!midi_in_ring_pop_mpsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, tmp, &n)) {
+            return mp_const_none;
+        }
+    }
+    return mp_obj_new_bytes(tmp, n);
+#else
+    // ACQUIRE-load the tail to pair the writer's RELEASE store (review C2):
+    // amy_connector.c publishes tail with __ATOMIC_RELEASE after writing the
+    // payload; a plain volatile read here only half-builds the pair, letting
+    // the payload copy below hoist above the tail check under -O3/LTO. Load
+    // tail once with acquire and use it in BOTH empty-checks.
+    int16_t tail = __atomic_load_n(&midi_queue_tail, __ATOMIC_ACQUIRE);
+    if(midi_queue_head == tail) {
+        // Clear-then-RECHECK (review F-6): clearing pending after deciding
+        // "empty" raced the writer -- it could enqueue + skip scheduling
+        // (pending still 1) in the gap, stranding a message until the NEXT
+        // event arrived ("pressed a key, nothing; pressed again, both").
+        // Any writer that saw pending==1 enqueued before our clear, so the
+        // recheck finds its message.
+        tulip_midi_py_pending = 0;
+        tail = __atomic_load_n(&midi_queue_tail, __ATOMIC_ACQUIRE);
+        if (midi_queue_head == tail) {
+            return mp_const_none;
+        }
+    }
+    // Copy BEFORE advancing head: mp_obj_new_bytes can GC-pause, and a
+    // long-enough flood could lap a slot the old code had already
+    // released (it advanced head first and hoped).
+    uint8_t tmp[MAX_MIDI_BYTES_PER_MESSAGE];
+    int16_t prev_head = midi_queue_head;
+    uint8_t n = last_midi_len[prev_head];
+    if (n > MAX_MIDI_BYTES_PER_MESSAGE) n = MAX_MIDI_BYTES_PER_MESSAGE;
+    for (uint8_t i = 0; i < n; i++) tmp[i] = last_midi[prev_head][i];
+    midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
+    return mp_obj_new_bytes(tmp, n);
+#endif
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_obj, 0, 0, tulip_midi_in);
+
+// tulip.midi_in_drops() -> (inject_drops, ring_drops)
+// Loss accounting for the MIDI input path -- both are cumulative counts and
+// both also log to the console on a power-of-two schedule:
+//   inject_drops: messages the cross-task funnel refused (queue full or
+//                 missing) before they ever reached the parser -- see
+//                 amy_midi_inject() in amy/src/amy_midi.c.
+//   ring_drops:   parsed messages the last_midi ring refused because Python
+//                 wasn't draining tulip.midi_in() fast enough.
+// Nonzero numbers here are the difference between "debuggable" and "the
+// note just never happened".
+extern volatile uint32_t tulip_midi_ring_drops;
+STATIC mp_obj_t tulip_midi_in_drops(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t items[2];
+#ifdef ESP_PLATFORM
+    items[0] = mp_obj_new_int_from_uint(amy_midi_inject_drops);
+#else
+    items[0] = mp_obj_new_int(0);  // no funnel off-device
+#endif
+    items[1] = mp_obj_new_int_from_uint(tulip_midi_ring_drops);
+    return mp_obj_new_tuple(2, items);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_in_drops_obj, 0, 0, tulip_midi_in_drops);
+
+// ---- Debug audio-capture tap (router-tap-fix follow-up) ----
+// Pull rendered PCM off the device to diff against the bit-clean host render
+// (chasing the ESP-only soft-note fold; amy_get_level gives only one peak).
+//   tulip.audio_tap(n_blocks)  arms capture of the next n_blocks FINAL output
+//       blocks into a PSRAM buffer. Cap 256 blocks (~1.37 s); larger raises.
+//   tulip.audio_tap()          -> (captured_blocks, armed).
+//   tulip.audio_tap_read(off=0, n=rest) -> a bytes() slice (off/n in BYTES) of
+//       the captured PCM: int16 little-endian, AMY_NCHANS interleaved (stereo
+//       => L,R,L,R...), AMY_BLOCK_SIZE frames/block, at AMY_SAMPLE_RATE. Read
+//       once audio_tap()[1] (armed) is False. Capture logic + the audio-task
+//       memcpy live in amy_connector.c.
+// The tap implementation (amy_connector.c) is compiled only when AMY runs in
+// this module -- it reads amy's output_block and allocs PSRAM. On the web /
+// external builds (amyboardweb, tulip/web, amyrepl all -DAMY_IS_EXTERNAL) AMY
+// is a SEPARATE module, so the tap symbols aren't linked. Guard on the SAME
+// AMY_IS_EXTERNAL the implementation uses: keep the bindings present (the
+// module table must stay valid) but degrade to None/(0, False)/b'' there, the
+// same way eq_silent_skip / render_cyc degrade off-device.
+#ifndef AMY_IS_EXTERNAL
+extern int tulip_audio_tap_arm(uint16_t n_blocks);
+extern uint16_t tulip_audio_tap_got_blocks(void);
+extern uint8_t tulip_audio_tap_is_armed(void);
+extern const uint8_t *tulip_audio_tap_data(void);
+extern uint32_t tulip_audio_tap_bytes(void);
+#endif
+
+STATIC mp_obj_t tulip_audio_tap_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
+    if (n_args == 0) {
+        mp_obj_t items[2] = {
+            mp_obj_new_int_from_uint(tulip_audio_tap_got_blocks()),
+            mp_obj_new_bool(tulip_audio_tap_is_armed()),
+        };
+        return mp_obj_new_tuple(2, items);
+    }
+    int n = mp_obj_get_int(args[0]);
+    if (n < 0) n = 0;
+    int r = tulip_audio_tap_arm((uint16_t)n);
+    if (r == -1) mp_raise_ValueError(MP_ERROR_TEXT("audio_tap: n_blocks over cap (max 256)"));
+    if (r == -2) mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("audio_tap: PSRAM alloc failed"));
+    return mp_const_none;
+#else
+    // No connector-side tap on external-AMY builds: audio_tap() -> (0, False),
+    // audio_tap(n) -> None.
+    (void)args;
+    if (n_args == 0) {
+        mp_obj_t items[2] = { mp_obj_new_int(0), mp_const_false };
+        return mp_obj_new_tuple(2, items);
+    }
+    return mp_const_none;
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_obj, 0, 1, tulip_audio_tap_fn);
+
+STATIC mp_obj_t tulip_audio_tap_read_fn(size_t n_args, const mp_obj_t *args) {
+#ifndef AMY_IS_EXTERNAL
+    uint32_t total = tulip_audio_tap_bytes();
+    const uint8_t *data = tulip_audio_tap_data();
+    if (data == NULL || total == 0)
+        return mp_obj_new_bytes((const byte *)"", 0);
+    int32_t o = (n_args > 0) ? mp_obj_get_int(args[0]) : 0;
+    if (o < 0) o = 0;
+    uint32_t off = (uint32_t)o;
+    if (off >= total)
+        return mp_obj_new_bytes((const byte *)"", 0);
+    uint32_t avail = total - off;
+    uint32_t n = avail;
+    if (n_args > 1) {
+        int32_t nn = mp_obj_get_int(args[1]);
+        if (nn < 0) nn = 0;
+        n = (uint32_t)nn;
+        if (n > avail) n = avail;
+    }
+    return mp_obj_new_bytes(data + off, n);
+#else
+    (void)n_args; (void)args;
+    return mp_obj_new_bytes((const byte *)"", 0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_audio_tap_read_obj, 0, 2, tulip_audio_tap_read_fn);
 
 extern uint16_t sysex_len;
 STATIC mp_obj_t tulip_sysex_in(size_t n_args, const mp_obj_t *args) {
@@ -326,7 +687,11 @@ STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
         mp_obj_t *items;
         size_t len;
         mp_obj_get_array(args[0], &len, &items);
-        uint8_t *b = malloc_caps(len, MALLOC_CAP_INTERNAL);
+        // MALLOC_CAP_8BIT (was CAP_INTERNAL): internal heap is designed-full
+        // at steady state here, so an INTERNAL-only ask fails routinely --
+        // and nothing about a scratch MIDI byte buffer needs DMA/internal.
+        uint8_t *b = malloc_caps(len, MALLOC_CAP_8BIT);
+        if(b == NULL) mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("midi buffer alloc failed"));
         for(uint16_t i=0;i<(uint16_t)len;i++) {
             b[i] = mp_obj_get_int(items[i]);
         }
@@ -337,6 +702,109 @@ STATIC mp_obj_t tulip_midi_out(size_t n_args, const mp_obj_t *args) {
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_out_obj, 1, 2, tulip_midi_out);
+
+// ---- C-side MIDI router upload (see midi_router.h; consumed in
+// amy_connector.c's input hook) ----
+
+// tulip.midi_routes(board_masks, python_mask, notify_all)
+//   board_masks: 16 ints (channels 1..16), bit d = forward to board device d
+//   python_mask: bit (ch-1) = Python routing still needed on that channel
+//                (layered internals)
+//   notify_all:  schedule the Python drain for EVERY message (midimon open
+//                or any Python consumer that wants the full stream)
+// Uploaded by deck/forwarder after each rebuild; channels with no board
+// bits, no python bit and notify_all=0 never touch Python at all.
+STATIC mp_obj_t tulip_midi_routes_fn(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t *items;
+    size_t alen;
+    mp_obj_get_array(args[0], &alen, &items);
+    uint32_t py_mask = mp_obj_get_int(args[1]);
+    // deactivate around the rewrite (review F-16): the input hook on the
+    // AMY task reads these entries; with the flag down it falls back to
+    // notify-Python for the microseconds the table is inconsistent
+    tulip_midi_route_active = 0;
+    for (int ch = 1; ch <= 16; ch++) {
+        uint16_t bm = (ch - 1 < (int)alen) ? (uint16_t)mp_obj_get_int(items[ch - 1]) : 0;
+        tulip_midi_routes[ch].board_mask = bm;
+        tulip_midi_routes[ch].flags = (py_mask >> (ch - 1)) & 1;
+    }
+    tulip_midi_notify_all = (n_args > 2 && mp_obj_is_true(args[2])) ? 1 : 0;
+    __asm__ volatile("" ::: "memory");
+    tulip_midi_route_active = 1;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_routes_obj, 2, 3, tulip_midi_routes_fn);
+
+// tulip.midi_activity() -- monotonic count of MIDI messages seen by the C
+// layer; the 10 Hz meter/chips poll this instead of importing forwarder
+// and reading Python state (migration map #4).
+STATIC mp_obj_t tulip_midi_activity_fn(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(tulip_midi_activity);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_midi_activity_obj, 0, 0, tulip_midi_activity_fn);
+
+#ifndef __EMSCRIPTEN__
+// tulip.piano_partials(n) -- cap the interp-partials (piano) engine at
+// harmonic n (8..40). Each held piano note renders ~24 partial oscs at
+// full detail (~14% of a core); lowering this trades top-end air for
+// polyphony headroom (OPT-8). Apply while no piano notes are held (the
+// router applies it on rebuild).
+//
+// NOTE: n is a harmonic INDEX, NOT the number of partials rendered -- the
+// engine's static map is sparse above harmonic 17, so n=20 renders 18 and
+// n>=37 all render the same 24. Kept for compatibility; new callers should
+// use piano_partials_count() below, which speaks in partials rendered.
+STATIC mp_obj_t tulip_piano_partials(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 8) n = 8;
+    if (n > 40) n = 40;
+    amy_partials_harmonic_limit = (uint8_t)n;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_obj, 1, 1, tulip_piano_partials);
+
+// tulip.piano_partials_count(n) -- the SAME engine knob as piano_partials(),
+// but n is the number of partials that actually SOUND (8..24), not a harmonic
+// index. The two differ because the engine's static use_this_partial_map is
+// sparse above harmonic 17: a harmonic limit of 20 renders 18 partials, 24
+// renders 19, and every limit from 35 up renders the same 24 -- so the old
+// number both misreported the cost and stopped doing anything over its top
+// third. amy_partials_limit_for_count() inverts the map (in AMY, walking the
+// map itself, so nothing here mirrors it) and clamps out-of-range requests to
+// the achievable end. Like piano_partials() this affects only NEW note-ons.
+STATIC mp_obj_t tulip_piano_partials_count(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 1) n = 1;
+    amy_partials_harmonic_limit = (uint8_t)amy_partials_limit_for_count((uint16_t)n);
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_count_obj, 1, 1, tulip_piano_partials_count);
+
+// tulip.piano_partials_max() -- how many partials full detail renders (24
+// today). The deck's "partials" slider takes its top from this rather than
+// hardcoding it, so the control keeps telling the truth if the engine's map
+// ever changes.
+STATIC mp_obj_t tulip_piano_partials_max(size_t n_args, const mp_obj_t *args) {
+    return mp_obj_new_int_from_uint(amy_partials_max_count());
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_partials_max_obj, 0, 0, tulip_piano_partials_max);
+
+// tulip.piano_sustain(stretch_x1000) -- SUSTAIN for the interp-partials
+// (piano) engine: time-stretch the baked per-partial envelope so notes ring
+// longer with the same timbre. The arg is the stretch multiplier * 1000
+// (5000 => 5.0x ~= 5x longer ring), clamped to 250..8000 (0.25x..8x). 1000
+// (== 1.0x) is the natural, bit-identical default. Device-global; like
+// piano_partials it affects only NEW note-ons, so the router applies it on
+// rebuild while no piano notes are held.
+STATIC mp_obj_t tulip_piano_sustain(size_t n_args, const mp_obj_t *args) {
+    int n = mp_obj_get_int(args[0]);
+    if (n < 250) n = 250;
+    if (n > 8000) n = 8000;
+    amy_partials_time_stretch = (float)n / 1000.0f;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_piano_sustain_obj, 1, 1, tulip_piano_sustain);
+#endif
 
 // tulip.num_midi_devices() -- count of connected USB-MIDI OUT devices (fleet size,
 // primary + extras). 1 on platforms without the USB host.
@@ -352,11 +820,28 @@ STATIC mp_obj_t tulip_num_midi_devices(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_num_midi_devices_obj, tulip_num_midi_devices);
 
+// tulip.amy_level() -- AMY's output peak (0..1) since the last call, for UI
+// level meters (amy_get_level is a peak-hold that resets on read). The deck
+// also probes hasattr(tulip, 'amy_level') as its level-meter capability check.
+#ifndef AMY_IS_EXTERNAL
+extern float amy_get_level(void);
+#endif
+STATIC mp_obj_t tulip_amy_level(void) {
+#ifndef AMY_IS_EXTERNAL
+    return mp_obj_new_float((mp_float_t)amy_get_level());
+#else
+    return mp_obj_new_float((mp_float_t)0);
+#endif
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_amy_level_obj, tulip_amy_level);
+
 // --- Render mode toggles (partial buffered rendering + vsync-gated copy) ---
 // display.c provides these only on boards with the main LVGL LCD -- not on
-// AMYBOARD/TDECK, which don't compile display.c. Keep the Python functions
-// defined everywhere (so the module table is valid) but no-op where absent.
-#if !defined(AMYBOARD) && !defined(TDECK)
+// AMYBOARD/TDECK, and not in the web (emscripten) build, none of which compile
+// display.c (the web link was failing on these externs). Keep the Python
+// functions defined everywhere (so the module table is valid) but no-op where
+// absent.
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
 extern void display_set_partial(int);
 extern void display_set_vsync(int);
 extern int display_get_partial(void);
@@ -366,7 +851,7 @@ extern int display_get_vsync(void);
 // tulip.display_partial([on]) -- buffered partial rendering: cleaner single-
 // element (touch) updates. Returns the current state.
 STATIC mp_obj_t tulip_display_partial(size_t n_args, const mp_obj_t *args) {
-#if !defined(AMYBOARD) && !defined(TDECK)
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
     if(n_args > 0) display_set_partial(mp_obj_get_int(args[0]));
     return mp_obj_new_int(display_get_partial());
 #else
@@ -378,7 +863,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_display_partial_obj, 0, 1, tuli
 // tulip.display_vsync([on]) -- gate the partial-mode copy to vsync (tear-free
 // vs lower latency). Only has an effect when display_partial is on.
 STATIC mp_obj_t tulip_display_vsync(size_t n_args, const mp_obj_t *args) {
-#if !defined(AMYBOARD) && !defined(TDECK)
+#if !defined(AMYBOARD) && !defined(TDECK) && !defined(__EMSCRIPTEN__)
     if(n_args > 0) display_set_vsync(mp_obj_get_int(args[0]));
     return mp_obj_new_int(display_get_vsync());
 #else
@@ -398,7 +883,10 @@ STATIC mp_obj_t tulip_midi_local(size_t n_args, const mp_obj_t *args) {
         mp_obj_t *items;
         size_t len;
         mp_obj_get_array(args[0], &len, &items);
-        uint8_t *b = malloc_caps(len, MALLOC_CAP_INTERNAL);
+        // MALLOC_CAP_8BIT (was CAP_INTERNAL): see tulip_midi_out -- internal
+        // heap is designed-full at steady state; any heap will do here.
+        uint8_t *b = malloc_caps(len, MALLOC_CAP_8BIT);
+        if(b == NULL) mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("midi buffer alloc failed"));
         for(uint16_t i=0;i<(uint16_t)len;i++) {
             b[i] = mp_obj_get_int(items[i]);
         }
@@ -417,6 +905,34 @@ STATIC mp_obj_t tulip_amy_send(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_obj, 1, 1, tulip_amy_send);
+
+// tulip.amy_send_batch("msg1\nmsg2\n...") -> count. One MP call + one string
+// object instead of N of each: instrument switches / kit loads / FX
+// re-baselines emit dozens of wire messages back-to-back, and each
+// tulip.amy_send() round-trip costs an MP call + arg marshal (boundary
+// sketch 2). Splits on '\n' in place on a stack copy per line.
+STATIC mp_obj_t tulip_amy_send_batch(size_t n_args, const mp_obj_t *args) {
+    size_t len;
+    const char *s = mp_obj_str_get_data(args[0], &len);
+    int count = 0;
+    char line[MAX_MESSAGE_LEN];
+    size_t li = 0;
+    for (size_t i = 0; i <= len; i++) {
+        char c = (i < len) ? s[i] : '\n';
+        if (c == '\n') {
+            if (li > 0) {
+                line[li] = '\0';
+                amy_add_message(line);
+                count++;
+            }
+            li = 0;
+        } else if (li < sizeof(line) - 1) {
+            line[li++] = c;
+        }
+    }
+    return mp_obj_new_int(count);
+}
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_amy_send_batch_obj, 1, 1, tulip_amy_send_batch);
 
 STATIC mp_obj_t tulip_amy_send_sysex(size_t n_args, const mp_obj_t *args) {
 #if SYSEX_COPY_SLOTS > 0
@@ -523,6 +1039,68 @@ STATIC mp_obj_t tulip_cpu(size_t n_args, const mp_obj_t *args) {
 }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_cpu_obj, 0, 1, tulip_cpu);
+
+// tulip.mem_stats() -- one-shot memory inventory, dumped to stderr. Every line
+// is tagged "MEMSTAT: " so tools/qexec.py can pull it back out of the console
+// chatter. Three sections: per-capability heap totals, per-task stack
+// high-water marks (bytes of headroom left at the task's deepest point so far),
+// and the dynamic flash-mmap vaddr pool. No-op off ESP so Python stays portable.
+#ifdef ESP_PLATFORM
+STATIC void tulip_mem_stats_heap(const char *label, uint32_t caps) {
+    multi_heap_info_t info;
+    heap_caps_get_info(&info, caps);
+    fprintf(stderr,
+            "MEMSTAT: heap %s total %u free %u largest %u min_free %u blocks %u\n",
+            label,
+            (unsigned)(info.total_free_bytes + info.total_allocated_bytes),
+            (unsigned)info.total_free_bytes,
+            (unsigned)heap_caps_get_largest_free_block(caps),
+            (unsigned)info.minimum_free_bytes,
+            (unsigned)info.allocated_blocks);
+}
+#endif
+
+STATIC mp_obj_t tulip_mem_stats(void) {
+#ifdef ESP_PLATFORM
+    tulip_mem_stats_heap("internal8", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    tulip_mem_stats_heap("spiram", MALLOC_CAP_SPIRAM);
+    tulip_mem_stats_heap("dma", MALLOC_CAP_DMA);
+    tulip_mem_stats_heap("exec", MALLOC_CAP_EXEC);
+
+    UBaseType_t uxArraySize = uxTaskGetNumberOfTasks();
+    TaskStatus_t *pxTaskStatusArray = pvPortMalloc(uxArraySize * sizeof(TaskStatus_t));
+    if(pxTaskStatusArray == NULL) {
+        fprintf(stderr, "MEMSTAT: taskinfo alloc failed\n");
+    } else {
+        uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, NULL);
+        for(UBaseType_t x=0; x<uxArraySize; x++) {
+            // TaskStatus_t.xCoreID only exists when
+            // CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID is set (it is not in any
+            // Tulip sdkconfig; IDF default n) -- accessing it unguarded is a
+            // compile error. Core pinning is static per task anyway (tasks.h /
+            // amy.h), so print -2 = "not compiled in" rather than require the
+            // Kconfig.
+            #if defined(CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID)
+            int core = (pxTaskStatusArray[x].xCoreID == tskNO_AFFINITY) ? -1 : (int)pxTaskStatusArray[x].xCoreID;
+            #else
+            int core = -2;
+            #endif
+            fprintf(stderr, "MEMSTAT: task %s core %d prio %u hwm %u\n",
+                    pxTaskStatusArray[x].pcTaskName,
+                    core,
+                    (unsigned)pxTaskStatusArray[x].uxCurrentPriority,
+                    (unsigned)pxTaskStatusArray[x].usStackHighWaterMark);
+        }
+        vPortFree(pxTaskStatusArray);
+    }
+
+    fprintf(stderr, "MEMSTAT: mmap blocks follow\n");
+    esp_mmu_map_dump_mapped_blocks(stderr);
+    fflush(stderr);
+#endif
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(tulip_mem_stats_obj, tulip_mem_stats);
 
 #ifndef ESP_PLATFORM
 #ifndef __linux__
@@ -901,10 +1479,17 @@ STATIC mp_obj_t tulip_bg_bitmap(size_t n_args, const mp_obj_t *args) {
         }
         return mp_const_none; 
     } else {
-        // return a bitmap
-        uint8_t bitmap[w*h*BYTES_PER_PIXEL];  
+        // return a bitmap -- heap, not a user-sized VLA: a full-screen
+        // get was a ~600KB stack allocation on the MP task (review F-15)
+        size_t n = (size_t)w * h * BYTES_PER_PIXEL;
+        uint8_t *bitmap = malloc_caps(n, MALLOC_CAP_SPIRAM);
+        if (bitmap == NULL) {
+            mp_raise_ValueError(MP_ERROR_TEXT("bg_bitmap: out of memory"));
+        }
         display_get_bg_bitmap_raw(x,y,w,h, bitmap);
-        return mp_obj_new_bytes(bitmap, w*h*BYTES_PER_PIXEL);
+        mp_obj_t r = mp_obj_new_bytes(bitmap, n);
+        free_caps(bitmap);
+        return r;
     }
 }
 
@@ -1097,12 +1682,11 @@ STATIC mp_obj_t tulip_screen_size(size_t n_args, const mp_obj_t *args) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_screen_size_obj, 0, 0, tulip_screen_size);
 
 
-mp_obj_t frame_callback = NULL; 
-mp_obj_t frame_arg = NULL; 
-mp_obj_t touch_callback = NULL; 
-mp_obj_t keyboard_callback = NULL;
-mp_obj_t ui_quit_callback = NULL;
-mp_obj_t ui_switch_callback = NULL;
+// frame/touch/keyboard/ui_quit/ui_switch callback+arg stores used to live
+// here as plain C globals -- invisible to the GC. They are GC root pointers
+// now; the aliases come from keyscan.h (which keyscan.c also includes), and
+// mp_init zeroes the slots, so no initializer is needed here. State resets on
+// soft reboot, same as the defer slots.
 
 
 STATIC mp_obj_t mp_lv_task_handler(mp_obj_t arg)
@@ -1127,7 +1711,9 @@ void tulip_frame_isr() {
     if(frame_callback != NULL) {
         // Schedule the python callback given to run asap
         //fprintf(stderr, "calling function %p with arg %p at frame %d\n", frame_callback, frame_arg, vsync_count);
-        mp_sched_schedule(frame_callback, frame_arg);
+        // never hand MP_OBJ_NULL to the scheduler as a Python arg -- any use
+        // of it on the Python side is UB
+        mp_sched_schedule(frame_callback, frame_arg == NULL ? mp_const_none : frame_arg);
 #ifdef ESP_PLATFORM
         //mp_hal_wake_main_task_from_isr();
 #endif
@@ -1154,6 +1740,11 @@ STATIC mp_obj_t tulip_frame_callback(size_t n_args, const mp_obj_t *args) {
     }
     if(n_args > 1) {
         frame_arg = args[1];
+    } else if(n_args >= 1) {
+        // a 1-arg call used to LEAVE the previous arg in place (the old
+        // callback's object, or MP_OBJ_NULL at boot) and hand it to the new
+        // callback. No arg given means None.
+        frame_arg = mp_const_none;
     }
     return mp_const_none;
 }
@@ -1407,7 +1998,13 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(tulip_gpu_reset_obj, 0, 0, tulip_gpu_
 
 STATIC mp_obj_t tulip_int_screenshot(size_t n_args, const mp_obj_t *args) {
     char fn[50];
-    strcpy(fn, mp_obj_str_get_str(args[0]));
+    // strcpy() here was a Python-triggerable stack smash: any filename >= 50
+    // chars ran off fn into the caller's frame. Raise instead.
+    size_t l;
+    const char *s = mp_obj_str_get_data(args[0], &l);
+    if(l >= sizeof(fn)) mp_raise_ValueError(MP_ERROR_TEXT("screenshot filename too long"));
+    memcpy(fn, s, l);
+    fn[l] = 0;
     if(n_args>1) {
         int16_t x = mp_obj_get_int(args[1]);
         int16_t y = mp_obj_get_int(args[2]);
@@ -1751,12 +2348,29 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_seq_ticks), MP_ROM_PTR(&tulip_seq_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_in), MP_ROM_PTR(&tulip_midi_in_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_out), MP_ROM_PTR(&tulip_midi_out_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_routes), MP_ROM_PTR(&tulip_midi_routes_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_activity), MP_ROM_PTR(&tulip_midi_activity_obj) },
+    { MP_ROM_QSTR(MP_QSTR_midi_in_drops), MP_ROM_PTR(&tulip_midi_in_drops_obj) },
+    { MP_ROM_QSTR(MP_QSTR_audio_tap), MP_ROM_PTR(&tulip_audio_tap_obj) },
+    { MP_ROM_QSTR(MP_QSTR_audio_tap_read), MP_ROM_PTR(&tulip_audio_tap_read_obj) },
+#ifndef __EMSCRIPTEN__
+    { MP_ROM_QSTR(MP_QSTR_piano_partials), MP_ROM_PTR(&tulip_piano_partials_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_partials_count), MP_ROM_PTR(&tulip_piano_partials_count_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_partials_max), MP_ROM_PTR(&tulip_piano_partials_max_obj) },
+    { MP_ROM_QSTR(MP_QSTR_piano_sustain), MP_ROM_PTR(&tulip_piano_sustain_obj) },
+#endif
     { MP_ROM_QSTR(MP_QSTR_num_midi_devices), MP_ROM_PTR(&tulip_num_midi_devices_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_level), MP_ROM_PTR(&tulip_amy_level_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_partial), MP_ROM_PTR(&tulip_display_partial_obj) },
     { MP_ROM_QSTR(MP_QSTR_display_vsync), MP_ROM_PTR(&tulip_display_vsync_obj) },
     { MP_ROM_QSTR(MP_QSTR_midi_local), MP_ROM_PTR(&tulip_midi_local_obj) },
     { MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&tulip_cpu_obj) },
-    { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) }, 
+    { MP_ROM_QSTR(MP_QSTR_mem_stats), MP_ROM_PTR(&tulip_mem_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR_board), MP_ROM_PTR(&tulip_board_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_freq), MP_ROM_PTR(&tulip_flash_freq_obj) },
+    { MP_ROM_QSTR(MP_QSTR_render_cyc), MP_ROM_PTR(&tulip_render_cyc_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence_stats), MP_ROM_PTR(&tulip_flash_fence_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR_eq_silent_skip), MP_ROM_PTR(&tulip_eq_silent_skip_obj) },
     { MP_ROM_QSTR(MP_QSTR_build_strings), MP_ROM_PTR(&tulip_build_strings_obj) },
 #if !defined(__EMSCRIPTEN__) && !defined(AMYBOARD)
     //{ MP_ROM_QSTR(MP_QSTR_multicast_start), MP_ROM_PTR(&tulip_multicast_start_obj) },
@@ -1765,8 +2379,13 @@ STATIC const mp_rom_map_elem_t tulip_module_globals_table[] = {
 
 #ifndef __EMSCRIPTEN__
     { MP_ROM_QSTR(MP_QSTR_amy_send), MP_ROM_PTR(&tulip_amy_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_amy_send_batch), MP_ROM_PTR(&tulip_amy_send_batch_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_send_sysex), MP_ROM_PTR(&tulip_amy_send_sysex_obj) },
     { MP_ROM_QSTR(MP_QSTR_amy_ticks_ms), MP_ROM_PTR(&tulip_amy_ticks_ms_obj) },
+#ifdef ESP_PLATFORM
+    { MP_ROM_QSTR(MP_QSTR_flash_fence), MP_ROM_PTR(&tulip_flash_fence_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flash_fence_auto), MP_ROM_PTR(&tulip_flash_fence_auto_obj) },
+#endif
     { MP_ROM_QSTR(MP_QSTR_pcm_load_file), MP_ROM_PTR(&tulip_pcm_load_file_obj) },
 #endif
 

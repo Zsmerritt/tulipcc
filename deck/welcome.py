@@ -15,23 +15,26 @@ def _big_card(parent, x, y, title, sub, color, cb):
     b.set_size(300, 150)
     b.set_pos(x, y)
     dk._flat(b, radius=18, bg=color)
+    dk.pressable(b)   # these cards ARE tappable -- give them press feedback
+    # title + subtitle grouped together (X-10: pinned to opposite edges,
+    # the card middle read as empty)
     t = lv.label(b)
     t.set_text(title)
     t.set_style_text_color(dk.c(dk.WHITE), 0)
     t.set_style_text_font(dk.FONT_L, 0)
-    t.align(lv.ALIGN.TOP_LEFT, 4, 6)
+    t.align(lv.ALIGN.TOP_LEFT, 4, 24)
     s = lv.label(b)
     s.set_text(sub)
     s.set_width(270)
     s.set_style_text_color(dk.c(dk.WHITE), 0)
     s.set_style_text_font(dk.FONT_S, 0)
-    s.align(lv.ALIGN.BOTTOM_LEFT, 4, -8)
+    s.align(lv.ALIGN.TOP_LEFT, 4, 68)
     b.add_event_cb(cb, lv.EVENT.CLICKED, None)
     return b
 
 
 def _done_and_run(app):
-    deckcfg.set('setup_done', True)
+    deckcfg.set_value('setup_done', True)
     tulip.run(app)
 
 
@@ -39,10 +42,10 @@ def run(screen):
     screen.bg_color = dk.BG
     dk.label(screen.group, "Welcome to Tulip", 60, 60, color=dk.WHITE, font=dk.FONT_L)
     dk.label(screen.group,
-        "A tiny Python computer for making music. Let's set it up -- you can",
+        "A tiny Python computer for making music. Tap a step to set it up.",
         60, 104, color=dk.MUTED, font=dk.FONT_M)
     dk.label(screen.group,
-        "always change any of this later from Settings.",
+        "You can always change any of this later from Settings.",
         60, 130, color=dk.MUTED, font=dk.FONT_M)
 
     _big_card(screen.group, 60, 190, "1. Wi-Fi",
@@ -51,14 +54,22 @@ def run(screen):
     _big_card(screen.group, 380, 190, "2. Instrument",
         "Pick the synth your MIDI keys play.", dk.PURPLE,
         lambda e: _done_and_run('instrument'))
+    def _opt_in_mpe(e):
+        # Choosing the MPE step IS the opt-in: flip the global gate so the
+        # panel that opens is configurable, not a "turned off in Settings"
+        # pointer (the only surface that showed MPE while the gate was off).
+        try:
+            import deckcfg
+            deckcfg.set_value('mpe_enabled', True)
+        except Exception:
+            pass
+        _done_and_run('mpe')
     _big_card(screen.group, 700, 190, "3. MPE",
-        "Optional: per-note expression.", dk.TEAL,
-        lambda e: _done_and_run('mpe'))
+        "Optional: per-note expression.", dk.TEAL, _opt_in_mpe)
 
     dk.button(screen.group, "Get started  " + lv.SYMBOL.RIGHT, w=280, h=68,
         bg=dk.GREEN, font=dk.FONT_L,
         cb=lambda e: _done_and_run('home')).set_pos(60, 400)
-    dk.label(screen.group, "You can reopen this with  run('welcome')",
-        60, 500, color=dk.MUTED, font=dk.FONT_S)
+    # (no REPL syntax in onboarding copy -- UX-REVIEW-7 N6)
 
     screen.present()

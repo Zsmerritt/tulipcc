@@ -1,0 +1,27 @@
+{
+  "review": "ux-review-12",
+  "round": 3,
+  "build": "ux-round2 @ 61a1c52b",
+  "device": "TULIP4_R11, COM11",
+  "session": "2026-07-18 21:30-21:45",
+  "wdt_count": 0,
+  "verification": [
+    {"id": "UX11-1", "verdict": "VERIFIED", "note": "track SURFACE2 visible; 1%/4% render as short bars not circles", "evidence": "shots/07-profiler-bars-fixed.png"},
+    {"id": "UX11-2", "verdict": "VERIFIED", "note": "chip 10/32 -> 20/32 (add Juno) -> 11/32 immediately on Drums type change -> 10/32 on remove", "evidence": "on-device chip text; shots/01-kit-picker-noshadow.png top bar"},
+    {"id": "UX11-3", "verdict": "VERIFIED", "note": "Use selected builds DISABLED+dimmed", "evidence": "shots/03-swap-current-highlight.png"},
+    {"id": "UX11-4", "verdict": "VERIFIED", "note": "current hit (jazzkick) highlighted in ACCENT on pack open", "evidence": "shots/03-swap-current-highlight.png"},
+    {"id": "UX11-5", "verdict": "VERIFIED", "note": "detail subtitle 'Juno-6 - A11 Brass Set 1'", "evidence": "shots/06-preset-detail-soundname.png"},
+    {"id": "UX11-6", "verdict": "VERIFIED", "note": "value readouts WHITE+mono; hit name TEXT color", "evidence": "shots/02-pad-editor-readable.png"},
+    {"id": "UX11-7", "verdict": "IMPLEMENTED-ARTIFACT-PERSISTS", "note": "shadow zeroing confirmed live (shadow_w 0, opa 0) but the triangle was MISDIAGNOSED by round 2: it is row-gap + corner-radius exposing the dark column bg (RGB332), not a shadow. Refiled as UX12-1", "evidence": "shots/04-triangle-compare-r2-vs-r3.png, shots/05-kitrows-compare-r2-vs-r3.png"}
+  ],
+  "findings": [
+    {"id": "UX12-1", "severity": "NIT", "title": "Tight list rows read as dark 'funnel' notches between rounded corners", "screen": "Pads > Swap pack/hit lists", "repro": "2-4px row gap + radius over contrasting column bg quantizes to a wedge that reads as a glitch", "fix": "widen row gap to ~8px OR column bg SURFACE OR radius ~4 on narrow lists", "cost": "ZERO", "evidence": "shots/04-triangle-compare-r2-vs-r3.png"}
+  ],
+  "convergence": "CONVERGED aside from UX12-1 (NIT, corrected diagnosis, one-line-class fix). UX10-1 WDT family separately owned (#95); zero WDTs in rounds 2-3 (~75 min driving) since the Keyboard-tile repro was removed.",
+  "restoration": {
+    "config": "byte-identical restore sha8 fc0804c0 + clean reboot; verified after",
+    "harness_files_deleted": ["/user/_drv.py", "/user/_s.png"],
+    "throwaways_removed": ["instrument 'Tulip 2'", "preset 'Tulip'"],
+    "final_state": "Home, Wi-Fi up, chip Tulip 10/32, no debug readout"
+  }
+}

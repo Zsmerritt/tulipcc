@@ -1,0 +1,37 @@
+# TULIP4_R11_FLASHER -- the ping-pong "flasher" image (see deck/PINGPONG.md).
+#
+# This is the PLAY build (boards/N32R8/sdkconfig.board, via the identical
+# SDKCONFIG_DEFAULTS chain as TULIP4_R11) in every respect EXCEPT the MSPI
+# clock, which drops to 80MHz so multi-MB OTA writes happen at a thermally safe
+# speed -- 120MHz octal flash corrupts sustained writes under thermal drift.
+#
+# It is the recovery anchor: it lives permanently in ota_0, and if it fails to
+# boot there is no way back. So the delta below is deliberately the SMALLEST
+# thing that can be called an 80MHz build -- nothing else may drift from play.
+#
+# PSRAM drops with the flash clock because on the S3 the two share the MSPI
+# clock domain, and both configs that exist here set the pair together (N32R8:
+# 120/120; the unrelated TULIP4_R11_DEBUG board: 80/80). An 80/120 split is
+# untried on this hardware, so we follow the established pairing rather than
+# invent a third combination in the one image that must never fail to boot.
+#
+# The sample mode is deliberately NOT set here: N32R8 leaves
+# CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_DTR commented out, and inheriting play's
+# setting is the entire point. NOTE: that inherited setting is DTR, not STR --
+# with ESPTOOLPY_OCT_FLASH=y the Kconfig choice DEFAULTS to DTR, so both images
+# run octal DTR (verified in the resolved sdkconfig, 2026-07-16). At 80MHz
+# octal DTR is a standard supported mode; at 120MHz it is the experimental
+# thermally-risky one, which is exactly why this image exists.
+#
+# The =n lines are required, not decorative: the frequency and PSRAM speed are
+# mutually exclusive Kconfig choices, so N32R8's 120M selections must be turned
+# OFF here as the 80M ones come on.
+
+CONFIG_SPIRAM_SPEED_120M=n
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ_120M=n
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+# (No CONFIG_ESPTOOLPY_FLASHFREQ="..." line: that string is promptless/derived
+# -- kconfgen ignores it from defaults files and computes "80m" from the choice
+# above. Build identity must come from the _80M/_120M choice symbols, which is
+# what tulip.flash_freq() reports.)

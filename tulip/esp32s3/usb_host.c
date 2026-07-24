@@ -1,5 +1,6 @@
 // usb_host.c
 #include "usb_host.h"
+#include "freertos/semphr.h"
 
 
 
@@ -182,6 +183,19 @@ usb_transfer_t *extra_MIDIOut[MAX_EXTRA_MIDI] = { NULL };
 int extra_midi_count = 0;
 static int extra_claiming_slot = -1;  // slot being set up during the current enumeration
 
+// Serializes MIDI-out senders (the MicroPython task) against the DEV_GONE
+// cleanup/compaction (the USB host client task): without it, an unplug during
+// a send frees the usb_transfer_t out from under the sender (use-after-free).
+static SemaphoreHandle_t midi_out_lock = NULL;
+
+// Who midi_out_transfer_cb should notify. send_usb_midi_out is called from
+// the MicroPython task, the AMY MIDI task AND the USB client task (C-router
+// board forwarding) -- hardcoding the MP task meant every non-MP sender's
+// 250ms wait ALWAYS timed out (250ms of stalled MIDI input per forwarded
+// message) while MP got a spurious notification. All senders serialize on
+// midi_out_lock, so one slot is enough.
+static TaskHandle_t midi_out_waiter = NULL;
+
 // Total MIDI-out devices available now (primary + extras). Exposed to Python.
 int usb_num_midi_out_devices() {
     return (midi_has_out ? 1 : 0) + extra_midi_count;
@@ -246,7 +260,14 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
                 //            p[i], p[i + 1], p[i + 2], p[i + 3]);
                 // Strip the first byte which is the USB-MIDI virtual wire ID,
                 // rest is MIDI message (at least for 3-byte messages).
-                if(tulip_ready) convert_midi_bytes_to_messages(p + i + 1, 3,1);
+                // This callback runs on the USB task (core 1). It must NOT
+                // call the parser directly: the parser's per-call state and
+                // everything downstream (AMY event dispatch, the last_midi
+                // ring's single-writer discipline) belong to the AMY MIDI
+                // task. amy_midi_inject hands the packet across (funnel
+                // build) or parses in this task's own stream context (MPSC
+                // build); drops are counted, never silent.
+                if(tulip_ready) amy_midi_inject(AMY_MIDI_SOURCE_USB_HOST, p + i + 1, 3);
             }
             esp_err_t err = usb_host_transfer_submit(transfer);
             if (err != ESP_OK) {
@@ -254,6 +275,18 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
             }
         } else {
             fprintf(stderr, "midi transfer->status %d, in_xfer %d\n", transfer->status, in_xfer);
+            // RESUBMIT after a transient error: without this, each errored IN
+            // transfer permanently retired one of the 8 receive buffers (its
+            // packets -- e.g. a note-on -- silently lost, and the pool
+            // shrinking toward dead MIDI over a session). If the device is
+            // gone the submit fails and is logged; DEV_GONE cleans up anyway.
+            if (in_xfer && transfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
+                    transfer->status != USB_TRANSFER_STATUS_CANCELED) {
+                esp_err_t rerr = usb_host_transfer_submit(transfer);
+                if (rerr != ESP_OK) {
+                    fprintf(stderr, "midi IN resubmit err: 0x%x\n", rerr);
+                }
+            }
         }
     } else {
         fprintf(stderr, "Device_Handle_midi is %p but transfer is %p\n", Device_Handle_midi, transfer->device_handle);
@@ -263,7 +296,7 @@ static void midi_transfer_cb(usb_transfer_t *transfer) {
 uint8_t out_mtx = 0;
 static void midi_out_transfer_cb(usb_transfer_t *transfer) {
     //fprintf(stderr, "**midi_out_transfer_cb context: %p, num_bytes %d\n", transfer->context, transfer->actual_num_bytes);
-    xTaskNotifyGive(tulip_mp_handle);
+    if (midi_out_waiter) xTaskNotifyGive(midi_out_waiter);
 }
 
 
@@ -288,11 +321,24 @@ bool check_interface_desc_MIDI(const void *p, usb_device_handle_t Device_Handle)
 
 void midi_out_transfer(usb_transfer_t *xfer) {
     if (xfer == NULL) return;
+    // Claim the notification BEFORE submitting: whoever is sending is who the
+    // completion callback must wake.
+    midi_out_waiter = xTaskGetCurrentTaskHandle();
+    // Drain any stale completion notification (e.g. from a transfer that timed
+    // out below but completed later) so it can't satisfy THIS transfer's wait.
+    ulTaskNotifyTake(pdTRUE, 0);
     esp_err_t err = usb_host_transfer_submit(xfer);
-    // Don't exit until you get the callback
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (err != ESP_OK) {
+        // No callback will ever fire for a failed submit (typical case: the
+        // device was just unplugged) -- waiting here used to hang the
+        // MicroPython task forever.
         fprintf(stderr, "midi OUT usb_host_transfer_submit err: 0x%x\n", err);
+        return;
+    }
+    // Wait for the completion callback, bounded: a wedged device must not
+    // block the caller indefinitely.
+    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250)) == 0) {
+        fprintf(stderr, "midi OUT transfer completion timeout\n");
     }
 }
 
@@ -360,7 +406,7 @@ void usb_emit_sysex(int device) {
     }
 }
 
-void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
+static void send_usb_midi_out_locked(uint8_t * data, uint16_t len, int device) {
     if(midi_out_xfer_for(device) == NULL) return;  // no such device
     // we have to discern code_index from data. basically a reverse version of our MIDI input parser.
     uint8_t usb_midi_packet[4] = {0,0,0,0};
@@ -368,6 +414,16 @@ void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
     for(size_t i=0;i<len;i++) {
         uint8_t byte = data[i];
         if(usb_sysex_flag) {
+            // usb_sysex_buffer is a fixed static: Python could overflow it via
+            // tulip.midi_out(). usb_emit_sysex only runs at F7, so the whole
+            // message accumulates first -- DROP it rather than truncate, since
+            // a truncated sysex with no F7 wedges the receiver.
+            if(usb_sysex_len >= MAX_USB_SYSEX_BYTES) {
+                usb_sysex_len = 0;
+                usb_sysex_flag = 0;
+                fprintf(stderr, "usb midi out: sysex too long, dropped\n");
+                return;
+            }
             usb_sysex_buffer[usb_sysex_len++] = byte;
             if(byte == 0xF7) {
                 usb_sysex_flag = 0;
@@ -382,8 +438,15 @@ void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
                     byte == 0xFA || byte == 0xFB || byte == 0xFC || byte == 0xFD || byte == 0xFE || byte == 0xFF) {
                     usb_midi_packet[0] = 0x05; // single byte system common message
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
+                    // no `i = len+1` here: it aborted the loop and dropped any
+                    // further messages batched in the same buffer
                 }  else if(byte == 0xF0) {
+                    if(usb_sysex_len >= MAX_USB_SYSEX_BYTES) {
+                        usb_sysex_len = 0;
+                        usb_sysex_flag = 0;
+                        fprintf(stderr, "usb midi out: sysex too long, dropped\n");
+                        return;
+                    }
                     usb_sysex_buffer[usb_sysex_len++] = 0xF0;
                     usb_sysex_flag = 1;
                 } else { // a new status message that expects at least one byte of message after
@@ -408,16 +471,35 @@ void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
                     usb_midi_packet[0] = (status >> 4);
                     usb_midi_packet[2] = byte;
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
+                    // The three `i = len+1;` statements that used to end each
+                    // of these branches ABORTED the loop, silently dropping
+                    // every message batched after the first in one buffer:
+                    // midi_out(b'\xc0\x05\x90\x3c\x64') sent the program
+                    // change and lost the note-on. Plain fallthrough keeps
+                    // parsing the rest of the buffer.
                 } else if (usb_midi_packet[1] == 0xF3 || usb_midi_packet[1] == 0xF1) {
                     usb_midi_packet[0] = 0x02; // special
                     send_single_midi_out_packet(usb_midi_packet, device);
-                    i = len+1;
                 }
             }
         }
     }
-    
+
+}
+
+void send_usb_midi_out(uint8_t * data, uint16_t len, int device) {
+    // Hold the lock for the whole message so a DEV_GONE compaction can't free
+    // or shift the transfer slots mid-send.
+    if (midi_out_lock != NULL) {
+        if (xSemaphoreTake(midi_out_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            fprintf(stderr, "midi out: lock timeout, dropping message\n");
+            return;
+        }
+        send_usb_midi_out_locked(data, len, device);
+        xSemaphoreGive(midi_out_lock);
+    } else {
+        send_usb_midi_out_locked(data, len, device);
+    }
 }
 
 
@@ -518,7 +600,28 @@ void prepare_extra_midi_endpoint(const void *p, int slot) {
     extra_MIDIOut[slot]->context = NULL;
     extra_MIDIOut[slot]->flags |= USB_TRANSFER_FLAG_ZERO_PACK;
     if (slot == extra_midi_count) extra_midi_count++;  // commit the slot
+    // Close the claiming window: the slot has its OUT endpoint. Leaving it open
+    // would let a LATER interface's bulk-OUT endpoint on a composite device
+    // (CDC/MSC) overwrite this endpoint address.
+    extra_claiming_slot = -1;
     fprintf(stderr, "Extra MIDI slot %d ready; total extras: %d\n", slot, extra_midi_count);
+}
+
+// Close the extra-MIDI claiming window at an interface boundary or the end of
+// enumeration. If the claimed interface never yielded a bulk OUT endpoint, the
+// slot was never committed -- release the interface claim so it isn't leaked
+// (a leaked claim would also be skipped by the DEV_GONE cleanup, which only
+// walks committed slots).
+static void end_extra_midi_claim(void) {
+    if (extra_claiming_slot < 0) return;
+    int slot = extra_claiming_slot;
+    extra_claiming_slot = -1;
+    if (slot == extra_midi_count) {   // never committed: no bulk OUT found
+        fprintf(stderr, "extra midi slot %d had no bulk OUT; releasing claim\n", slot);
+        usb_host_interface_release(Client_Handle, extra_midi_handle[slot], extra_midi_intf[slot]);
+        extra_midi_handle[slot] = 0;
+        if (extra_MIDIOut[slot]) { usb_host_transfer_free(extra_MIDIOut[slot]); extra_MIDIOut[slot] = NULL; }
+    }
 }
 
 void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_handle_t);
@@ -570,23 +673,35 @@ void _client_event_callback(const usb_host_client_event_msg_t *event_msg, void *
                 err = usb_host_device_close(Client_Handle, Device_Handle_midi);
                 if (err != ESP_OK) fprintf(stderr,"usb_host_device_close err: 0x%x\n", err);
             }
-            for (int i = 0; i < extra_midi_count; i++) {
-                if ((uint32_t)extra_midi_handle[i] == (uint32_t)event_msg->dev_gone.dev_hdl) {
-                    usb_host_interface_release(Client_Handle, extra_midi_handle[i], extra_midi_intf[i]);
-                    if (extra_MIDIOut[i]) { usb_host_transfer_free(extra_MIDIOut[i]); extra_MIDIOut[i] = NULL; }
-                    usb_host_device_close(Client_Handle, extra_midi_handle[i]);
-                    // compact so device indices stay contiguous
-                    for (int j = i; j < extra_midi_count - 1; j++) {
-                        extra_midi_handle[j] = extra_midi_handle[j+1];
-                        extra_midi_intf[j]   = extra_midi_intf[j+1];
-                        extra_MIDIOut[j]     = extra_MIDIOut[j+1];
+            // Take the sender lock before freeing/compacting the extra slots --
+            // an in-flight send on the MicroPython task must finish first, or
+            // it would submit a freed transfer (use-after-free on unplug).
+            bool extras_locked = (midi_out_lock != NULL) &&
+                (xSemaphoreTake(midi_out_lock, pdMS_TO_TICKS(2000)) == pdTRUE);
+            if (midi_out_lock != NULL && !extras_locked) {
+                // Couldn't get the lock: leave the slot in place (sends to it
+                // will just fail) rather than freeing it under a sender.
+                fprintf(stderr, "extra midi cleanup: lock timeout, deferring\n");
+            } else {
+                for (int i = 0; i < extra_midi_count; i++) {
+                    if ((uint32_t)extra_midi_handle[i] == (uint32_t)event_msg->dev_gone.dev_hdl) {
+                        usb_host_interface_release(Client_Handle, extra_midi_handle[i], extra_midi_intf[i]);
+                        if (extra_MIDIOut[i]) { usb_host_transfer_free(extra_MIDIOut[i]); extra_MIDIOut[i] = NULL; }
+                        usb_host_device_close(Client_Handle, extra_midi_handle[i]);
+                        // compact so device indices stay contiguous
+                        for (int j = i; j < extra_midi_count - 1; j++) {
+                            extra_midi_handle[j] = extra_midi_handle[j+1];
+                            extra_midi_intf[j]   = extra_midi_intf[j+1];
+                            extra_MIDIOut[j]     = extra_MIDIOut[j+1];
+                        }
+                        extra_midi_count--;
+                        extra_midi_handle[extra_midi_count] = 0;
+                        extra_MIDIOut[extra_midi_count] = NULL;
+                        fprintf(stderr, "Extra MIDI device gone; remaining extras: %d\n", extra_midi_count);
+                        break;
                     }
-                    extra_midi_count--;
-                    extra_midi_handle[extra_midi_count] = 0;
-                    extra_MIDIOut[extra_midi_count] = NULL;
-                    fprintf(stderr, "Extra MIDI device gone; remaining extras: %d\n", extra_midi_count);
-                    break;
                 }
+                if (extras_locked) xSemaphoreGive(midi_out_lock);
             }
             if (keyboard_claimed && (uint32_t)Device_Handle_kb == (uint32_t)event_msg->dev_gone.dev_hdl) {
                 err = usb_host_interface_release(Client_Handle, Device_Handle_kb, Interface_Number_kb);
@@ -616,6 +731,7 @@ void _client_event_callback(const usb_host_client_event_msg_t *event_msg, void *
 
 void usbh_setup()
 {
+    if (midi_out_lock == NULL) midi_out_lock = xSemaphoreCreateMutex();
     const usb_host_config_t config = {
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
     };
@@ -994,7 +1110,7 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
     uint8_t bLength;
     int indent = 1;
     int last_descriptor = -1;
-    extra_claiming_slot = -1;  // reset for this device's enumeration
+    end_extra_midi_claim();    // defensively close any stale claiming window
     for (int i = 0; i < config_desc->wTotalLength; i+=bLength, p+=bLength) {
         bLength = *p;
         if ((i + bLength) <= config_desc->wTotalLength) {
@@ -1016,6 +1132,10 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
                     if ((last_descriptor == USB_B_DESCRIPTOR_TYPE_INTERFACE)
                             || (last_descriptor == USB_B_DESCRIPTOR_TYPE_ENDPOINT)) --indent;
                     show_interface_desc(p, indent++);
+                    // A new interface starts: close any extra-MIDI claiming
+                    // window from the previous one (releases the claim if it
+                    // never produced a bulk OUT endpoint).
+                    end_extra_midi_claim();
                     if(!midi_claimed) { check_interface_desc_MIDI(p, Device_Handle); }
                     else { check_extra_midi_interface(p, Device_Handle); }
                     if(!keyboard_claimed) { check_interface_desc_boot_keyboard(p, Device_Handle); }
@@ -1063,9 +1183,11 @@ void new_enumeration_config_fn(const usb_config_desc_t *config_desc, usb_device_
         }
         else {
             fprintf(stderr, "USB Descriptor invalid\n");
+            end_extra_midi_claim();
             return;
         }
     }
+    end_extra_midi_claim();   // enumeration done: no window may outlive it
 }
 
 

@@ -101,12 +101,45 @@ if drums_partition is not None:
     print("drums.bin: %d bytes into %s partition at %s" % (
         len(drums_bin), 'drums', hex(drums_partition.offset)))
 
+# GM SoundFont banks: assemble the checked-in blobs from the amy submodule
+# into the `fonts` partition image (AMY mmaps it at boot; see amy_connector.c).
+# Layout must match the amy maps: GeneralUser bank (pcm_gm.h) at 0, the big
+# multi-font bank (pcm_gm_big.h) at 0x4B0000. Keep GM_BIG_OFFSET below in
+# lockstep with GM_BIG_BYTE_OFFSET in tulip/shared/amy_connector.c and the
+# `fonts` partition in boards/N32R8/tulip-partitions-32MB.csv.
+fonts_partition = None
+try:
+    fonts_partition = partition_table.find_by_name('fonts')
+except Exception:
+    pass
+if fonts_partition is not None:
+    GM_BIG_OFFSET = 0x4B0000
+    small = open('../../amy/sounds/gm/fonts.bin', 'rb').read()
+    if len(small) > GM_BIG_OFFSET:
+        raise SystemExit("fonts.bin (%d bytes) overruns the big bank at 0x%x"
+                         % (len(small), GM_BIG_OFFSET))
+    fonts_bin = small + b'\xff' * (GM_BIG_OFFSET - len(small))
+    try:
+        fonts_bin += open('../../amy/sounds/gm/fonts_big.bin', 'rb').read()
+    except OSError:
+        print("fonts_big.bin missing; only the GeneralUser bank goes in")
+    if len(fonts_bin) > fonts_partition.size:
+        raise SystemExit("fonts image (%d bytes) does not fit the fonts partition (%d bytes)"
+                         % (len(fonts_bin), fonts_partition.size))
+    with open('build/%s-fonts.bin' % (distro), 'wb') as fh:
+        fh.write(fonts_bin)
+    print("fonts image: %d bytes (%d + big@0x%x) into %s partition at %s" % (
+        len(fonts_bin), len(small), GM_BIG_OFFSET, 'fonts',
+        hex(fonts_partition.offset)))
+
 # Update the flash_args file to have the sys and user partitions
 flash_args = open('build/flash_args','r').read().split('\n')[:-1]
 flash_args.append('%s %s-sys.bin' % (hex(sys_partition.offset), distro))
 flash_args.append('%s %s-vfs.bin' % (hex(vfs_partition.offset), distro))
 if drums_partition is not None:
     flash_args.append('%s %s-drums.bin' % (hex(drums_partition.offset), distro))
+if fonts_partition is not None:
+    flash_args.append('%s %s-fonts.bin' % (hex(fonts_partition.offset), distro))
 new_flash_args = open('build/flash_args_%s' % (distro),'w')
 for f in flash_args:
     new_flash_args.write('%s\n' % (f))

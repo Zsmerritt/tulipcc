@@ -26,6 +26,90 @@ def _is_dir(path):
         return False
 
 
+# Guard rails: the firmware editor chokes on binary / huge files (the "crashed
+# when I opened certain files" report), and Run only makes sense for .py.
+_TEXT_EXT = ('.py', '.txt', '.json', '.md', '.log', '.cfg', '.ini', '.csv')
+_EDIT_MAX = 131072      # bytes; bigger than any deck file, smaller than trouble
+
+
+def _editable(path):
+    n = path.lower()
+    if not any(n.endswith(x) for x in _TEXT_EXT):
+        return False
+    try:
+        return os.stat(path)[6] <= _EDIT_MAX
+    except OSError:
+        return False
+
+
+def _toast(msg, color=None):
+    scr = _s.get('screen')
+    if scr is not None:
+        try:
+            dk.toast(scr, msg, color if color is not None else dk.ORANGE)
+        except Exception:
+            pass
+
+
+_BTN_ON_BG = {}     # button key -> its enabled bg color, captured on first use
+
+
+def _set_btn(k, on):
+    b = _s.get(k)
+    if b is None:
+        return
+    try:
+        # X-4: alpha-dimming (opa 40%) quantizes GREEN/ACCENT to a muddy
+        # olive on the RGB332 panel. Disabled = explicit FLAT colors at
+        # full opacity instead: neutral surface + muted text.
+        if k not in _BTN_ON_BG:
+            _BTN_ON_BG[k] = b.get_style_bg_color(0)
+            # the THEME's disabled state applies a color FILTER on top of
+            # any flat colors we set -- that filter is what quantized to
+            # olive in RGB332 (review-9 X-4 residual). Zero it so the flat
+            # disabled colors below are what actually renders.
+            for part in (lv.PART.MAIN,):
+                try:
+                    b.set_style_color_filter_opa(0, part | lv.STATE.DISABLED)
+                except Exception:
+                    pass
+        b.set_style_opa(255, 0)
+        if on:
+            b.set_style_bg_color(_BTN_ON_BG[k], 0)
+            b.set_style_text_color(dk.c(dk.WHITE), 0)
+            b.remove_state(lv.STATE.DISABLED)
+        else:
+            b.set_style_bg_color(dk.c(dk.SURFACE2), 0)
+            b.set_style_text_color(dk.c(dk.MUTED), 0)
+            b.add_state(lv.STATE.DISABLED)
+    except Exception:
+        pass
+
+
+def _set_actions(on):
+    # Dim AND disable Run/Edit/Delete when nothing is selected -- they looked
+    # armed with no selection (UX-REVIEW-6 L5; the old lv.OPA._40 attribute
+    # doesn't exist on this build, so the dim silently never applied).
+    for k in ('run', 'edit', 'delbtn'):
+        _set_btn(k, on)
+
+
+def _update_up():
+    # Show "Up" only inside a subfolder -- at the /user root there's nothing above
+    # it, so only the app Back remains (removes the Back/Up ambiguity there).
+    b = _s.get('upbtn')
+    if b is None:
+        return
+    at_root = _s.get('path', '/user').rstrip('/') in ('/user', '')
+    try:
+        if at_root:
+            b.add_flag(lv.obj.FLAG.HIDDEN)
+        else:
+            b.remove_flag(lv.obj.FLAG.HIDDEN)
+    except Exception:
+        pass
+
+
 def _select(path, name, btn):
     if _s.get('selbtn') is not None:
         try:
@@ -37,8 +121,26 @@ def _select(path, name, btn):
     _s['confirm'] = False
     btn.set_style_bg_color(dk.c(dk.ACCENT), 0)
     _s['selname'].set_text(name)
+    _s['selname'].set_style_text_color(dk.c(dk.TEXT), 0)   # brighten on select
     _s['delbtn'].get_child(0).set_text("Delete")
-    _s['delbtn'].set_style_bg_color(dk.c(dk.SURFACE2), 0)
+    # destructive actions own red in this system (UX-REVIEW-7 NEW-6).
+    # The cache must agree: _set_btn snapshots each button's "enabled"
+    # color on first use, and the build-time disable snapshotted Delete's
+    # neutral creation color -- so enabling it here RESTORED lavender over
+    # the red we just set (fresh-eyes F-6). Pin the cached enabled color.
+    _BTN_ON_BG['delbtn'] = dk.c(dk.RED)
+    _s['delbtn'].set_style_bg_color(dk.c(dk.RED), 0)
+    # per-file capability: Run only for .py, Edit only for small text files,
+    # Delete never arms for protected runtime modules (round-2 F-11 nit:
+    # it rendered enabled-red and only refused on tap)
+    _set_btn('run', path.endswith('.py'))
+    _set_btn('edit', _editable(path))
+    sysmod = _is_system_module(path)
+    if sysmod:
+        # say WHY Delete is disabled instead of leaving a silently dead button
+        # (UX10-15). ASCII separator only (compiled montserrat range is ASCII).
+        _s['selname'].set_text(name + "   -   system file")
+    _set_btn('delbtn', not sysmod)
 
 
 def _open(path):
@@ -46,71 +148,162 @@ def _open(path):
     _s['sel'] = None
     _s['selbtn'] = None
     _s['selname'].set_text("nothing selected")
+    try:
+        _s['selname'].set_style_text_color(dk.c(dk.MUTED), 0)
+    except Exception:
+        pass
     _s['pathlbl'].set_text(path)
+    _set_actions(False)
+    _update_up()
     _refresh()
+
+
+_WINDOW = 40   # rows built per tick -- a full /user is dozens of files x
+               # ~4 LVGL objects; building them ALL in one callback risked
+               # the ~40-80ms interrupt-WDT stall the patch/kit pickers were
+               # already chunked to avoid (F-17). Same shape as
+               # instrument._WINDOW: fill a window, park the rest behind a
+               # "Show N more" button.
+
+
+def _make_row(body, name, is_dir, size, full):
+    b = lv.button(body)
+    b.set_width(lv.pct(100))
+    b.set_height(56)
+    dk._flat(b, radius=12, bg=dk.SURFACE)
+    icon = lv.label(b)
+    icon.set_text((lv.SYMBOL.DIRECTORY + "  ") if is_dir else (lv.SYMBOL.FILE + "  "))
+    icon.set_style_text_color(dk.c(dk.ORANGE if is_dir else dk.MUTED), 0)
+    icon.set_style_text_font(dk.FONT_M, 0)
+    icon.align(lv.ALIGN.LEFT_MID, 6, 0)
+    nm = lv.label(b)
+    nm.set_text(name)
+    nm.set_style_text_color(dk.c(dk.TEXT), 0)
+    nm.set_style_text_font(dk.FONT_M, 0)
+    nm.align(lv.ALIGN.LEFT_MID, 44, 0)
+    # Size comes straight from ilistdir's single pass -- no per-file os.stat
+    # fallback (that re-introduced N littlefs metadata walks inside the build
+    # loop, the exact F-17 cost the single pass removed).
+    if not is_dir and size is not None:
+        sz = lv.label(b)
+        sz.set_text(_fmt_size(size))
+        sz.set_style_text_color(dk.c(dk.MUTED), 0)
+        sz.set_style_text_font(dk.FONT_S, 0)
+        sz.align(lv.ALIGN.RIGHT_MID, -12, 0)
+    if is_dir:
+        b.add_event_cb((lambda p: (lambda e: _open(p)))(full), lv.EVENT.CLICKED, None)
+    else:
+        b.add_event_cb((lambda p, n, bb: (lambda e: _select(p, n, bb)))(full, name, b),
+                       lv.EVENT.CLICKED, None)
+
+
+def _append_entries(body):
+    """Build the next window of entry rows + a 'Show N more' tail if needed."""
+    mb = _s.pop('morebtn', None)
+    if mb is not None:
+        try:
+            mb.delete()
+        except Exception:
+            pass
+    entries = _s.get('entries', [])
+    path = _s['path']
+    start = _s.get('shown', 0)
+    end = min(len(entries), start + _WINDOW)
+    for name, is_dir, size in entries[start:end]:
+        full = path.rstrip('/') + '/' + name
+        _make_row(body, name, is_dir, size, full)
+    _s['shown'] = end
+    left = len(entries) - end
+    if left > 0:
+        b = dk.button(body, "Show %d more..." % min(_WINDOW, left),
+                      w=lv.pct(100), h=56, bg=dk.SURFACE2, font=dk.FONT_S)
+
+        def _more(e):
+            if e.get_code() == lv.EVENT.CLICKED:
+                _append_entries(body)
+        b.add_event_cb(_more, lv.EVENT.CLICKED, None)
+        _s['morebtn'] = b
 
 
 def _refresh():
     body = _s['body']
     body.clean()
     path = _s['path']
+    # ONE metadata pass (review F-17): listdir + per-entry _is_dir stat +
+    # per-file size stat was 2-3 littlefs metadata walks per entry -- a
+    # visible stall opening a full /user. ilistdir yields type (and size
+    # on most ports) in a single traversal.
+    dirs, files, sizes = [], [], {}
     try:
-        entries = sorted(os.listdir(path))
+        for ent in os.ilistdir(path):
+            name, typ = ent[0], ent[1]
+            if typ & 0x4000:
+                dirs.append(name)
+            else:
+                files.append(name)
+                if len(ent) > 3:
+                    sizes[name] = ent[3]
     except OSError:
-        entries = []
-    # folders first
-    dirs = [e for e in entries if _is_dir(path.rstrip('/') + '/' + e)]
-    files = [e for e in entries if e not in dirs]
-    for name in dirs + files:
-        full = path.rstrip('/') + '/' + name
-        is_dir = name in dirs
-        b = lv.button(body)
-        b.set_width(lv.pct(100))
-        b.set_height(56)
-        dk._flat(b, radius=12, bg=dk.SURFACE)
-        icon = lv.label(b)
-        icon.set_text((lv.SYMBOL.DIRECTORY + "  ") if is_dir else (lv.SYMBOL.FILE + "  "))
-        icon.set_style_text_color(dk.c(dk.ORANGE if is_dir else dk.MUTED), 0)
-        icon.set_style_text_font(dk.FONT_M, 0)
-        icon.align(lv.ALIGN.LEFT_MID, 6, 0)
-        nm = lv.label(b)
-        nm.set_text(name)
-        nm.set_style_text_color(dk.c(dk.TEXT), 0)
-        nm.set_style_text_font(dk.FONT_M, 0)
-        nm.align(lv.ALIGN.LEFT_MID, 44, 0)
-        if not is_dir:
-            try:
-                sz = lv.label(b)
-                sz.set_text(_fmt_size(os.stat(full)[6]))
-                sz.set_style_text_color(dk.c(dk.MUTED), 0)
-                sz.set_style_text_font(dk.FONT_S, 0)
-                sz.align(lv.ALIGN.RIGHT_MID, -12, 0)
-            except OSError:
-                pass
-        if is_dir:
-            b.add_event_cb((lambda p: (lambda e: _open(p)))(full), lv.EVENT.CLICKED, None)
-        else:
-            b.add_event_cb((lambda p, n, bb: (lambda e: _select(p, n, bb)))(full, name, b),
-                           lv.EVENT.CLICKED, None)
+        pass
+    dirs.sort()
+    files.sort()
+    # dirs first (each sorted), sizes from the single ilistdir pass; then
+    # window the build so a large directory can't stall past the WDT budget.
+    entries = [(n, True, None) for n in dirs] + \
+              [(n, False, sizes.get(n)) for n in files]
+    _s['entries'] = entries
+    _s['shown'] = 0
+    _s['morebtn'] = None
+    _append_entries(body)
 
 
 def _run_cb(e):
     if not _s.get('sel'):
         return
     name = _s['sel'].rsplit('/', 1)[-1]
-    if name.endswith('.py'):
+    if not name.endswith('.py'):
+        _toast("Only .py files can run")
+        return
+    try:
         import upysh
         upysh.cd(_s['path'])
         tulip.run(name[:-3])
+    except Exception as ex:
+        _toast("Run failed: %r" % ex, dk.RED)
 
 
 def _edit_cb(e):
-    if _s.get('sel'):
-        tulip.edit(_s['sel'])
+    p = _s.get('sel')
+    if not p:
+        return
+    if not _editable(p):
+        _toast("Only small text files can be edited")
+        return
+    try:
+        tulip.edit(p)
+    except Exception as ex:
+        _toast("Edit failed: %r" % ex, dk.RED)
+
+
+def _is_system_module(path):
+    """True for the deck's own runtime files -- deleting boot.py from the
+    Files browser would brick the device (fresh-eyes F-11)."""
+    name = path.rsplit('/', 1)[-1]
+    if not name.endswith('.py'):
+        return False
+    try:
+        import home
+        return name[:-3] in home.deck_modules_set()
+    except Exception:
+        return name in ('boot.py', 'home.py', 'homeshell.py', 'deckui.py',
+                        'deckcfg.py', 'forwarder.py')
 
 
 def _delete_cb(e):
     if not _s.get('sel'):
+        return
+    if _is_system_module(_s['sel']):
+        _toast("System module -- the deck needs this to run", dk.RED)
         return
     if not _s.get('confirm'):
         _s['confirm'] = True
@@ -130,33 +323,59 @@ def _up_cb(e):
         _open(p.rsplit('/', 1)[0] or '/')
 
 
-def run(screen):
-    dk.frame(screen, "Files", "browse /user")
-    _s.clear()
+def _build(base, w, h, top, screen):
+    """Everything below the title: path + Up, the file list, the action bar.
+    `base` is either a shell panel (panel mode) or screen.group (standalone);
+    (w, h) is the drawable area, `top` where content starts."""
     _s['path'] = '/user'
+    _s['screen'] = screen     # toast host
 
-    # header controls (top-right area is clear of task bar? put on left under title)
-    _s['pathlbl'] = dk.label(screen.group, "/user", 300, 40, color=dk.MUTED, font=dk.FONT_S)
-    dk.button(screen.group, lv.SYMBOL.UP + " Up", w=110, h=44, bg=dk.SURFACE2,
-        font=dk.FONT_S, cb=_up_cb).set_pos(470, 30)
+    _s['pathlbl'] = dk.label(base, "/user", 24, top + 12, color=dk.MUTED,
+                             font=dk.FONT_S)
+    _s['upbtn'] = dk.button(base, lv.SYMBOL.UP + " Up", w=110, h=44,
+        bg=dk.SURFACE2, font=dk.FONT_S, cb=_up_cb)
+    _s['upbtn'].set_pos(w - 24 - 110, top)
 
-    _s['body'] = dk.scroll_body(screen, top=118)
-    # leave room for the action bar
-    _s['body'].set_height(tulip.screen_size()[1] - 118 - 88)
+    body = dk.scroll_col(base, w - 48, h - top - 56 - 88)
+    body.set_pos(24, top + 52)
+    _s['body'] = body
 
     # action bar
-    bar = lv.obj(screen.group)
-    bar.set_size(tulip.screen_size()[0] - 48, 64)
-    bar.set_pos(24, tulip.screen_size()[1] - 76)
+    bar = lv.obj(base)
+    bar.set_size(w - 48, 64)
+    bar.set_pos(24, h - 76)
     dk._flat(bar, radius=16, bg=dk.SURFACE)
     bar.set_style_pad_hor(16, 0)
     bar.set_flex_flow(lv.FLEX_FLOW.ROW)
     bar.set_flex_align(lv.FLEX_ALIGN.SPACE_BETWEEN, lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER)
     _s['selname'] = dk.label(bar, "nothing selected", color=dk.MUTED, font=dk.FONT_S)
     g = dk.hgroup(bar, w=380, h=44)
-    dk.button(g, "Run", w=110, h=44, bg=dk.GREEN, font=dk.FONT_S, cb=_run_cb)
-    dk.button(g, "Edit", w=110, h=44, bg=dk.ACCENT, font=dk.FONT_S, cb=_edit_cb)
+    _s['run'] = dk.button(g, "Run", w=110, h=44, bg=dk.GREEN, font=dk.FONT_S, cb=_run_cb)
+    _s['edit'] = dk.button(g, "Edit", w=110, h=44, bg=dk.ACCENT, font=dk.FONT_S, cb=_edit_cb)
     _s['delbtn'] = dk.button(g, "Delete", w=120, h=44, bg=dk.SURFACE2, font=dk.FONT_S, cb=_delete_cb)
 
+    # fresh buttons every build: a stale cache skips the snapshot + the
+    # DISABLED color-filter zeroing, so reopening brought back the X-4 olive
+    _BTN_ON_BG.clear()
+    _set_actions(False)     # nothing selected yet
+    _update_up()            # hide Up at the /user root
     _refresh()
+
+
+def panel(parent, shell=None):
+    """Files as a shell panel (S3): shell Back/breadcrumb + the panel-error
+    safety net; standalone chrome retired from the main path."""
+    import homeshell
+    _s.clear()
+    w, H = tulip.screen_size()
+    _build(parent, w, H - homeshell.BAR_H, 8,
+           shell.screen if shell is not None else None)
+
+
+def run(screen):
+    # standalone (REPL launcher) -- same content under a frame header
+    _s.clear()
+    dk.frame(screen, "Files", "browse /user")
+    w, H = tulip.screen_size()
+    _build(screen.group, w, H, 118, screen)
     screen.present()

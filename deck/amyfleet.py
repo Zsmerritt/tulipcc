@@ -28,13 +28,36 @@ def enroll(device, channel):
 
 
 def enroll_from_config():
-    """Enroll every amyboard instance to its configured channel/device."""
+    """Enroll every board-backed instrument to its configured channel/device.
+
+    Dedups by device -- a board has exactly one companion-sketch channel, so
+    only the FIRST instrument seen for a given device is enrolled. A SECOND
+    instrument routed to that same device on a DIFFERENT channel is silently
+    never enrolled by design (enroll behaviour is unchanged here) -- but its
+    notes will never sound on that board, since the board only listens on
+    whichever channel it was enrolled with. Log that conflict instead of
+    letting it drop quietly."""
     import deckcfg
+    seen = {}   # device -> channel already enrolled on it
     n = 0
-    for inst in deckcfg.instances():
-        if inst.get('kind') == 'amyboard' and inst.get('device') is not None:
-            enroll(inst['device'], inst.get('channel', 2))
+    for instr in deckcfg.instruments():
+        dev = instr.get('device')
+        if not isinstance(dev, int):
+            continue
+        ch = instr.get('channel', 2)
+        if dev not in seen:
+            enroll(dev, ch)
+            seen[dev] = ch
             n += 1
+        elif seen[dev] != ch:
+            try:
+                import decklog
+                decklog.log(
+                    "amyfleet: device %s already enrolled on ch%d; "
+                    "instrument on ch%d will never sound on it"
+                    % (dev, seen[dev], ch))
+            except Exception:
+                pass
     return n
 
 

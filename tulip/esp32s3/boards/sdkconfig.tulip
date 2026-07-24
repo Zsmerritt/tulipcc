@@ -1,5 +1,7 @@
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_CACHE_WORKAROUND=y
+# (CONFIG_SPIRAM_CACHE_WORKAROUND removed 2026-07-16: it is an ESP32-only
+# symbol that does not exist on the S3 -- kconfgen dropped it as unknown, so it
+# was never in any resolved sdkconfig.)
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 #CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
@@ -18,7 +20,12 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
-CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+# NOTE: CONFIG_FREERTOS_USE_TRACE_FACILITY resolves to =y regardless of what
+# is written here: GENERATE_RUN_TIME_STATS below `select`s it (and
+# USE_STATS_FORMATTING_FUNCTIONS), so an =n line is silently overridden.
+# RUN_TIME_STATS is load-bearing: tulip.cpu() / compute_cpu_usage() in main.c
+# reads ulRunTimeCounter via uxTaskGetSystemState(). Do not turn it off
+# without replacing that feature.
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
@@ -31,3 +38,13 @@ CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 CONFIG_LWIP_PPP_SUPPORT=n
 
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=8192
+
+# 32KB i-cache (round-2 firmware review P-2) is REVERTED and must stay off
+# unless someone re-measures the internal-SRAM budget first. It was never
+# free: the extra 16KB of cache is carved out of internal SRAM, and this
+# board is already at the edge -- with it enabled the MicroPython task's
+# stack no longer fits, xTaskCreatePinnedToCore() fails, and (its result
+# being unchecked, see main.c) the deck dies silently: C side keeps
+# logging, no Python ever runs, teal screen, no REPL, no panic. The ~0.5-1.8%
+# of a core it was worth is not a trade for that.
+#CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y

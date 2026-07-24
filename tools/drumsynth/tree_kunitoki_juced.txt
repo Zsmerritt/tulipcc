@@ -1,0 +1,754 @@
+apps/drumsynth/library/Acoustic/Brush1.ds
+apps/drumsynth/library/Acoustic/Brush2.ds
+apps/drumsynth/library/Acoustic/JazzKick.ds
+apps/drumsynth/library/Acoustic/JazzSnr H.ds
+apps/drumsynth/library/Acoustic/JazzSnr.ds
+apps/drumsynth/library/Acoustic/K_Muffle.ds
+apps/drumsynth/library/Acoustic/Kick.ds
+apps/drumsynth/library/Acoustic/Plain Kick.ds
+apps/drumsynth/library/Acoustic/Ride.ds
+apps/drumsynth/library/Acoustic/Ride2.ds
+apps/drumsynth/library/Acoustic/Ride3.ds
+apps/drumsynth/library/Acoustic/Snare.ds
+apps/drumsynth/library/Effects/Bubble.ds
+apps/drumsynth/library/Effects/Cicada.ds
+apps/drumsynth/library/Effects/Glass.ds
+apps/drumsynth/library/Effects/Glass_rn.ds
+apps/drumsynth/library/Effects/Gunshot.ds
+apps/drumsynth/library/Effects/Hammer.ds
+apps/drumsynth/library/Effects/Laser.ds
+apps/drumsynth/library/Effects/Reverse.ds
+apps/drumsynth/library/Effects/Ringing.ds
+apps/drumsynth/library/Effects/Scissors.ds
+apps/drumsynth/library/Effects/Sonar.ds
+apps/drumsynth/library/Effects/dialing.ds
+apps/drumsynth/library/Effects/hammer2.ds
+apps/drumsynth/library/Effects/impulses.ds
+apps/drumsynth/library/Effects/loop.ds
+apps/drumsynth/library/Effects/thunder.ds
+apps/drumsynth/library/Electro/Boom.ds
+apps/drumsynth/library/Electro/H_closed.ds
+apps/drumsynth/library/Electro/H_open.ds
+apps/drumsynth/library/Electro/Hi-q.ds
+apps/drumsynth/library/Electro/Hi-q_2.ds
+apps/drumsynth/library/Electro/K_8bit.ds
+apps/drumsynth/library/Electro/K_Linn.ds
+apps/drumsynth/library/Electro/K_reverb.ds
+apps/drumsynth/library/Electro/S_8bit.ds
+apps/drumsynth/library/Electro/S_Linn.ds
+apps/drumsynth/library/Electro/S_reverb.ds
+apps/drumsynth/library/Electro/Syntom_1.ds
+apps/drumsynth/library/Electro/Syntom_2.ds
+apps/drumsynth/library/Electro/s_eq.ds
+apps/drumsynth/library/Farfisa/Fisa Bongo.ds
+apps/drumsynth/library/Farfisa/Fisa Cym.ds
+apps/drumsynth/library/Farfisa/Fisa Hat.ds
+apps/drumsynth/library/Farfisa/Fisa K_H.ds
+apps/drumsynth/library/Farfisa/Fisa K_K.ds
+apps/drumsynth/library/Farfisa/Fisa Kick.ds
+apps/drumsynth/library/Farfisa/Fisa S_B.ds
+apps/drumsynth/library/Farfisa/Fisa Snare.ds
+apps/drumsynth/library/Farfisa/Fisa Tom.ds
+apps/drumsynth/library/Ferraro/curb meat bass.ds
+apps/drumsynth/library/Ferraro/eel bass.ds
+apps/drumsynth/library/Ferraro/feed this.ds
+apps/drumsynth/library/Ferraro/gerbil snare.ds
+apps/drumsynth/library/Ferraro/grumpy buzzard.ds
+apps/drumsynth/library/Ferraro/jaguar hats.ds
+apps/drumsynth/library/Ferraro/radio hats.ds
+apps/drumsynth/library/Ferraro/worm bass.ds
+apps/drumsynth/library/Latin/Bongo_h.ds
+apps/drumsynth/library/Latin/Bongo_m2.ds
+apps/drumsynth/library/Latin/Bongo_mu.ds
+apps/drumsynth/library/Latin/Clave_we.ds
+apps/drumsynth/library/Latin/Gamelan.ds
+apps/drumsynth/library/Latin/Maracas.ds
+apps/drumsynth/library/Latin/Shaker_1.ds
+apps/drumsynth/library/Latin/Shaker_2.ds
+apps/drumsynth/library/Latin/Tamb_hit.ds
+apps/drumsynth/library/Latin/Tamb_shk.ds
+apps/drumsynth/library/Latin/ThumbPno.ds
+apps/drumsynth/library/Latin/Triangle.ds
+apps/drumsynth/library/Latin/bongo_l.ds
+apps/drumsynth/library/Latin/guiro.ds
+apps/drumsynth/library/Latin/one_clap.ds
+apps/drumsynth/library/Latin/taiko.ds
+apps/drumsynth/library/Linn/linn_cab.ds
+apps/drumsynth/library/Linn/linn_cga1.ds
+apps/drumsynth/library/Linn/linn_cga2.ds
+apps/drumsynth/library/Linn/linn_cga3.ds
+apps/drumsynth/library/Linn/linn_cgam.ds
+apps/drumsynth/library/Linn/linn_clp.ds
+apps/drumsynth/library/Linn/linn_cow.ds
+apps/drumsynth/library/Linn/linn_kik.ds
+apps/drumsynth/library/Linn/linn_snr.ds
+apps/drumsynth/library/Linn/linn_stk.ds
+apps/drumsynth/library/Linn/linn_tamb.ds
+apps/drumsynth/library/Linn/linn_tom1.ds
+apps/drumsynth/library/Linn/linn_tom2.ds
+apps/drumsynth/library/Linn/linn_tom3.ds
+apps/drumsynth/library/Linn/linn_tom4.ds
+apps/drumsynth/library/Linn/linn_tom5.ds
+apps/drumsynth/library/cr78/Bongo_h.ds
+apps/drumsynth/library/cr78/Bongo_l.ds
+apps/drumsynth/library/cr78/Clave.ds
+apps/drumsynth/library/cr78/Conga.ds
+apps/drumsynth/library/cr78/Cymbal.ds
+apps/drumsynth/library/cr78/Hihat.ds
+apps/drumsynth/library/cr78/Kick.ds
+apps/drumsynth/library/cr78/Maracas.ds
+apps/drumsynth/library/cr78/Rim.ds
+apps/drumsynth/library/cr78/Snare.ds
+apps/drumsynth/library/cr78/Tamb.ds
+apps/drumsynth/library/cr8000/Clap.ds
+apps/drumsynth/library/cr8000/Clave.ds
+apps/drumsynth/library/cr8000/Conga_l.ds
+apps/drumsynth/library/cr8000/Conga_m.ds
+apps/drumsynth/library/cr8000/Cowbell.ds
+apps/drumsynth/library/cr8000/Cymbal.ds
+apps/drumsynth/library/cr8000/Hat_c.ds
+apps/drumsynth/library/cr8000/Hat_o.ds
+apps/drumsynth/library/cr8000/Kick.ds
+apps/drumsynth/library/cr8000/Rim.ds
+apps/drumsynth/library/cr8000/Snare.ds
+apps/drumsynth/library/instrmnt/E Piano.ds
+apps/drumsynth/library/instrmnt/FM Bass.ds
+apps/drumsynth/library/instrmnt/Moog bass.ds
+apps/drumsynth/library/instrmnt/Oboe.ds
+apps/drumsynth/library/instrmnt/Temple Bell.ds
+apps/drumsynth/library/instrmnt/flute.ds
+apps/drumsynth/library/instrmnt/mute bass.ds
+apps/drumsynth/library/instrmnt/pizzi.ds
+apps/drumsynth/library/instrmnt/soft piano.ds
+apps/drumsynth/library/instrmnt/square lead.ds
+apps/drumsynth/library/instrmnt/sweep.ds
+apps/drumsynth/library/instrmnt/techno stab.ds
+apps/drumsynth/library/instrmnt/tinkle.ds
+apps/drumsynth/library/instrmnt/trumpet.ds
+apps/drumsynth/library/instrmnt/upright bass.ds
+apps/drumsynth/library/instrmnt/violin.ds
+apps/drumsynth/library/instrmnt/whistler.ds
+apps/drumsynth/library/magnetboy/Eye Eye.ds
+apps/drumsynth/library/magnetboy/Fp1.ds
+apps/drumsynth/library/magnetboy/Mist1.ds
+apps/drumsynth/library/magnetboy/Mist2.ds
+apps/drumsynth/library/magnetboy/Randion1.ds
+apps/drumsynth/library/magnetboy/Squelb.ds
+apps/drumsynth/library/magnetboy/Throaties1.ds
+apps/drumsynth/library/magnetboy/Tone float1.ds
+apps/drumsynth/library/magnetboy/Tone1.ds
+apps/drumsynth/library/magnetboy/Tone10.ds
+apps/drumsynth/library/magnetboy/Tone11.ds
+apps/drumsynth/library/magnetboy/Tone12.ds
+apps/drumsynth/library/magnetboy/Tone14.ds
+apps/drumsynth/library/magnetboy/Tone15.ds
+apps/drumsynth/library/magnetboy/Tone16.ds
+apps/drumsynth/library/magnetboy/Tone17.ds
+apps/drumsynth/library/magnetboy/Tone18.ds
+apps/drumsynth/library/magnetboy/Tone19.ds
+apps/drumsynth/library/magnetboy/Tone2.ds
+apps/drumsynth/library/magnetboy/Tone20.ds
+apps/drumsynth/library/magnetboy/Tone3.ds
+apps/drumsynth/library/magnetboy/Tone4.ds
+apps/drumsynth/library/magnetboy/Tone5.ds
+apps/drumsynth/library/magnetboy/Tone6.ds
+apps/drumsynth/library/magnetboy/Tone7.ds
+apps/drumsynth/library/magnetboy/Tone8.ds
+apps/drumsynth/library/magnetboy/Tone9.ds
+apps/drumsynth/library/misc bass/a day in the noise.ds
+apps/drumsynth/library/misc bass/bumble bass.ds
+apps/drumsynth/library/misc bass/depth bass drum.ds
+apps/drumsynth/library/misc bass/dirty a.ds
+apps/drumsynth/library/misc bass/filter idea bd.ds
+apps/drumsynth/library/misc bass/jarre bass drum.ds
+apps/drumsynth/library/misc bass/jungle laser.ds
+apps/drumsynth/library/misc bass/low end hum.ds
+apps/drumsynth/library/misc bass/melodictone.ds
+apps/drumsynth/library/misc bass/metal bass.ds
+apps/drumsynth/library/misc bass/more bass 2.ds
+apps/drumsynth/library/misc bass/more bass.ds
+apps/drumsynth/library/misc bass/rubber.ds
+apps/drumsynth/library/misc bass/smooth bass.ds
+apps/drumsynth/library/misc bass/solid.ds
+apps/drumsynth/library/misc bass/synthbass.ds
+apps/drumsynth/library/misc bass/the funk.ds
+apps/drumsynth/library/misc bass/warm bass.ds
+apps/drumsynth/library/misc claps/big beat clap.ds
+apps/drumsynth/library/misc claps/bright clap.ds
+apps/drumsynth/library/misc claps/clap layer.ds
+apps/drumsynth/library/misc claps/clap.ds
+apps/drumsynth/library/misc claps/clap2.ds
+apps/drumsynth/library/misc claps/classic clap.ds
+apps/drumsynth/library/misc claps/electro clap.ds
+apps/drumsynth/library/misc claps/filter clappy.ds
+apps/drumsynth/library/misc claps/pitch clap 2.ds
+apps/drumsynth/library/misc claps/pitch clap.ds
+apps/drumsynth/library/misc claps/shutter clap.ds
+apps/drumsynth/library/misc claps/u don't kno.ds
+apps/drumsynth/library/misc electro/'lectro spliff.ds
+apps/drumsynth/library/misc electro/a round thing.ds
+apps/drumsynth/library/misc electro/applied engineering.ds
+apps/drumsynth/library/misc electro/atmosphere of space.ds
+apps/drumsynth/library/misc electro/bottle bill fx.ds
+apps/drumsynth/library/misc electro/casio poppin.ds
+apps/drumsynth/library/misc electro/category.ds
+apps/drumsynth/library/misc electro/cheap fx.ds
+apps/drumsynth/library/misc electro/chrip q.ds
+apps/drumsynth/library/misc electro/clean rock bd.ds
+apps/drumsynth/library/misc electro/cold shot.ds
+apps/drumsynth/library/misc electro/confusion.ds
+apps/drumsynth/library/misc electro/cymbal madness.ds
+apps/drumsynth/library/misc electro/depth fx.ds
+apps/drumsynth/library/misc electro/dialed.ds
+apps/drumsynth/library/misc electro/doom bump.ds
+apps/drumsynth/library/misc electro/electric triangle.ds
+apps/drumsynth/library/misc electro/electro perc long.ds
+apps/drumsynth/library/misc electro/electro perc short.ds
+apps/drumsynth/library/misc electro/electro rim 2.ds
+apps/drumsynth/library/misc electro/electro rim 3.ds
+apps/drumsynth/library/misc electro/electro rim.ds
+apps/drumsynth/library/misc electro/electro squeek.ds
+apps/drumsynth/library/misc electro/fuzzy q bd.ds
+apps/drumsynth/library/misc electro/g question.ds
+apps/drumsynth/library/misc electro/general obscurity.ds
+apps/drumsynth/library/misc electro/hard bork.ds
+apps/drumsynth/library/misc electro/hello q.ds
+apps/drumsynth/library/misc electro/just the tweet.ds
+apps/drumsynth/library/misc electro/lo-fi house c.ds
+apps/drumsynth/library/misc electro/lo-fi metal.ds
+apps/drumsynth/library/misc electro/lo-finess.ds
+apps/drumsynth/library/misc electro/long q 1.ds
+apps/drumsynth/library/misc electro/long q 2.ds
+apps/drumsynth/library/misc electro/long q 3.ds
+apps/drumsynth/library/misc electro/long quack.ds
+apps/drumsynth/library/misc electro/low bit tom.ds
+apps/drumsynth/library/misc electro/metal noise shot.ds
+apps/drumsynth/library/misc electro/open reso.ds
+apps/drumsynth/library/misc electro/paging the jetsons.ds
+apps/drumsynth/library/misc electro/pan.ds
+apps/drumsynth/library/misc electro/pleasant combo.ds
+apps/drumsynth/library/misc electro/q-ziq for the masses.ds
+apps/drumsynth/library/misc electro/rich bd.ds
+apps/drumsynth/library/misc electro/ring.ds
+apps/drumsynth/library/misc electro/ringing sn.ds
+apps/drumsynth/library/misc electro/rockin electro bass drum.ds
+apps/drumsynth/library/misc electro/shocking kiss.ds
+apps/drumsynth/library/misc electro/siren sing.ds
+apps/drumsynth/library/misc electro/slide tom.ds
+apps/drumsynth/library/misc electro/space dynamic.ds
+apps/drumsynth/library/misc electro/spaceness.ds
+apps/drumsynth/library/misc electro/startling one.ds
+apps/drumsynth/library/misc electro/tone percussion.ds
+apps/drumsynth/library/misc electro/tweet.ds
+apps/drumsynth/library/misc electro/wee dog.ds
+apps/drumsynth/library/misc electro/what to do at 220.ds
+apps/drumsynth/library/misc electro/who hears all sound.ds
+apps/drumsynth/library/misc electro/why hit.ds
+apps/drumsynth/library/misc electro/yr tv will be next.ds
+apps/drumsynth/library/misc electro/zappy bells.ds
+apps/drumsynth/library/misc fx/2 bit click.ds
+apps/drumsynth/library/misc fx/2-bit zone drone.ds
+apps/drumsynth/library/misc fx/a blast.ds
+apps/drumsynth/library/misc fx/across the universe.ds
+apps/drumsynth/library/misc fx/alarm 3.ds
+apps/drumsynth/library/misc fx/alarming buzz 2.ds
+apps/drumsynth/library/misc fx/alarming buzz.ds
+apps/drumsynth/library/misc fx/alien curiousity.ds
+apps/drumsynth/library/misc fx/ambient backgroud.ds
+apps/drumsynth/library/misc fx/click.ds
+apps/drumsynth/library/misc fx/coo.ds
+apps/drumsynth/library/misc fx/detonate.ds
+apps/drumsynth/library/misc fx/dirty transform 2.ds
+apps/drumsynth/library/misc fx/dirty transform.ds
+apps/drumsynth/library/misc fx/distorion oscilator.ds
+apps/drumsynth/library/misc fx/electric intro to a.ds
+apps/drumsynth/library/misc fx/electric waves out my window.ds
+apps/drumsynth/library/misc fx/elekperc1.ds
+apps/drumsynth/library/misc fx/elekperc2.ds
+apps/drumsynth/library/misc fx/end of broadcast day.ds
+apps/drumsynth/library/misc fx/entre.ds
+apps/drumsynth/library/misc fx/experiment 1.ds
+apps/drumsynth/library/misc fx/experiment 2 - turn off the tv.ds
+apps/drumsynth/library/misc fx/experiment 3 - the transform.ds
+apps/drumsynth/library/misc fx/experiment 4 - clean.ds
+apps/drumsynth/library/misc fx/f#m7 space signal.ds
+apps/drumsynth/library/misc fx/feedback.ds
+apps/drumsynth/library/misc fx/flashy wind.ds
+apps/drumsynth/library/misc fx/flipper.ds
+apps/drumsynth/library/misc fx/formant techno.ds
+apps/drumsynth/library/misc fx/frequency revolution.ds
+apps/drumsynth/library/misc fx/fried food for dinner.ds
+apps/drumsynth/library/misc fx/funky stab.ds
+apps/drumsynth/library/misc fx/future.ds
+apps/drumsynth/library/misc fx/gmaj lo-fi chord 2.ds
+apps/drumsynth/library/misc fx/gmaj lo-fi chord.ds
+apps/drumsynth/library/misc fx/halt variety.ds
+apps/drumsynth/library/misc fx/hip-hop stop 2.ds
+apps/drumsynth/library/misc fx/hip-hop stop.ds
+apps/drumsynth/library/misc fx/hollow.ds
+apps/drumsynth/library/misc fx/howdy oil barrel.ds
+apps/drumsynth/library/misc fx/jaggies.ds
+apps/drumsynth/library/misc fx/laser gun & ricochet.ds
+apps/drumsynth/library/misc fx/machine drone.ds
+apps/drumsynth/library/misc fx/metal twist.ds
+apps/drumsynth/library/misc fx/modular fm counterpoint.ds
+apps/drumsynth/library/misc fx/modular.ds
+apps/drumsynth/library/misc fx/multi-ping.ds
+apps/drumsynth/library/misc fx/my atari memory.ds
+apps/drumsynth/library/misc fx/new sweep.ds
+apps/drumsynth/library/misc fx/noise filtering.ds
+apps/drumsynth/library/misc fx/not trying too hard.ds
+apps/drumsynth/library/misc fx/numb.ds
+apps/drumsynth/library/misc fx/obligatory ufo liftoff 2.ds
+apps/drumsynth/library/misc fx/obligatory ufo liftoff.ds
+apps/drumsynth/library/misc fx/oom paa.ds
+apps/drumsynth/library/misc fx/oom pulse.ds
+apps/drumsynth/library/misc fx/owwww.ds
+apps/drumsynth/library/misc fx/playing in water.ds
+apps/drumsynth/library/misc fx/plot thickens 2.ds
+apps/drumsynth/library/misc fx/punch flange 2.ds
+apps/drumsynth/library/misc fx/punch flange.ds
+apps/drumsynth/library/misc fx/q zone drone.ds
+apps/drumsynth/library/misc fx/recption.ds
+apps/drumsynth/library/misc fx/sci-fi door open.ds
+apps/drumsynth/library/misc fx/sci-fi.ds
+apps/drumsynth/library/misc fx/sickly wineglass.ds
+apps/drumsynth/library/misc fx/sign off.ds
+apps/drumsynth/library/misc fx/slow moving traffic.ds
+apps/drumsynth/library/misc fx/synthetic dive crust.ds
+apps/drumsynth/library/misc fx/synthetic dive.ds
+apps/drumsynth/library/misc fx/teeth.ds
+apps/drumsynth/library/misc fx/the plot thickens.ds
+apps/drumsynth/library/misc fx/the tweek.ds
+apps/drumsynth/library/misc fx/transportive.ds
+apps/drumsynth/library/misc fx/ufo buzz 2.ds
+apps/drumsynth/library/misc fx/ufo buzz.ds
+apps/drumsynth/library/misc fx/what time is it.ds
+apps/drumsynth/library/misc fx/wipeout.ds
+apps/drumsynth/library/misc fx/wooo.ds
+apps/drumsynth/library/misc fx/yeah hit dry.ds
+apps/drumsynth/library/misc fx/yeah hit.ds
+apps/drumsynth/library/misc fx/zipper.ds
+apps/drumsynth/library/misc hats/amen ride.ds
+apps/drumsynth/library/misc hats/band pass cymbal.ds
+apps/drumsynth/library/misc hats/basic hh.ds
+apps/drumsynth/library/misc hats/bright 808 hat 2.ds
+apps/drumsynth/library/misc hats/bright 808 hat 3.ds
+apps/drumsynth/library/misc hats/bright 808 hat.ds
+apps/drumsynth/library/misc hats/bring me out.ds
+apps/drumsynth/library/misc hats/clicky hat.ds
+apps/drumsynth/library/misc hats/close ride.ds
+apps/drumsynth/library/misc hats/default hi-hat.ds
+apps/drumsynth/library/misc hats/drama hat 2.ds
+apps/drumsynth/library/misc hats/drama hat.ds
+apps/drumsynth/library/misc hats/dusty simple hh.ds
+apps/drumsynth/library/misc hats/dusty simple oh.ds
+apps/drumsynth/library/misc hats/electro hh.ds
+apps/drumsynth/library/misc hats/electrometallic hat.ds
+apps/drumsynth/library/misc hats/errie ride.ds
+apps/drumsynth/library/misc hats/fedora hat.ds
+apps/drumsynth/library/misc hats/feelin' high hat 1.ds
+apps/drumsynth/library/misc hats/feelin' high hat 2.ds
+apps/drumsynth/library/misc hats/feelin' high hat 3.ds
+apps/drumsynth/library/misc hats/feelin' open high hat.ds
+apps/drumsynth/library/misc hats/flat cymbal.ds
+apps/drumsynth/library/misc hats/get out.ds
+apps/drumsynth/library/misc hats/hardhat 2.ds
+apps/drumsynth/library/misc hats/hardhat.ds
+apps/drumsynth/library/misc hats/hardly hh.ds
+apps/drumsynth/library/misc hats/heavy electrihat.ds
+apps/drumsynth/library/misc hats/hh.ds
+apps/drumsynth/library/misc hats/hip overtone hat.ds
+apps/drumsynth/library/misc hats/large open hh.ds
+apps/drumsynth/library/misc hats/lighthat.ds
+apps/drumsynth/library/misc hats/little hat.ds
+apps/drumsynth/library/misc hats/live hat.ds
+apps/drumsynth/library/misc hats/live sound hh.ds
+apps/drumsynth/library/misc hats/live sound oh.ds
+apps/drumsynth/library/misc hats/loaded hat.ds
+apps/drumsynth/library/misc hats/loaded open hat.ds
+apps/drumsynth/library/misc hats/oh so high hat.ds
+apps/drumsynth/library/misc hats/oil hat.ds
+apps/drumsynth/library/misc hats/pedal hh.ds
+apps/drumsynth/library/misc hats/q ride 2.ds
+apps/drumsynth/library/misc hats/q ride.ds
+apps/drumsynth/library/misc hats/sandy ride.ds
+apps/drumsynth/library/misc hats/scratchy hh.ds
+apps/drumsynth/library/misc hats/shaker ride long.ds
+apps/drumsynth/library/misc hats/shaker ride.ds
+apps/drumsynth/library/misc hats/simple ride.ds
+apps/drumsynth/library/misc hats/sleepy 1.ds
+apps/drumsynth/library/misc hats/sleepy 2.ds
+apps/drumsynth/library/misc hats/sleepy ride 2.ds
+apps/drumsynth/library/misc hats/sleepy ride.ds
+apps/drumsynth/library/misc hats/slick hat compressd open.ds
+apps/drumsynth/library/misc hats/slick hat half open.ds
+apps/drumsynth/library/misc hats/slick hat open.ds
+apps/drumsynth/library/misc hats/slick hat.ds
+apps/drumsynth/library/misc hats/slide hat.ds
+apps/drumsynth/library/misc hats/softie lo-fi hat.ds
+apps/drumsynth/library/misc hats/softie lo-fi open hat 2.ds
+apps/drumsynth/library/misc hats/softie lo-fi open hat.ds
+apps/drumsynth/library/misc hats/squeeze  me open hat.ds
+apps/drumsynth/library/misc hats/squeeze me hat.ds
+apps/drumsynth/library/misc hats/stack hhh.ds
+apps/drumsynth/library/misc hats/starry hh.ds
+apps/drumsynth/library/misc hats/starry short oh.ds
+apps/drumsynth/library/misc hats/static tone hat.ds
+apps/drumsynth/library/misc hats/tarp hh.ds
+apps/drumsynth/library/misc hats/the sting hat 2.ds
+apps/drumsynth/library/misc hats/the sting hat.ds
+apps/drumsynth/library/misc hats/the sting open hat.ds
+apps/drumsynth/library/misc hats/threshold noise open.ds
+apps/drumsynth/library/misc hats/threshold noise.ds
+apps/drumsynth/library/misc hats/touch me hat.ds
+apps/drumsynth/library/misc perc/ambient tom.ds
+apps/drumsynth/library/misc perc/bell rim.ds
+apps/drumsynth/library/misc perc/bell.ds
+apps/drumsynth/library/misc perc/clav 2.ds
+apps/drumsynth/library/misc perc/clav.ds
+apps/drumsynth/library/misc perc/deep cowbell.ds
+apps/drumsynth/library/misc perc/dist tom 2.ds
+apps/drumsynth/library/misc perc/dist tom.ds
+apps/drumsynth/library/misc perc/door knock.ds
+apps/drumsynth/library/misc perc/electric clav.ds
+apps/drumsynth/library/misc perc/feel me clinky.ds
+apps/drumsynth/library/misc perc/fidelity faction tom.ds
+apps/drumsynth/library/misc perc/funk box perc 1.ds
+apps/drumsynth/library/misc perc/funk box perc 2.ds
+apps/drumsynth/library/misc perc/funkay timbale.ds
+apps/drumsynth/library/misc perc/give it to me.ds
+apps/drumsynth/library/misc perc/hammond cowbell.ds
+apps/drumsynth/library/misc perc/hollow wood 2.ds
+apps/drumsynth/library/misc perc/hollow wood.ds
+apps/drumsynth/library/misc perc/it's the simple things.ds
+apps/drumsynth/library/misc perc/layered sleigh bell.ds
+apps/drumsynth/library/misc perc/light tamb 1.ds
+apps/drumsynth/library/misc perc/light tamb 2.ds
+apps/drumsynth/library/misc perc/light tamb 3.ds
+apps/drumsynth/library/misc perc/like a tabla 1.ds
+apps/drumsynth/library/misc perc/like a tabla 2.ds
+apps/drumsynth/library/misc perc/like a tabla 3.ds
+apps/drumsynth/library/misc perc/limited shaker.ds
+apps/drumsynth/library/misc perc/lo-fi tamb.ds
+apps/drumsynth/library/misc perc/low key tom.ds
+apps/drumsynth/library/misc perc/low ping.ds
+apps/drumsynth/library/misc perc/mellow shake.ds
+apps/drumsynth/library/misc perc/metallic node.ds
+apps/drumsynth/library/misc perc/mild tamb.ds
+apps/drumsynth/library/misc perc/ol' skool shake.ds
+apps/drumsynth/library/misc perc/poppy.ds
+apps/drumsynth/library/misc perc/q tom.ds
+apps/drumsynth/library/misc perc/resonant knock.ds
+apps/drumsynth/library/misc perc/ringmod rim 2.ds
+apps/drumsynth/library/misc perc/ringmod rim.ds
+apps/drumsynth/library/misc perc/shaaka 2.ds
+apps/drumsynth/library/misc perc/shaaka.ds
+apps/drumsynth/library/misc perc/short tom 1.ds
+apps/drumsynth/library/misc perc/short tom 2.ds
+apps/drumsynth/library/misc perc/short tom.ds
+apps/drumsynth/library/misc perc/sickly cowbell.ds
+apps/drumsynth/library/misc perc/slinky tamb.ds
+apps/drumsynth/library/misc perc/super tom.ds
+apps/drumsynth/library/misc perc/sweetness shaker.ds
+apps/drumsynth/library/misc perc/timbale sound.ds
+apps/drumsynth/library/misc perc/tom tone.ds
+apps/drumsynth/library/misc perc/tom.ds
+apps/drumsynth/library/misc perc/tommy.ds
+apps/drumsynth/library/misc perc/tone tom.ds
+apps/drumsynth/library/misc perc/torn tweeter.ds
+apps/drumsynth/library/misc perc/tweety cowbell 2.ds
+apps/drumsynth/library/misc perc/tweety cowbell.ds
+apps/drumsynth/library/misc perc/type noise.ds
+apps/drumsynth/library/misc perc/very high clav.ds
+apps/drumsynth/library/misc perc/video game clip.ds
+apps/drumsynth/library/misc perc/weird 1.ds
+apps/drumsynth/library/misc perc/wood and metal.ds
+apps/drumsynth/library/misc synth/average rock.ds
+apps/drumsynth/library/misc synth/c maj chord.ds
+apps/drumsynth/library/misc synth/casio piano c.ds
+apps/drumsynth/library/misc synth/chorded perc.ds
+apps/drumsynth/library/misc synth/consumer fm.ds
+apps/drumsynth/library/misc synth/dark and sweet fm.ds
+apps/drumsynth/library/misc synth/dist high c.ds
+apps/drumsynth/library/misc synth/eno's lift.ds
+apps/drumsynth/library/misc synth/eno's pad.ds
+apps/drumsynth/library/misc synth/eno's ride.ds
+apps/drumsynth/library/misc synth/flat square c.ds
+apps/drumsynth/library/misc synth/fm c bass burst.ds
+apps/drumsynth/library/misc synth/fur strings 2.ds
+apps/drumsynth/library/misc synth/fur strings.ds
+apps/drumsynth/library/misc synth/it's the music tom c.ds
+apps/drumsynth/library/misc synth/layered bass synth c.ds
+apps/drumsynth/library/misc synth/my red hot guitar.ds
+apps/drumsynth/library/misc synth/raver organ.ds
+apps/drumsynth/library/misc synth/strong c dub bass.ds
+apps/drumsynth/library/misc synth/sync drift.ds
+apps/drumsynth/library/misc synth/sync man.ds
+apps/drumsynth/library/misc synth/that house chord cm.ds
+apps/drumsynth/library/misc synth/vibrato pad.ds
+apps/drumsynth/library/misc synth/who loves ya, baby.ds
+apps/drumsynth/library/misc synth/wowmelodictone.ds
+apps/drumsynth/library/misc/'lectro hammer.ds
+apps/drumsynth/library/misc/'lectro square hammer.ds
+apps/drumsynth/library/misc/12-bit heavy hitter.ds
+apps/drumsynth/library/misc/909 hard snare.ds
+apps/drumsynth/library/misc/AAH.ds
+apps/drumsynth/library/misc/B1_B2.ds
+apps/drumsynth/library/misc/Clap.ds
+apps/drumsynth/library/misc/Distant Thunder.ds
+apps/drumsynth/library/misc/N_low.ds
+apps/drumsynth/library/misc/N_vlow.ds
+apps/drumsynth/library/misc/RimShot.ds
+apps/drumsynth/library/misc/Saber fight.ds
+apps/drumsynth/library/misc/Simple-c.ds
+apps/drumsynth/library/misc/Simple-r.ds
+apps/drumsynth/library/misc/Simple-s.ds
+apps/drumsynth/library/misc/Tone_dis.ds
+apps/drumsynth/library/misc/Tone_sw2.ds
+apps/drumsynth/library/misc/Tone_swp.ds
+apps/drumsynth/library/misc/airbrush bd.ds
+apps/drumsynth/library/misc/ambient noise snare.ds
+apps/drumsynth/library/misc/amen bd.ds
+apps/drumsynth/library/misc/amen sn 1.ds
+apps/drumsynth/library/misc/and loud sn.ds
+apps/drumsynth/library/misc/another 909 moment.ds
+apps/drumsynth/library/misc/another example snare.ds
+apps/drumsynth/library/misc/application bass drum.ds
+apps/drumsynth/library/misc/b1_0.ds
+apps/drumsynth/library/misc/b1_2.ds
+apps/drumsynth/library/misc/b1_5.ds
+apps/drumsynth/library/misc/b1_9.ds
+apps/drumsynth/library/misc/basic 808 click hum.ds
+apps/drumsynth/library/misc/battle hook sn.ds
+apps/drumsynth/library/misc/bauble bd.ds
+apps/drumsynth/library/misc/beat box bd.ds
+apps/drumsynth/library/misc/beefy wack.ds
+apps/drumsynth/library/misc/big 80's 2.ds
+apps/drumsynth/library/misc/big 80's.ds
+apps/drumsynth/library/misc/big sleeper snare.ds
+apps/drumsynth/library/misc/blended snare.ds
+apps/drumsynth/library/misc/bouncy809bd.ds
+apps/drumsynth/library/misc/break kick.ds
+apps/drumsynth/library/misc/breathing snare.ds
+apps/drumsynth/library/misc/bright house sn.ds
+apps/drumsynth/library/misc/buff hit.ds
+apps/drumsynth/library/misc/buff sound.ds
+apps/drumsynth/library/misc/bug into water.ds
+apps/drumsynth/library/misc/bulge n yr woofer.ds
+apps/drumsynth/library/misc/bumpin quickie.ds
+apps/drumsynth/library/misc/calamity snare.ds
+apps/drumsynth/library/misc/change the channel snare.ds
+apps/drumsynth/library/misc/chow bd.ds
+apps/drumsynth/library/misc/clappy snare.ds
+apps/drumsynth/library/misc/clean low key kick.ds
+apps/drumsynth/library/misc/clean soft 808.ds
+apps/drumsynth/library/misc/clearly snare.ds
+apps/drumsynth/library/misc/close mic sn.ds
+apps/drumsynth/library/misc/compression does it 808.ds
+apps/drumsynth/library/misc/crusty bump.ds
+apps/drumsynth/library/misc/crusty snare.ds
+apps/drumsynth/library/misc/cymbal.ds
+apps/drumsynth/library/misc/decompression snare.ds
+apps/drumsynth/library/misc/deep bauble bd.ds
+apps/drumsynth/library/misc/deep tones.ds
+apps/drumsynth/library/misc/difference snare.ds
+apps/drumsynth/library/misc/different 909 snare.ds
+apps/drumsynth/library/misc/dirty world bd.ds
+apps/drumsynth/library/misc/dist sub kick 2.ds
+apps/drumsynth/library/misc/dist sub kick.ds
+apps/drumsynth/library/misc/electro dnb kick.ds
+apps/drumsynth/library/misc/electro snare layer.ds
+apps/drumsynth/library/misc/electronic rim.ds
+apps/drumsynth/library/misc/end transmission.ds
+apps/drumsynth/library/misc/every 909.ds
+apps/drumsynth/library/misc/fatness.ds
+apps/drumsynth/library/misc/fattie bd.ds
+apps/drumsynth/library/misc/feel me!.ds
+apps/drumsynth/library/misc/few people will use this snare.ds
+apps/drumsynth/library/misc/flat tire.ds
+apps/drumsynth/library/misc/fm.ds
+apps/drumsynth/library/misc/fried food.ds
+apps/drumsynth/library/misc/funky trashcan snare.ds
+apps/drumsynth/library/misc/fuzzy sn.ds
+apps/drumsynth/library/misc/gabbakick.ds
+apps/drumsynth/library/misc/gimme a hard tone.ds
+apps/drumsynth/library/misc/gimmie a tone.ds
+apps/drumsynth/library/misc/hard electro brush sn.ds
+apps/drumsynth/library/misc/hard electronic snare.ds
+apps/drumsynth/library/misc/hard hittin.ds
+apps/drumsynth/library/misc/hardcore a bd.ds
+apps/drumsynth/library/misc/hardcore bd.ds
+apps/drumsynth/library/misc/hardersnare.ds
+apps/drumsynth/library/misc/heady mix sn.ds
+apps/drumsynth/library/misc/heavy.ds
+apps/drumsynth/library/misc/hed chunk snare.ds
+apps/drumsynth/library/misc/hi pic.ds
+apps/drumsynth/library/misc/hi-pass.ds
+apps/drumsynth/library/misc/hip-hop fantasy kick.ds
+apps/drumsynth/library/misc/hipster joint bd.ds
+apps/drumsynth/library/misc/hit me wooden snare.ds
+apps/drumsynth/library/misc/hitthosesubs.ds
+apps/drumsynth/library/misc/hot morning bass drum.ds
+apps/drumsynth/library/misc/hotsnare.ds
+apps/drumsynth/library/misc/i luv u fat noise.ds
+apps/drumsynth/library/misc/invisible 909 kick.ds
+apps/drumsynth/library/misc/it's like that snare.ds
+apps/drumsynth/library/misc/just the bass drum.ds
+apps/drumsynth/library/misc/kneel and buzz.ds
+apps/drumsynth/library/misc/large hall bd.ds
+apps/drumsynth/library/misc/laughter and jellybeans snare.ds
+apps/drumsynth/library/misc/light snare.ds
+apps/drumsynth/library/misc/lo-fi bass drum.ds
+apps/drumsynth/library/misc/lo-fi march.ds
+apps/drumsynth/library/misc/lo-fi rim.ds
+apps/drumsynth/library/misc/loudness sn.ds
+apps/drumsynth/library/misc/lovely clean bd.ds
+apps/drumsynth/library/misc/lower electro bd.ds
+apps/drumsynth/library/misc/mack bd.ds
+apps/drumsynth/library/misc/manipulate bd.ds
+apps/drumsynth/library/misc/many frequencies.ds
+apps/drumsynth/library/misc/mello bd.ds
+apps/drumsynth/library/misc/mind ya heds.ds
+apps/drumsynth/library/misc/missing snare 2.ds
+apps/drumsynth/library/misc/missing snare.ds
+apps/drumsynth/library/misc/more basic bd.ds
+apps/drumsynth/library/misc/more snap.ds
+apps/drumsynth/library/misc/muted snare.ds
+apps/drumsynth/library/misc/n_hi.ds
+apps/drumsynth/library/misc/n_mid.ds
+apps/drumsynth/library/misc/neo808 2.ds
+apps/drumsynth/library/misc/neo808.ds
+apps/drumsynth/library/misc/noise calling kick.ds
+apps/drumsynth/library/misc/noise clip.ds
+apps/drumsynth/library/misc/noise.ds
+apps/drumsynth/library/misc/nosie calling kick 2.ds
+apps/drumsynth/library/misc/odd snare.ds
+apps/drumsynth/library/misc/original tone snare.ds
+apps/drumsynth/library/misc/ot_12.ds
+apps/drumsynth/library/misc/ot_34.ds
+apps/drumsynth/library/misc/ot_sine.ds
+apps/drumsynth/library/misc/overdriver kick.ds
+apps/drumsynth/library/misc/pleasure factory kick.ds
+apps/drumsynth/library/misc/pop 1 off snare.ds
+apps/drumsynth/library/misc/power out.ds
+apps/drumsynth/library/misc/psychoacoutic bd.ds
+apps/drumsynth/library/misc/punchy clean kick.ds
+apps/drumsynth/library/misc/puppy kick.ds
+apps/drumsynth/library/misc/q kick 2.ds
+apps/drumsynth/library/misc/q'ey bass drum.ds
+apps/drumsynth/library/misc/questoin kick.ds
+apps/drumsynth/library/misc/r+b fantasy kick.ds
+apps/drumsynth/library/misc/reverb please snare.ds
+apps/drumsynth/library/misc/rimmy noise.ds
+apps/drumsynth/library/misc/rimshot 1.ds
+apps/drumsynth/library/misc/rimshot 2.ds
+apps/drumsynth/library/misc/ring fray kick.ds
+apps/drumsynth/library/misc/ring mod drone bd.ds
+apps/drumsynth/library/misc/rm.ds
+apps/drumsynth/library/misc/rubber '82.ds
+apps/drumsynth/library/misc/rubbery deep house kick.ds
+apps/drumsynth/library/misc/serious bd.ds
+apps/drumsynth/library/misc/short 909.ds
+apps/drumsynth/library/misc/simon's snare.ds
+apps/drumsynth/library/misc/simple click bd.ds
+apps/drumsynth/library/misc/simple-h.ds
+apps/drumsynth/library/misc/simple-k.ds
+apps/drumsynth/library/misc/skiwlz snare.ds
+apps/drumsynth/library/misc/slepper n the wilderness.ds
+apps/drumsynth/library/misc/sloppy electric.ds
+apps/drumsynth/library/misc/smooth rim.ds
+apps/drumsynth/library/misc/snappy 809.ds
+apps/drumsynth/library/misc/softsnare.ds
+apps/drumsynth/library/misc/sounding kick.ds
+apps/drumsynth/library/misc/sounds like a low tom.ds
+apps/drumsynth/library/misc/special man bass drum.ds
+apps/drumsynth/library/misc/splatter.ds
+apps/drumsynth/library/misc/sticky q kick.ds
+apps/drumsynth/library/misc/stiffy snare.ds
+apps/drumsynth/library/misc/sweet tight snare.ds
+apps/drumsynth/library/misc/tchak snare.ds
+apps/drumsynth/library/misc/terror n yr hood snare.ds
+apps/drumsynth/library/misc/test.ds
+apps/drumsynth/library/misc/think bd.ds
+apps/drumsynth/library/misc/think sn 1.ds
+apps/drumsynth/library/misc/think sn 2.ds
+apps/drumsynth/library/misc/this snare spells electronic.ds
+apps/drumsynth/library/misc/tomita clip.ds
+apps/drumsynth/library/misc/tone snare.ds
+apps/drumsynth/library/misc/tone.ds
+apps/drumsynth/library/misc/tone_deg.ds
+apps/drumsynth/library/misc/transient snare.ds
+apps/drumsynth/library/misc/trashyovertones.ds
+apps/drumsynth/library/misc/type snare.ds
+apps/drumsynth/library/misc/ultra electro bd.ds
+apps/drumsynth/library/misc/usgae bd.ds
+apps/drumsynth/library/misc/verby soundin 808.ds
+apps/drumsynth/library/misc/very basic snare.ds
+apps/drumsynth/library/misc/verylong.ds
+apps/drumsynth/library/misc/warm deep house kick.ds
+apps/drumsynth/library/misc/warm digi 808 click.ds
+apps/drumsynth/library/misc/whoa bd.ds
+apps/drumsynth/library/misc/wobble wobble.ds
+apps/drumsynth/library/misc/wobbly thumb bd.ds
+apps/drumsynth/library/misc/yet another electric bass drum.ds
+apps/drumsynth/library/misc/yr 808 hummer.ds
+apps/drumsynth/library/misc/zoom#4.ds
+apps/drumsynth/library/r&b/Hat_O.ds
+apps/drumsynth/library/r&b/S_hollow.ds
+apps/drumsynth/library/r&b/clapfilt.ds
+apps/drumsynth/library/r&b/hat rattle.ds
+apps/drumsynth/library/r&b/hat.ds
+apps/drumsynth/library/r&b/k_hard.ds
+apps/drumsynth/library/r&b/k_muffle.ds
+apps/drumsynth/library/r&b/k_soft.ds
+apps/drumsynth/library/r&b/old kik.ds
+apps/drumsynth/library/r&b/popclap.ds
+apps/drumsynth/library/r&b/popsnare.ds
+apps/drumsynth/library/r&b/s_pitch.ds
+apps/drumsynth/library/r&b/s_spit.ds
+apps/drumsynth/library/r&b/snare&hat.ds
+apps/drumsynth/library/r&b/x_backwd.ds
+apps/drumsynth/library/tr606/TR606 Cymbal.ds
+apps/drumsynth/library/tr606/TR606 Hat_C.ds
+apps/drumsynth/library/tr606/TR606 Hat_O.ds
+apps/drumsynth/library/tr606/TR606 Kick.ds
+apps/drumsynth/library/tr606/TR606 Snare.ds
+apps/drumsynth/library/tr606/TR606 Tom_H.ds
+apps/drumsynth/library/tr606/TR606 Tom_L.ds
+apps/drumsynth/library/tr77/Tr77 cui1.ds
+apps/drumsynth/library/tr77/Tr77 cui2.ds
+apps/drumsynth/library/tr77/Tr77 cym.ds
+apps/drumsynth/library/tr77/Tr77 hat.ds
+apps/drumsynth/library/tr77/Tr77 kick.ds
+apps/drumsynth/library/tr77/Tr77 snare.ds
+apps/drumsynth/library/tr77/Tr77 tom1.ds
+apps/drumsynth/library/tr77/Tr77 tom2.ds
+apps/drumsynth/library/tr808/Clave.ds
+apps/drumsynth/library/tr808/Cowbell.ds
+apps/drumsynth/library/tr808/Handclap.ds
+apps/drumsynth/library/tr808/Hat_c.ds
+apps/drumsynth/library/tr808/Hat_o.ds
+apps/drumsynth/library/tr808/Kick.ds
+apps/drumsynth/library/tr808/Kickhard.ds
+apps/drumsynth/library/tr808/Kicklong.ds
+apps/drumsynth/library/tr808/Ride.ds
+apps/drumsynth/library/tr808/Rimshot.ds
+apps/drumsynth/library/tr808/Snare.ds
+apps/drumsynth/library/tr808/Snr_snap.ds
+apps/drumsynth/library/tr808/Tom_hi.ds
+apps/drumsynth/library/tr808/Tom_lo.ds
+apps/drumsynth/library/tr808/Tom_mid.ds
+apps/drumsynth/library/tr909/Clap.ds
+apps/drumsynth/library/tr909/Hat-c.ds
+apps/drumsynth/library/tr909/Hat-c2.ds
+apps/drumsynth/library/tr909/Hat-o.ds
+apps/drumsynth/library/tr909/Hat-o2.ds
+apps/drumsynth/library/tr909/Kick.ds
+apps/drumsynth/library/tr909/Kick_1.ds
+apps/drumsynth/library/tr909/Kick_2.ds
+apps/drumsynth/library/tr909/Kick_3.ds
+apps/drumsynth/library/tr909/Snare.ds
+apps/drumsynth/library/tr909/Snare2.ds
+apps/drumsynth/library/tr909/TR909 Clap.ds
+apps/drumsynth/library/tr909/TR909 Kick.ds

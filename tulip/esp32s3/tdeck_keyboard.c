@@ -102,7 +102,7 @@ void run_tdeck_keyboard() {
 
     bool alt_char_mode = false;
     bool ctrl_toggle = false;
-    uint8_t rx_data[5];
+    uint8_t rx_data[5] = {0};
     uint8_t char_to_send[1];
     struct KeyMapping charMappings[] = {
         // Default keys
@@ -196,8 +196,11 @@ void run_tdeck_keyboard() {
     gpio_isr_handler_add(TDECK_TRACKBALL_CLICK, gpio_interrupt_handler, (void *)TDECK_TRACKBALL_CLICK);
 
     while (1) {
-        i2c_master_read_from_device(I2C_NUM, LILYGO_KB_SLAVE_ADDRESS, rx_data, 1, pdMS_TO_TICKS(TIMEOUT_MS));
-        if (rx_data[0] > 0) {
+        // Only trust rx_data when the read actually succeeded: a NACKed/timed
+        // out read leaves the buffer untouched, which used to re-inject the
+        // previous keystroke (and garbage on the very first read).
+        esp_err_t kb_err = i2c_master_read_from_device(I2C_NUM, LILYGO_KB_SLAVE_ADDRESS, rx_data, 1, pdMS_TO_TICKS(TIMEOUT_MS));
+        if (kb_err == ESP_OK && rx_data[0] > 0) {
             if (rx_data[0] == 224) {
                 // Toggle ctrl key (shift+microphone)
                 ctrl_toggle = !ctrl_toggle;

@@ -25,7 +25,14 @@ class PatchSynth:
 
     # Class-wide record of which amy synths and patches are in use.
     amy_synth_allocated = set()
-    amy_synth_next = 16
+    # Auto numbers start ABOVE the MIDI-channel range + the deck's audition
+    # scratch: 16 collided with a C-owned channel-16 synth (both parties
+    # re-patched the same AMY synth), and 17 is reserved for auditions.
+    amy_synth_next = 18
+    amy_synth_free = []     # released auto numbers, reused before new ones:
+                            # AMY caps instruments at 64 and release() never
+                            # returned numbers, so repeated single-synth
+                            # rebuilds walked the counter off the cliff
     amy_patch_allocated = set()
     amy_patch_next = 1024
 
@@ -33,7 +40,8 @@ class PatchSynth:
     def reset(cls):
         """Resets AMY and PatchSynth's tracking of its state."""
         cls.amy_synth_allocated = set()
-        cls.amy_synth_next = 16
+        cls.amy_synth_next = 18
+        cls.amy_synth_free = []
         amy.reset()
 
     def __init__(self, num_voices=4, channel=None,
@@ -41,9 +49,14 @@ class PatchSynth:
                  synth_flags=0, synth_already_initialized=False):
         if channel is not None:
             self.synth = channel
+            self._auto_number = False
         else:
-            self.synth = PatchSynth.amy_synth_next
-            PatchSynth.amy_synth_next += 1
+            if PatchSynth.amy_synth_free:
+                self.synth = PatchSynth.amy_synth_free.pop()
+            else:
+                self.synth = PatchSynth.amy_synth_next
+                PatchSynth.amy_synth_next += 1
+            self._auto_number = True
         self.num_voices = num_voices
         self.oscs_per_voice = oscs_per_voice
         self.patch_string = patch_string
@@ -138,6 +151,10 @@ class PatchSynth:
         """Called to terminate this synth and release its amy_voice resources."""
         # Release the AMY synth by setting its num_voices to 0.
         self.amy_send(num_voices=0)
+        # Recycle auto-allocated numbers (channel-pinned ones belong to
+        # their channel, not the pool).
+        if getattr(self, '_auto_number', False) and self.synth is not None:
+            PatchSynth.amy_synth_free.append(self.synth)
         # Mark this object as not usable.
         self._initialized = True
         self.synth = None
@@ -146,7 +163,11 @@ class PatchSynth:
         if self._initialized:
             # We need to renumber the old synth, if we made it already.
             self.amy_send(to_synth=channel)
-        # Future commands go to the new synth
+        # Future commands go to the new synth; an auto number renumbered
+        # onto a channel must never be recycled into the auto pool
+        if getattr(self, '_auto_number', False) and self.synth is not None:
+            PatchSynth.amy_synth_free.append(self.synth)
+        self._auto_number = False
         self.synth = channel
 
     # This used to be a method on OscSynth, but it's just an alias for amy_send.
@@ -180,9 +201,11 @@ class DrumSynth(PatchSynth):
     def __init__(self, num_voices=4, channel=None, patch=384):
         # The GM note->sample mapping lives in the drum kit patches (384 TR-808,
         # 385 TR-909, 386 Linn 9000, 387 MR-12, 388 Tokyo Synthetics, 389 Power,
-        # 390 Percussion); the patch also bakes in the x5 PCM level scaling.
-        # synth_flags 3 = route notes through the patch's MIDI note map and
-        # ignore note offs.
+        # 390 Percussion); each patch is ONE voice with a fixed osc per drum
+        # sound baked in (num_voices should be 1 -- see deck/drums_kit.py's
+        # SAMPLED_KIT_IDS clamp, which callers on the deck rely on instead of
+        # this default). synth_flags 3 = route notes through the patch's MIDI
+        # note map and ignore note offs.
         super().__init__(num_voices=num_voices, channel=channel, patch=patch, synth_flags=3)
 
 

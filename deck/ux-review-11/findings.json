@@ -1,0 +1,53 @@
+{
+  "review": "ux-review-11",
+  "round": 2,
+  "build": "ux-round1 @ b00fe8e8",
+  "device": "TULIP4_R11 1024x600, COM11",
+  "session": "2026-07-18 20:51-21:20",
+  "wdt_count": 0,
+  "verification": [
+    {"id": "UX10-2",  "verdict": "VERIFIED", "note": "Keyboard tile absent; Apps grid (Editor/Wordpad/Tulip World) intact", "evidence": "shots/02-apps-no-keyboard.png"},
+    {"id": "UX10-3",  "verdict": "VERIFIED", "note": "kb up on Wi-Fi password -> Display tab: object gone AND screen repainted, no ghost", "evidence": "shots/05-no-zombie-after-tabswitch.png"},
+    {"id": "UX10-4",  "verdict": "VERIFIED", "note": "hide key -> collapsed False, list_h 360, header restored", "evidence": "shots/07-picker-restored-after-hidekey.png"},
+    {"id": "UX10-5",  "verdict": "VERIFIED", "note": "password field y=208..255 vs echo-strip top 266; eye button (840,209) fully visible", "evidence": "shots/04-password-clears-strip.png"},
+    {"id": "UX10-6",  "verdict": "VERIFIED", "note": "planted params survived Cancel, cleared by Reset, 'Patch reset' toast; modal copy correct", "evidence": "on-device oracle (params {'test_marker':0.5} -> Cancel intact -> Reset {})"},
+    {"id": "UX10-7",  "verdict": "VERIFIED", "note": "OK key closes keyboard, kbmgr state clean", "evidence": "on-device"},
+    {"id": "UX10-8",  "verdict": "VERIFIED", "note": "eye on -> echo 'xy' immediately; eye off -> bullets immediately", "evidence": "on-device"},
+    {"id": "UX10-9",  "verdict": "VERIFIED", "note": "Debug ON -> Profiler/Logs rows appear ~1s later in place", "evidence": "on-device"},
+    {"id": "UX10-10", "verdict": "VERIFIED", "note": "readout label empty within 0.8s of Debug OFF (tested twice)", "evidence": "on-device"},
+    {"id": "UX10-11", "verdict": "VERIFIED", "note": "VCF held across Basic->Advanced and Advanced->Basic", "evidence": "on-device"},
+    {"id": "UX10-12", "verdict": "VERIFIED", "note": "DISABLED state present AND label visually muted", "evidence": "shots/06-mpe-disabled-btn.png"},
+    {"id": "UX10-13", "verdict": "VERIFIED", "note": "^C at T+8.14s during Wi-Fi join -> 'wifi failed:' -> boot continued ([10518] boot: reset cause hard). Interrupted join leaves Wi-Fi down until next boot (expected)", "evidence": "boot_ctrlc.log"},
+    {"id": "UX10-14", "verdict": "VERIFIED", "note": "status line 'vol 1 | net 192.168.4.250'", "evidence": "shots/01-home-status-line.png"},
+    {"id": "UX10-15", "verdict": "VERIFIED", "note": "'amyfleet.py - system file' + Delete disabled", "evidence": "on-device"},
+    {"id": "UX10-16", "verdict": "STILL-BROKEN", "note": "min fill _BAR_H+2 at radius _BAR_H//2 still a circle; track bg=BG invisible", "evidence": "shots/03-profiler-bars.png; see UX11-1"},
+    {"id": "UX10-1",  "verdict": "NOT-IN-SCOPE", "note": "separately owned (#95). Zero WDTs this session; crash-#2 repro (Keyboard tile) removed", "evidence": "session log"},
+    {"id": "UX10-17", "verdict": "DOC-ONLY", "note": "n/a", "evidence": ""}
+  ],
+  "findings": [
+    {"id": "UX11-1", "severity": "LOW", "title": "Profiler load bar still reads as a dot (UX10-16 residual)", "screen": "Profiler", "repro": "3%/7% loads draw as circles; track invisible (bg=BG on BG)", "fix": "track bg SURFACE2; radius 4 or min fill 2.5*_BAR_H", "cost": "ZERO", "evidence": "shots/03-profiler-bars.png"},
+    {"id": "UX11-2", "severity": "LOW", "title": "Top-bar voice chip stale after type change", "screen": "instrument editor / top bar", "repro": "Juno(10v)->Drums(1 fixed): chip stayed 20/32 until instrument removal", "fix": "type-change path calls shell.refresh_chips() like add/remove/rename", "cost": "ZERO", "evidence": "shots/08-drums-editor.png"},
+    {"id": "UX11-3", "severity": "LOW", "title": "Swap picker 'Use selected' enabled with nothing selected", "screen": "Pads > Swap", "repro": "bright green + not DISABLED before any hit chosen", "fix": "build disabled+dimmed, enable on selection (Files action-bar pattern)", "cost": "ZERO", "evidence": "shots/11-swap-picker.png"},
+    {"id": "UX11-4", "severity": "LOW", "title": "Swap-hit list doesn't mark the current hit", "screen": "Pads > Swap", "repro": "pad plays acoustic/jazzkick; jazzkick row unstyled, unlike patch/kit pickers' current-row accent", "fix": "same current-row accent", "cost": "ZERO", "evidence": "shots/12-swap-hits-grid.png"},
+    {"id": "UX11-5", "severity": "NIT", "title": "Preset detail shows raw patch number", "screen": "Presets > Open >", "repro": "'Juno-6 - patch 0' for A11 Brass Set 1", "fix": "catalog.sound_label (used by Home footer already)", "cost": "ZERO", "evidence": "shots/14-preset-detail.png"},
+    {"id": "UX11-6", "severity": "NIT", "title": "Pad editor value legibility", "screen": "Pads", "repro": "Tune '0' tiny dim purple; '100%' small dim green; sound name in placeholder-muted color", "fix": "value labels TEXT/WHITE (or sound-editor LED style); sound name TEXT", "cost": "ZERO", "evidence": "shots/10-pad-editor.png"},
+    {"id": "UX11-7", "severity": "NIT", "title": "Swap/kit rows carry a triangular corner artifact", "screen": "Pads > Swap, Kit picker", "repro": "dark triangular tail bottom-left of every row button; absent on patch-picker rows", "fix": "eyeball row style (radius/clip artifact)", "cost": "ZERO", "evidence": "shots/11-swap-picker.png, shots/09-kit-picker.png"}
+  ],
+  "new_ground": {
+    "drums_flow": "Add throwaway -> Drums type -> kit picker (synth:acoustic) -> pad editor -> swap hit applied (hit_swaps {'36':'acoustic/brush1'}, 'brush1 *' marker) -> instrument removed; chip restored 10/32",
+    "presets": "save (toast) -> detail -> recall (toast, auto-pop) -> delete (confirm) -> empty state; list_presets []; rename UI present but commit not exercised",
+    "midimon": "injected note-on/off, cc74, bend +2048, program, polytouch -> all decoded w/ delta-ms; Clear resets; transport path not exercised",
+    "screensaver": "dim_after=10 + 20min real idle -> phase dim in one tick; trigger_activity -> full instantly; config restored; sleep phase untested"
+  },
+  "not_covered": [
+    "app switches (Terminal/Editor/Wordpad/World), Calibrate, Wi-Fi Connect, firmware actions",
+    "real-finger touch, live external MIDI, audio-audible checks",
+    "screensaver sleep phase + MIDI wake", "preset rename commit"
+  ],
+  "restoration": {
+    "config": "byte-identical restore sha8 fc0804c0 before final reboots; verified after",
+    "harness_files_deleted": ["/user/_drv.py", "/user/_s.png"],
+    "throwaways_removed": ["instrument 'Tulip 2'", "preset 'Tulip'"],
+    "final_state": "Home, Wi-Fi 192.168.4.250, chip Tulip 10/32, instrument 'Tulip ch4 A11 Brass Set 1'"
+  }
+}

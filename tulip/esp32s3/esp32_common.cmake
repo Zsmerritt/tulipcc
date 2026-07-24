@@ -135,6 +135,7 @@ list(APPEND MICROPY_SOURCE_PORT
     ${MICROPY_PORT_DIR}/modsocket.c
     ${MICROPY_PORT_DIR}/mphalport.c
     ${MICROPY_PORT_DIR}/usb.c
+    ${MICROPY_PORT_DIR}/flash_fence_wrap.c
 
     ${MICROPY_ESP32_DIR}/panichandler.c
     ${MICROPY_ESP32_DIR}/adc.c
@@ -355,6 +356,11 @@ target_compile_definitions(${MICROPY_TARGET} PUBLIC
     ESP_PLATFORM
     TULIP
     GAMMA9001
+    GM_FONTS
+    AMY_AUX_REVERB
+    # (enable AMY_DEBUG for the render profilers -- amy.send(debug=1) --
+    # note its per-call prints use PRIu64, which this toolchain renders as
+    # literal 'luus'; fix the format before trusting the numbers)
     #AMY_DEBUG
     LV_CONF_INCLUDE_SIMPLE
     ${BOARD_DEFINITION1}
@@ -362,7 +368,51 @@ target_compile_definitions(${MICROPY_TARGET} PUBLIC
     ${MICROPY_DEF_TINYUSB}
 )
 
-#LFS2_NO_DEBUG LFS2_NO_WARN LFS2_NO_ERROR 
+#LFS2_NO_DEBUG LFS2_NO_WARN LFS2_NO_ERROR
+
+# Hot render translation units get -O3 + unrolling (OPT-6); the rest of the
+# build stays at the sdkconfig PERF (-O2) level. These hold the per-sample
+# loops (oscillator LUTs, delay lines/reverb, biquads, PCM).
+#
+# NOTHING GOES ON THIS LIST WITHOUT A MEASUREMENT. -O3 + unrolling costs flash
+# and, more importantly, i-cache footprint -- the S3 has 16KB of it, so a
+# bigger hot path can cost more than the unrolling wins. Earlier revisions of
+# this comment twice asserted a "typical 3-8%" gain that was never measured on
+# this code; the one file since measured (envelope.c, below) gained exactly
+# zero. The four files above have NOT been A/B'd on device and are here on the
+# same untested assumption -- treat them as unproven, not as precedent.
+#
+# envelope.c was on this list per the round-2 firmware review (O-4) and has
+# been REMOVED. Host profile, bit-identical audio out, same block count:
+#   envelope.c at -O3: 32.3 us/block
+#   envelope.c at -O2: 32.2 us/block
+# i.e. no gain, within noise. Mechanism: envelope.c's hot function is
+# compute_breakpoint_scale, branchy control-rate code that runs once per
+# envelope per block. There is no per-sample loop for -funroll-loops to
+# unroll, so -O3 bought only i-cache pressure. Do not re-add it without a
+# measurement that beats these numbers.
+set_source_files_properties(
+    ${AMY_DIR}/src/oscillators.c
+    ${AMY_DIR}/src/delay.c
+    ${AMY_DIR}/src/filters.c
+    ${AMY_DIR}/src/pcm.c
+    #
+    # amy.c is back on the list (it was reverted out on an UNVERIFIED theory
+    # that -funroll-loops would lower the enclosing for(bus/osc) loops to
+    # Xtensa zero-overhead hardware loops around the amy_blockops.h `loopnez`
+    # asm, corrupting LBEG/LEND/LCOUNT). Settled by disassembly + compiler
+    # source: GCC's hw-doloop pass (gcc/hw-doloop.cc scan_loop sets
+    # loop->has_asm for any inline asm; xtensa.cc hwloop_optimize rejects
+    # has_asm/has_call/non-innermost loops) can NEVER form a hardware loop
+    # around a body containing inline asm or a call. Verified on esp GCC
+    # 15.1 by disassembling amy.c.obj built with -O3 -funroll-loops: 25 ZOL
+    # instructions, zero nested, every blockop loopnez outside any generated
+    # `loop`; the policy code is identical in esp-14.2.0 (IDF v5.4.1, the CI
+    # compiler). tools/check_zol.py re-verifies every CI build and fails it
+    # if a future compiler ever nests ZOLs.
+    ${AMY_DIR}/src/amy.c
+    PROPERTIES COMPILE_OPTIONS "-O3;-funroll-loops"
+)
 
 # Disable some warnings to keep the build output clean.
 target_compile_options(${MICROPY_TARGET} PUBLIC
@@ -386,6 +436,18 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
 
 target_link_options(${MICROPY_TARGET} PUBLIC
      ${MICROPY_LINK_TINYUSB}
+     # Route EVERY partition write/erase (littlefs, OTA, NVS, future code)
+     # through the AMY flash fence -- see flash_fence_wrap.c. This is what
+     # makes "flash write during mmap'd-PCM render crashes the S3"
+     # structurally impossible instead of opt-in Python discipline.
+     -Wl,--wrap=esp_partition_write
+     -Wl,--wrap=esp_partition_write_raw
+     -Wl,--wrap=esp_partition_erase_range
+     # ... and the chip-level API beneath it (review FW-8): MicroPython's
+     # legacy esp.flash_write/flash_erase bypass the partition layer.
+     # Recursion is safe -- fence_depth is a counter.
+     -Wl,--wrap=esp_flash_write
+     -Wl,--wrap=esp_flash_erase_region
 )
 
 # Add additional extmod and usermod components.

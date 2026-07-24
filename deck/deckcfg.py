@@ -1,45 +1,65 @@
 # deckcfg.py -- the shared JSON config for the deck apps.
 #
-# Lives at /user/deck_config.json (in the /user partition, so it survives
+# Lives at /user/var/deck_config.json (in the /user partition, so it survives
 # tulip.upgrade()). Settings / Instrument / MPE / Fleet write to it, and boot.py
 # calls apply() on startup to restore everything.
 #
-# The instrument is modelled as a list of "instances": instance 0 is always the
-# internal Tulip AMY; further instances are attached AMYboards. Each instance has
-# the same shape (channel, patch, voices, MPE ...) so one UI can edit any of them.
-# 'mode' is 'multi' (independent per-channel instruments) or 'stack' (one profile
-# fanned out across all instances -- see forwarder.py).
+# INSTRUMENT-FIRST model (deck/PLAN-rework.md Phase 2). The canonical unit is an
+# "instrument": a sound bound to a device + MIDI channel. Multiple instruments
+# may share a channel (layering / stacking).
+#
+#   instrument = {id, name, device, channel, patch, num_voices,
+#                 mpe:{enabled, members, bend, expression}, enabled}
+#     device = 'internal' (the Tulip AMY) or a board index int (USB-MIDI device).
+#   active_instrument = the id of the instrument the UI is editing.
+#
+# BACKWARD COMPATIBILITY: earlier configs stored a device-first `instances` list.
+# load() migrates `instances` -> `instruments` (and an even older flat single-
+# instrument config) so a live config is never lost. A compat `instances()`
+# facade (device-first view over the instruments) is kept so the current UI keeps
+# working until Milestones B/C rewire it onto the instrument model.
 
 import json
 
-PATH = '/user/deck_config.json'
+# Under /user/var, NOT the /user root (E-5): littlefs commits land on the
+# parent dir's metadata pair, and the root's pair is the unrelocatable
+# superblock -- every root-file rewrite wore exactly the blocks that
+# corrupted. load() migrates a legacy root config on first read.
+PATH = '/user/var/deck_config.json'
+_LEGACY_PATH = '/user/deck_config.json'
 
-# runtime-only state (not persisted)
+# runtime-only state (not persisted). _state['cfg'] caches the parsed config so
+# load() stops re-reading + re-parsing the JSON file on every call -- on the
+# ESP32-S3 every one of those was an SPI-flash read plus heap churn, and callers
+# hit load() dozens of times per panel build. save() keeps it in sync.
 _state = {}
 
-# --- an instance is one AMY: the internal Tulip synth, or an AMYboard ---
-_INSTANCE_KEYS = ('name', 'kind', 'id', 'enabled', 'channel', 'device', 'patch',
-                  'num_voices', 'mpe', 'mpe_members', 'mpe_bend', 'mpe_expression')
+# Per-device polyphony budget (voices). A tunable constant; boards + the Tulip
+# AMY are treated as having this capacity for the load meter until we probe real
+# limits.
+DEVICE_CAPACITY = 32
+
+# canonical instrument fields. 'hits'/'hit_swaps'/'reverb_send' were missing:
+# the pad editor saved them fine but _merge_instrument dropped them on the next
+# load(), so every per-pad drum edit vanished on reboot.
+_INSTRUMENT_KEYS = ('id', 'name', 'device', 'channel', 'patch', 'num_voices',
+                    'enabled', 'params', 'type', 'pads', 'kit',
+                    'hits', 'hit_swaps', 'reverb_send')
 
 
-def default_instance(index):
-    if index == 0:
-        name, kind, ch = 'Tulip', 'internal', 1
-    else:
-        name, kind, ch = 'Board ' + chr(64 + index), 'amyboard', 1 + index
-    # device = USB-MIDI device index for firmware per-device output. Boards map
-    # to the USB-MIDI devices in order: Board A -> device 0, Board B -> device 1.
-    # (None on the internal Tulip instance, which plays via its own AMY synth.)
-    device = None if index == 0 else index - 1
-    return {
-        'name': name, 'kind': kind, 'id': None, 'enabled': True,
-        'channel': ch, 'device': device, 'patch': 0, 'num_voices': 10,
-        'mpe': False, 'mpe_members': 15, 'mpe_bend': 48, 'mpe_expression': True,
-    }
+def type_of_patch(patch):
+    """Infer an engine type from a patch number (migration + default)."""
+    import catalog
+    return catalog.engine_of(patch)   # E-8: catalog owns the boundaries
+_MPE_KEYS = ('enabled', 'members', 'bend', 'expression')
 
 
 DEFAULTS = {
-    'volume': 4,
+    # AMY volume is a 0..10 GAIN scaled by 0.1 at mixdown; the stock default
+    # is 1.0. The old deck default of 4 ran 4x hot -- once the (previously
+    # broken) volume apply was fixed, chords drove the clipper: audible
+    # crackling. 1 = the loudness the device always had pre-deck.
+    'volume': 1,
     'brightness': 5,
     'tfb_font': 0,
     'ui_btn': 60,
@@ -47,67 +67,446 @@ DEFAULTS = {
     'render_vsync': True,     # gate the partial-mode copy to vsync (tear-free)
     'wifi_ssid': '',
     'wifi_pass': '',
+    'clock_24h': True,        # top-bar clock format (Settings toggle)
     'setup_done': False,
-    # fleet
-    'mode': 'multi',           # 'multi' | 'stack'
-    'active_instance': 0,
-    'prioritize_boards': True, # stack round-robin fills AMYboards before the Tulip AMY
-    'detune': {'enabled': False, 'spread_cents': 8, 'unison_voices': 3},
+    # screensaver thresholds in seconds (0 = never); see screensaver.py
+    'dim_after': 0,
+    'sleep_after': 0,
+    # global MPE gate: MPE is OFF and hidden until enabled here (Settings)
+    'mpe_enabled': False,
+    # per-device FX bus overrides: {device_key: {reverb:{...}, chorus:{...},
+    # echo:{...}}} where device_key is 'internal' or str(board index). Empty =
+    # amyparams defaults (all FX off). See amyparams.FX.
+    'fx': {},
+    # favorite patch numbers (starred in the patch picker; sorted to the top)
+    'favorites': [],
+    # debug mode (Settings): status-bar shows reset cause + free RAM, and
+    # decklog.dbg() lines (router rebuilds etc.) get written. See decklog.py.
+    'debug': False,
 }
 
 
-def _merge_instance(index, data):
-    inst = default_instance(index)
-    if isinstance(data, dict):
-        inst.update({k: v for k, v in data.items() if k in _INSTANCE_KEYS})
-    return inst
+def _default_mpe():
+    return {'enabled': False, 'members': 15, 'bend': 48, 'expression': True}
+
+
+def default_instrument(index, device=None, channel=None):
+    """A fresh instrument. By index: 0 = internal Tulip on ch1; index k = board
+    (k-1) on channel (1+k) -- matching the historical instance layout."""
+    if device is None:
+        device = 'internal' if index == 0 else index - 1
+    if channel is None:
+        channel = 1 if index == 0 else 1 + index
+    name = 'Tulip' if device == 'internal' else 'Board ' + chr(65 + int(device))
+    return {
+        'id': index, 'name': name, 'device': device, 'channel': channel,
+        'patch': 0, 'num_voices': 10, 'mpe': _default_mpe(), 'enabled': True,
+        'type': 'juno6',       # engine: juno6 | dx7 | piano | drums
+        'params': {},          # per-synth AMY param overrides (amyparams.PARAMS)
+    }
+
+
+def _merge_instrument(index, d):
+    instr = default_instrument(index)
+    if isinstance(d, dict):
+        for k in _INSTRUMENT_KEYS:
+            if k in d:
+                instr[k] = d[k]
+        m = d.get('mpe')
+        if isinstance(m, dict):
+            instr['mpe'].update({k: v for k, v in m.items() if k in _MPE_KEYS})
+        elif 'mpe' in d:                      # a stray legacy bool
+            instr['mpe']['enabled'] = bool(m)
+        # Migrate instruments saved before 'type' existed: infer it from the patch.
+        if not d.get('type'):
+            instr['type'] = type_of_patch(instr.get('patch', 0))
+    return instr
+
+
+def _instrument_from_instance(index, inst):
+    """Migrate one old device-first `instance` dict into an instrument."""
+    if inst.get('kind') == 'internal':
+        device = 'internal'
+    else:
+        device = inst.get('device')
+        if device is None:
+            device = max(0, index - 1)
+    instr = default_instrument(index, device=device, channel=inst.get('channel'))
+    if inst.get('name'):
+        instr['name'] = inst['name']
+    instr['patch'] = inst.get('patch', 0)
+    instr['num_voices'] = inst.get('num_voices', 10)
+    instr['enabled'] = inst.get('enabled', True)
+    instr['mpe'] = {
+        'enabled': inst.get('mpe', False),
+        'members': inst.get('mpe_members', 15),
+        'bend': inst.get('mpe_bend', 48),
+        'expression': inst.get('mpe_expression', True),
+    }
+    return instr
+
+
+def _instrument_from_flat(data):
+    """Migrate the oldest single-instrument flat config into one instrument."""
+    instr = default_instrument(0)
+    instr['patch'] = data.get('patch', 0)
+    instr['num_voices'] = data.get('num_voices', 10)
+    instr['channel'] = data.get('midi_channel', 1)
+    instr['mpe'] = {
+        'enabled': data.get('mpe', False),
+        'members': data.get('mpe_members', 15),
+        'bend': data.get('mpe_bend', 48),
+        'expression': data.get('mpe_expression', True),
+    }
+    return instr
+
+
+_MAX_BAD = 3   # keep at most this many quarantined bad configs
+
+
+def _exists(path):
+    try:
+        import os
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
+def _load_legacy():
+    """Read + delete the legacy /user-root config, migrating it once. Returns
+    the parsed dict, or None when there is no (readable) legacy file."""
+    try:
+        with open(_LEGACY_PATH) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    import os
+    try:
+        os.remove(_LEGACY_PATH)
+    except OSError:
+        pass
+    return d
+
+
+def _quarantine_bad(path):
+    """Copy an unreadable config aside to <path>.bad-N.json (a bounded set: the
+    oldest is recycled once _MAX_BAD exist) so a corrupt config is never
+    silently lost -- the user can recover it. NEVER logs the file's contents
+    (it holds wifi_pass in cleartext)."""
+    import os
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        raw = None
+    try:
+        import decklog
+        decklog.log("deckcfg: config unreadable/corrupt (%s bytes); quarantining"
+                    % (len(raw) if raw is not None else '?'))
+    except Exception:
+        pass
+    if not raw:
+        return
+    base = path[:-5] if path.endswith('.json') else path
+    target = None
+    oldest = None
+    for i in range(1, _MAX_BAD + 1):
+        slot = '%s.bad-%d.json' % (base, i)
+        try:
+            mt = os.stat(slot)[8]      # st_mtime; free slots win first
+        except OSError:
+            target = slot
+            break
+        if oldest is None or mt < oldest:
+            oldest = mt
+            target = slot              # else recycle the oldest quarantine
+    try:
+        with open(target, 'wb') as f:
+            f.write(raw)
+    except OSError:
+        pass
 
 
 def load():
+    """Return THE live config dict (cached; every caller aliases the same
+    object). CONTRACT (E-6): treat the result as read-only -- mutate only
+    via the setters in this module, or your change silently persists on the
+    next unrelated save(). test_deck.py holds a canary for this."""
+    cached = _state.get('cfg')
+    if cached is not None:
+        return cached
+    _state['load_degraded'] = False
     try:
         with open(PATH) as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except ValueError:
+        # The file EXISTS but is not valid JSON (a torn/corrupt write, flash
+        # rot after a crash). DO NOT silently fall back to bare defaults: that
+        # skeleton would be persisted by the very next setter, overwriting the
+        # user's real config with schema defaults (CFG-2 -- observed wiping
+        # wifi + render flags after a night of crashes). Preserve the raw
+        # bytes, log loudly, and flag the session degraded so save() heals.
+        _quarantine_bad(PATH)
+        _state['load_degraded'] = True
         data = {}
-    cfg = dict(DEFAULTS)
-    cfg['detune'] = dict(DEFAULTS['detune'])
+    except OSError:
+        # File missing (genuine first run) OR unreadable. Try the one-time
+        # migration from the legacy /user-root location (E-5) first.
+        data = _load_legacy()
+        if data is None:
+            # No config anywhere. If the MAIN file nonetheless EXISTS, we hit
+            # a read error on real data (not a genuine first run): degrade so
+            # the next save() heals instead of persisting defaults over it.
+            if _exists(PATH):
+                _state['load_degraded'] = True
+                try:
+                    import decklog
+                    decklog.log("deckcfg: config present but unreadable; "
+                                "not overwriting it with defaults")
+                except Exception:
+                    pass
+            data = {}
+    # Deep-copy the MUTABLE defaults (dicts/lists) so cfg never aliases the
+    # module-level DEFAULTS objects. A shallow dict(DEFAULTS) shared cfg['fx']
+    # (and 'favorites') with DEFAULTS, so set_device_fx's in-place mutation
+    # (:547) permanently polluted DEFAULTS['fx'] -- every later fresh/reset
+    # config in the same session then inherited the old device's FX (CFG-1).
+    cfg = {k: (dict(v) if isinstance(v, dict)
+               else list(v) if isinstance(v, list) else v)
+           for k, v in DEFAULTS.items()}
     cfg.update({k: v for k, v in data.items()
-                if k not in ('instances', 'detune')})
+                if k not in ('instances', 'instruments')})
 
-    if isinstance(data.get('instances'), list) and data['instances']:
-        cfg['instances'] = [_merge_instance(i, d)
-                            for i, d in enumerate(data['instances'])]
+    if isinstance(data.get('instruments'), list) and data['instruments']:
+        instruments = [_merge_instrument(i, d)
+                       for i, d in enumerate(data['instruments'])]
+    elif isinstance(data.get('instances'), list) and data['instances']:
+        instruments = [_instrument_from_instance(i, d)
+                       for i, d in enumerate(data['instances'])]
+    elif any(k in data for k in ('patch', 'midi_channel', 'num_voices', 'mpe')):
+        instruments = [_instrument_from_flat(data)]
     else:
-        # migrate an older single-instrument config into instance 0
-        inst0 = default_instance(0)
-        for old, new in (('patch', 'patch'), ('num_voices', 'num_voices'),
-                         ('midi_channel', 'channel'), ('mpe', 'mpe'),
-                         ('mpe_members', 'mpe_members'), ('mpe_bend', 'mpe_bend'),
-                         ('mpe_expression', 'mpe_expression')):
-            if old in data:
-                inst0[new] = data[old]
-        cfg['instances'] = [inst0]
+        instruments = [default_instrument(0)]
+    cfg['instruments'] = instruments
 
-    if isinstance(data.get('detune'), dict):
-        cfg['detune'].update(data['detune'])
-
-    if cfg['active_instance'] >= len(cfg['instances']):
-        cfg['active_instance'] = 0
+    ids = [i['id'] for i in instruments]
+    if 'active_instrument' in data:
+        act = data['active_instrument']
+    elif isinstance(data.get('active_instance'), int):
+        # migrate the old active index into the corresponding instrument id
+        idx = data['active_instance']
+        act = ids[idx] if 0 <= idx < len(ids) else ids[0]
+    else:
+        act = ids[0]
+    if act not in ids:
+        act = ids[0]
+    cfg['active_instrument'] = act
+    _state['cfg'] = cfg
     return cfg
 
 
-def save(cfg):
+# A FLASH WRITE WHILE AMY RENDERS PCM FROM THE MMAP'D SAMPLE BANKS
+# HARD-CRASHES THE S3: the write suspends the flash cache while the render
+# path still reads the mapped partition -> interrupt watchdog on both cores
+# (reproduced deliberately; Saved PC 0x40375e5b). The output LEVEL alone is
+# the wrong gate both ways: the reverb tail keeps it up after PCM voices die
+# (false block), and a decaying PCM voice renders on below any threshold
+# (false pass -- bisected: the deferred save fired at level<0.002 while the
+# EMU tail still read flash, same WDT). So quiet_now() demands the output
+# stay near-silent CONTINUOUSLY for a full second -- a voice whose envelope
+# has been inaudible that long has ended (AMY stops finished voices), which
+# is what actually stops the flash reads.
+_QUIET = {'last_loud': None}
+
+
+def quiet_now(threshold=0.004, hold_ms=1000):
+    """True when it has been quiet long enough that a flash write is safe."""
     try:
-        with open(PATH, 'w') as f:
-            json.dump(cfg, f)
-    except OSError as e:
-        print("deckcfg: could not save:", e)
+        import tulip
+        from time import ticks_ms, ticks_diff
+        now = ticks_ms()
+        if tulip.amy_level() > threshold or _QUIET['last_loud'] is None:
+            _QUIET['last_loud'] = now
+            return False
+        return ticks_diff(now, _QUIET['last_loud']) > hold_ms
+    except Exception:
+        return True    # host tests / no tulip: just write
 
 
-def set(key, value):
+def fenced_write(fn):
+    """Run fn() (a flash write) safely against AMY's PCM rendering.
+
+    AUTO-FENCE firmware (tulip.flash_fence_auto exists): the C storage
+    layer fences EVERY partition write itself with an exact block-boundary
+    handshake (flash_fence_wrap.c) -- just write. Manual-fence firmware:
+    raise the fence, wait two render blocks, write, drop (~12ms). Oldest
+    firmware: True only when quiet_now() says a write is safe; caller
+    defers otherwise."""
+    try:
+        import tulip
+        if hasattr(tulip, 'flash_fence_auto'):
+            fn()
+            return True
+        fence = getattr(tulip, 'flash_fence', None)
+    except Exception:
+        fence = None
+    if fence is None:
+        if not quiet_now():
+            return False
+        fn()
+        return True
+    fence(1)
+    try:
+        from time import sleep_ms
+        sleep_ms(12)
+        fn()
+    finally:
+        fence(0)
+    return True
+
+
+def _write(cfg, _retry=0, _chained=False):
+    # Flash writes race AMY's mapped-PCM rendering (see quiet_now). With the
+    # flash-fence firmware this writes immediately (~12ms fence); without it,
+    # defer until quiet, retrying from the UI defer queue, capped (~15s) so
+    # config is never lost. Always re-reads the LATEST cached cfg so
+    # coalesced retries can't resurrect stale settings. ONE retry chain at a
+    # time: under sustained sound every save used to spawn its own 250ms
+    # defer chain and the accumulating storm ground the UI to a halt.
+    if _state.get('write_chain') and not _chained:
+        # SELF-HEAL (review F-3 belt): a lost defer used to leave the
+        # chain flag stuck True forever -- every save silently skipped
+        # until reboot. If the chain is implausibly old, reclaim it.
+        try:
+            from time import ticks_ms, ticks_diff
+            if ticks_diff(ticks_ms(), _state.get('write_chain_since', 0)) < 5000:
+                return  # a live chain will pick up the latest cache
+        except Exception:
+            return
+    _state['write_chain'] = True
+    try:
+        from time import ticks_ms
+        _state['write_chain_since'] = ticks_ms()
+    except Exception:
+        pass
+    def do():
+        # Drop the legacy `instances` key if an old config still carries it.
+        data = {k: v for k, v in cfg.items() if k != 'instances'}
+        try:
+            import os
+            try:
+                os.mkdir('/user/var')
+            except OSError:
+                pass
+            # ATOMIC (E-5): write beside, rename over. A crash mid-write
+            # leaves the old config intact instead of a torn file
+            # (os.rename is atomic in littlefs).
+            with open(PATH + '.new', 'w') as f:
+                json.dump(data, f)
+            try:
+                os.rename(PATH + '.new', PATH)   # clobbers on littlefs
+            except OSError:
+                # Windows host (tests): rename won't clobber
+                os.remove(PATH)
+                os.rename(PATH + '.new', PATH)
+        except OSError as e:
+            print("deckcfg: could not save:", e)
+    if fenced_write(do):
+        _state['write_chain'] = False
+        return
+    if _retry < 60:
+        try:
+            import tulip
+            tulip.defer(lambda x: _write(_state.get('cfg', cfg), _retry + 1,
+                                         _chained=True), 0, 250)
+            return
+        except Exception:
+            pass
+    do()    # retry cap reached (or no defer): write anyway, accept the risk
+    _state['write_chain'] = False
+
+
+# Guarded top-level scalars: user data whose silent loss is harmful. If a
+# DEGRADED load (see load()) cached schema defaults over these, save() would
+# persist the wipe. _heal_from_disk restores each guarded field from the
+# still-intact on-disk file just before the write, UNLESS the caller is
+# explicitly changing it (set_value passes the key as `explicit` -- a user
+# clearing wifi in Settings must still go through). Instruments are NOT
+# auto-healed: they are actively user-edited and the on-disk copy may be
+# intentionally stale (mid delete/recreate); the scalar heal + quarantine are
+# what stop the reported wifi/render wipe.
+_GUARDED_KEYS = ('wifi_ssid', 'wifi_pass', 'render_partial', 'render_vsync',
+                 'volume', 'brightness', 'tfb_font', 'ui_btn', 'clock_24h',
+                 'setup_done', 'dim_after', 'sleep_after', 'mpe_enabled',
+                 'debug', 'tz_offset_s', 'touch_delta', 'sd_pins')
+
+
+def _heal_from_disk(cfg, explicit):
+    # Cost-free in healthy sessions: only a load that DEGRADED (corrupt/
+    # unreadable file) can leave the cache carrying defaults over populated
+    # on-disk values, so the on-disk re-read happens only then.
+    if not _state.get('load_degraded'):
+        return
+    try:
+        with open(PATH) as f:
+            disk = json.load(f)
+    except (OSError, ValueError):
+        return          # nothing trustworthy on disk to restore from
+    if not isinstance(disk, dict):
+        return
+    ex = explicit or ()
+    healed = []
+    for k in _GUARDED_KEYS:
+        if k in ex:
+            continue
+        dflt = DEFAULTS.get(k)
+        dv = disk.get(k, dflt)
+        cv = cfg.get(k, dflt)
+        # restore only when a populated on-disk value is about to be replaced
+        # by the schema default -- a real regression, not a legit same-value
+        # or an explicit user clear.
+        if cv == dflt and dv != dflt:
+            cfg[k] = dv
+            healed.append(k)
+    if healed:
+        try:
+            import decklog
+            decklog.log("deckcfg: preserved %d field(s) a degraded load would "
+                        "have wiped: %s" % (len(healed), ",".join(healed)))
+        except Exception:
+            pass
+
+
+def save(cfg, explicit=None):
+    """Persist cfg. `explicit` names the key(s) the caller is intentionally
+    changing (set_value passes its key) so the regression guard does not undo
+    a legitimate clear -- e.g. the user emptying wifi in Settings."""
+    _heal_from_disk(cfg, explicit)
+    _state['cfg'] = cfg
+    _write(cfg)
+
+
+def flush():
+    """Write the cached config to flash now. Pairs with the setters' flush=False
+    (drag-time updates): the UI updates the cache per slider tick and flushes
+    once on release, so a drag costs one flash write instead of dozens."""
+    cfg = _state.get('cfg')
+    if cfg is not None:
+        _heal_from_disk(cfg, None)
+        _write(cfg)
+
+
+def invalidate():
+    """Drop the cache so the next load() re-reads the file (tests / external
+    edits to the config file)."""
+    _state.pop('cfg', None)
+
+
+def set_value(key, value):
     cfg = load()
     cfg[key] = value
-    save(cfg)
+    save(cfg, explicit=(key,))   # explicit: a user clear here must persist
     return cfg
 
 
@@ -115,60 +514,247 @@ def get(key, default=None):
     return load().get(key, default)
 
 
-# --- instance accessors ---
-def instances(cfg=None):
-    return (cfg or load())['instances']
+# --- patch favorites (list of patch numbers, newest last) ---
+def favorites(cfg=None):
+    return list((cfg or load()).get('favorites', []))
 
 
-def num_instances():
-    return len(load()['instances'])
+def is_favorite(patch, cfg=None):
+    try:
+        return int(patch) in favorites(cfg)
+    except (TypeError, ValueError):
+        return False
 
 
-def get_instance(i, cfg=None):
-    insts = instances(cfg)
-    return insts[i] if 0 <= i < len(insts) else None
-
-
-def active_index():
-    return load()['active_instance']
-
-
-def set_active(i):
-    set('active_instance', i)
-
-
-def set_instance(i, key, value):
+def toggle_favorite(patch):
     cfg = load()
-    if 0 <= i < len(cfg['instances']):
-        cfg['instances'][i][key] = value
+    favs = list(cfg.get('favorites', []))
+    p = int(patch)
+    if p in favs:
+        favs.remove(p)
+    else:
+        favs.append(p)
+    cfg['favorites'] = favs
+    save(cfg)
+    return p in favs
+
+
+# --- instrument accessors (canonical) ---
+def instruments(cfg=None):
+    return (cfg or load())['instruments']
+
+
+def get_instrument(iid, cfg=None):
+    for i in instruments(cfg):
+        if i['id'] == iid:
+            return i
+    return None
+
+
+def active_instrument(cfg=None):
+    return (cfg or load())['active_instrument']
+
+
+def set_active_instrument(iid):
+    cfg = load()
+    if any(i['id'] == iid for i in cfg['instruments']):
+        cfg['active_instrument'] = iid
         save(cfg)
     return cfg
 
 
-def set_mode(mode):
-    set('mode', mode)
+def _next_id(insts):
+    return (max(i['id'] for i in insts) + 1) if insts else 0
 
 
-def set_detune(key, value):
+def _unique_name(insts, base):
+    """A name not already used by another instrument (so rows are tellable apart):
+    'Tulip', then 'Tulip 2', 'Tulip 3', ..."""
+    names = {i.get('name') for i in insts}
+    if base not in names:
+        return base
+    n = 2
+    while ('%s %d' % (base, n)) in names:
+        n += 1
+    return '%s %d' % (base, n)
+
+
+def next_free_channel(device, cfg=None, exclude_iid=None):
+    """The lowest MIDI channel (1-16) not used by another instrument on `device`
+    (so a new/moved instrument lands on a free channel, not always ch 1)."""
+    cfg = cfg or load()
+    used = {i.get('channel') for i in cfg['instruments']
+            if i.get('device') == device and i.get('id') != exclude_iid}
+    for ch in range(1, 17):
+        if ch not in used:
+            return ch
+    return 1
+
+
+def add_instrument(device='internal', channel=1, **kw):
     cfg = load()
-    cfg['detune'][key] = value
+    insts = cfg['instruments']
+    iid = _next_id(insts)
+    instr = default_instrument(iid, device=device, channel=channel)
+    instr['id'] = iid
+    for k, v in kw.items():
+        if k in _INSTRUMENT_KEYS:
+            instr[k] = v
+    if 'name' not in kw:                       # distinct default name
+        instr['name'] = _unique_name(insts, instr.get('name', 'Instrument'))
+    insts.append(instr)
+    save(cfg)
+    return instr
+
+
+def remove_instrument(iid):
+    cfg = load()
+    cfg['instruments'] = [i for i in cfg['instruments'] if i['id'] != iid]
+    if not cfg['instruments']:
+        cfg['instruments'] = [default_instrument(0)]
+    ids = [i['id'] for i in cfg['instruments']]
+    if cfg['active_instrument'] not in ids:
+        cfg['active_instrument'] = ids[0]
     save(cfg)
     return cfg
 
 
-def ensure_count(n):
-    """Grow/shrink the instance list to n (min 1). Instance 0 stays internal."""
-    n = max(1, n)
+def set_instrument(iid, key, val, flush=True):
+    """Set one instrument field. flush=False updates only the in-RAM cache
+    (typing-time updates, e.g. rename per keystroke); call flush() to commit."""
     cfg = load()
-    insts = cfg['instances']
-    while len(insts) < n:
-        insts.append(default_instance(len(insts)))
-    if len(insts) > n:
-        del insts[n:]
-    if cfg['active_instance'] >= n:
-        cfg['active_instance'] = 0
+    for i in cfg['instruments']:
+        if i['id'] == iid:
+            if key == 'mpe' and isinstance(val, dict):
+                i.setdefault('mpe', _default_mpe()).update(val)
+            else:
+                i[key] = val
+            break
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
+    return cfg
+
+
+def set_instrument_mpe(iid, subkey, val):
+    cfg = load()
+    for i in cfg['instruments']:
+        if i['id'] == iid:
+            i.setdefault('mpe', _default_mpe())[subkey] = val
+            break
     save(cfg)
     return cfg
+
+
+def get_instrument_param(iid, name, default=None):
+    """A stored per-synth param value, else the caller default, else the
+    amyparams schema default.
+
+    NOT for editor display: it cannot tell "the user set this" from "nobody
+    set it, here is a schema default", so an ADSR editor built on it reported
+    invented numbers as the patch's own envelope. Use
+    amyparams.param_value_source(), which layers user > patch > default and
+    says which it returned. Currently unused -- kept as a public accessor.
+    """
+    instr = get_instrument(iid)
+    if instr is not None:
+        val = instr.get('params', {}).get(name)
+        if val is not None:
+            return val
+    if default is not None:
+        return default
+    try:
+        import amyparams
+        return amyparams.PARAM_BY_NAME[name]['default']
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: param default lookup %r failed: %r" % (name, e))
+        return default
+
+
+def set_instrument_param(iid, name, value, flush=True):
+    """Set one stored param. flush=False updates only the in-RAM cache (for
+    slider drags -- live audition reads the cache); call flush() on release."""
+    cfg = load()
+    for i in cfg['instruments']:
+        if i['id'] == iid:
+            i.setdefault('params', {})[name] = value
+            break
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
+    return cfg
+
+
+def _device_key(device):
+    return 'internal' if device == 'internal' else str(device)
+
+
+def device_fx(device, cfg=None):
+    """The stored FX-bus overrides for a device ({} = all defaults)."""
+    return (cfg or load()).get('fx', {}).get(_device_key(device), {})
+
+
+def set_device_fx(device, bus, name, value, flush=True):
+    """Set one FX-bus value. flush=False updates only the in-RAM cache (slider
+    drags); call flush() on release."""
+    cfg = load()
+    fx = cfg.setdefault('fx', {})
+    fx.setdefault(_device_key(device), {}).setdefault(bus, {})[name] = value
+    if flush:
+        save(cfg)
+    else:
+        _state['cfg'] = cfg
+    return cfg
+
+
+def instruments_on_channel(ch, cfg=None):
+    return [i for i in instruments(cfg)
+            if i.get('enabled', True) and i.get('channel') == ch]
+
+
+def device_load(device, cfg=None):
+    """Effective voices in use on `device`: sum of num_voices for enabled
+    instruments, EXCEPT a drums instrument counts as 1 -- a kit is a single
+    fixed voice (the editor shows "1 (fixed by kit)" and the synth forces
+    num_voices=1), so its stale num_voices must not inflate the chip. Without
+    this the top-bar voice chip stayed e.g. "20/32" after a Juno->Drums type
+    change even though refresh_chips ran (UX11-2)."""
+    total = 0
+    for i in instruments(cfg):
+        if not i.get('enabled', True) or i.get('device') != device:
+            continue
+        total += 1 if i.get('type') == 'drums' else i.get('num_voices', 0)
+    return total
+
+
+def device_list(cfg=None):
+    """The internal Tulip AMY plus each USB-MIDI board, with per-device load."""
+    cfg = cfg or load()
+    try:
+        import tulip
+        n = tulip.num_midi_devices()
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: num_midi_devices failed: %r" % e)
+        n = 0
+    devs = [{'device': 'internal', 'name': 'Tulip', 'kind': 'internal',
+             'connected': True, 'capacity': DEVICE_CAPACITY,
+             'load': device_load('internal', cfg)}]
+    for d in range(n):
+        devs.append({'device': d, 'name': 'Board ' + chr(65 + d),
+                     'kind': 'amyboard', 'connected': True,
+                     'capacity': DEVICE_CAPACITY, 'load': device_load(d, cfg)})
+    # configured-but-not-currently-connected boards still show (disconnected)
+    used = {i.get('device') for i in cfg['instruments']
+            if isinstance(i.get('device'), int)}
+    for d in sorted(x for x in used if x >= n):
+        devs.append({'device': d, 'name': 'Board ' + chr(65 + d),
+                     'kind': 'amyboard', 'connected': False,
+                     'capacity': DEVICE_CAPACITY, 'load': device_load(d, cfg)})
+    return devs
 
 
 # --- applying config to hardware ---
@@ -177,93 +763,113 @@ def mpe_supported():
     return hasattr(midi, 'configure_mpe')
 
 
-def _apply_internal(inst):
-    import midi
-    import synth as _synth
-    import amy
-    master = inst.get('channel', 1)
-    prev = _state.get('internal_channel')
-    if prev is not None and prev != master:
-        try:
-            midi.config.release_synth_for_channel(prev)
-        except Exception:
-            pass
-    _state['internal_channel'] = master
-    try:
-        midi.config.add_synth(
-            _synth.PatchSynth(patch=inst.get('patch', 0),
-                              num_voices=inst.get('num_voices', 10)),
-            channel=master)
-    except Exception as e:
-        print("deckcfg: instrument setup failed:", e)
-        return
-    if not hasattr(midi, 'configure_mpe'):
-        return
-    try:
-        if inst.get('mpe'):
-            midi.configure_mpe(inst.get('mpe_members', 15),
-                               inst.get('mpe_bend', 48), master=master)
-            if inst.get('mpe_expression'):
-                amy.send(synth=master, amp={'vel': 1, 'ext0': 0.5})
-                amy.send(synth=master,
-                         filter_freq={'const': 600, 'note': 1, 'ext1': 2},
-                         resonance=1.5)
-        else:
-            midi.configure_mpe(0, master=master)
-    except Exception as e:
-        print("deckcfg: MPE setup failed:", e)
-
-
-def _apply_amyboard(inst):
-    # Phase 5: push full params to the board over its channel (companion sketch).
-    # For now we send the patch as a Program Change so a stock board follows.
-    import tulip
-    ch = inst.get('channel', 2) - 1
-    patch = inst.get('patch', 0)
-    try:
-        tulip.midi_out((0xC0 | (ch & 0x0F), patch & 0x7F))
-    except Exception:
-        pass
-
-
-def apply_instance(i, cfg=None):
-    inst = get_instance(i, cfg)
-    if inst is None or not inst.get('enabled', True):
-        return
-    if inst.get('kind') == 'internal':
-        _apply_internal(inst)
-    else:
-        _apply_amyboard(inst)
+def mpe_enabled(cfg=None):
+    """The global MPE gate. When False, no MPE UI shows and the router applies
+    no MPE, regardless of any instrument's own mpe.enabled."""
+    return bool((cfg or load()).get('mpe_enabled', False))
 
 
 def apply_all(cfg=None):
-    if cfg is None:
-        cfg = load()
-    for i in range(len(cfg['instances'])):
-        apply_instance(i, cfg)
+    """The router (forwarder) owns all instrument sound generation now, so
+    applying config = (re)start it. It rebuilds the internal synths and pushes
+    board patches from the current instruments."""
+    try:
+        import forwarder
+        forwarder.start()
+    except Exception as e:
+        print("deckcfg: router start failed:", e)
 
 
-# Backwards-compatible alias used by the current Instrument/MPE apps: apply the
-# active instance.
-def apply_instrument(cfg=None):
-    if cfg is None:
-        cfg = load()
-    apply_instance(cfg['active_instance'], cfg)
+def apply_instance(i=None, cfg=None):
+    apply_all(cfg)
+
+
+def apply_instrument(iid=None, cfg=None):
+    """Apply ONE instrument's change (O-5): rebuild_one reuses the recorded
+    slot/bus and touches only that synth (~5-15ms, ~100ms for a kit) instead
+    of the full start() (80-200ms that audibly interrupts every sounding
+    instrument). Topological edits fall back to start() inside."""
+    if iid is None:
+        return apply_all(cfg)
+    try:
+        import forwarder
+        forwarder.rebuild_one(iid)
+    except Exception as e:
+        print("deckcfg: rebuild_one failed:", e)
+        apply_all(cfg)
+
+
+def sync_time():
+    """NTP + LOCALIZE: set the RTC from NTP (UTC), then shift it to local time
+    using the UTC offset of the network's public IP (geo-IP), so the top-bar
+    clock reads wall-clock time. The offset is cached in config, so later
+    NTP-only syncs still localize even if the geo lookup fails."""
+    import tulip
+    if tulip.ip() is None:
+        return False
+    try:
+        import ntptime
+        ntptime.settime()               # RTC := UTC
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: ntp settime failed: %r" % e)
+        return False
+    off = None
+    try:
+        # ip-api.com: plain HTTP, tiny JSON, offset in seconds.
+        # (worldtimeapi.org trips tuliprequests with a BadStatusLine.)
+        import tuliprequests as urequests
+        r = urequests.get('http://ip-api.com/json/?fields=status,offset')
+        j = r.json()
+        r.close()
+        if j.get('status') == 'success':
+            off = int(j.get('offset', 0))
+            set_value('tz_offset_s', off)
+    except Exception as e:
+        import decklog
+        decklog.dbg("deckcfg: geo-IP tz lookup failed: %r" % e)
+        pass
+    if off is None:
+        off = get('tz_offset_s')        # cached from a previous success
+    if off:
+        try:
+            import machine
+            import time
+            tm = time.localtime(time.time() + off)
+            machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1,
+                                    tm[3], tm[4], tm[5], 0))
+        except Exception as e:
+            import decklog
+            decklog.dbg("deckcfg: RTC localize set failed: %r" % e)
+            pass
+    return True
 
 
 def apply(cfg=None):
-    """Apply everything on boot: audio, display, then every instance."""
+    """Apply device settings on boot: audio + display. The MIDI router is started
+    separately by boot.py (forwarder.start())."""
     import tulip
     import amy
     if cfg is None:
         cfg = load()
-    for fn in (lambda: amy.volume(cfg.get('volume', 4)),
+
+    def _volume():
+        # Current amy has no .volume() -- only amy.send(volume=). The old
+        # amy.volume call here failed silently inside the try, so the saved
+        # volume was never actually restored at boot (UX-REVIEW-6 C1 fallout).
+        vol = getattr(amy, 'volume', None)
+        if callable(vol):        # callable, not is-None: see settings (E-14)
+            vol(cfg.get('volume', 1))
+        else:
+            amy.send(volume=cfg.get('volume', 1))
+    for fn in (_volume,
                lambda: tulip.brightness(cfg.get('brightness', 5)),
                lambda: tulip.tfb_font(cfg.get('tfb_font', 0)),
                lambda: tulip.display_vsync(1 if cfg.get('render_vsync', True) else 0),
                lambda: tulip.display_partial(1 if cfg.get('render_partial', False) else 0)):
         try:
             fn()
-        except Exception:
+        except Exception as e:
+            import decklog
+            decklog.dbg("deckcfg: apply device setting failed: %r" % e)
             pass
-    apply_all(cfg)

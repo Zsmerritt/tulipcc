@@ -2,12 +2,11 @@
 #include "tsequencer.h"
 #include <inttypes.h>
 
-mp_obj_t sequencer_callbacks[SEQUENCER_SLOTS];
+// The callback/arg stores are GC-rooted mp_state slots; the registrations
+// live in modtulip.c (root-pointer collection only scans QSTR-bearing
+// sources) and tsequencer.h aliases the old names onto them.
 uint32_t sequencer_period[SEQUENCER_SLOTS];
 uint32_t sequencer_tick[SEQUENCER_SLOTS];
-
-mp_obj_t defer_callbacks[DEFER_SLOTS];
-mp_obj_t defer_args[DEFER_SLOTS];
 uint32_t defer_sysclock[DEFER_SLOTS];
 
 #ifdef AMY_IS_EXTERNAL
@@ -19,10 +18,23 @@ void tulip_amy_sequencer_hook(uint32_t tick_count) {
         sequencer_tick_count = tick_count;
     #endif
     for(uint8_t i=0;i<DEFER_SLOTS;i++) {
+        // No reader-side acquire needed here (review C3): defer_callbacks/args/
+        // sysclock live in internal SRAM, which is hardware cache-coherent
+        // across the S3 cores, and tulip_defer's compiler barrier orders the
+        // arg/deadline stores before the callback-pointer store. Every use of
+        // args/sysclock below is control-dependent on this callbacks[i]!=NULL
+        // load, so a fresh pointer can never be paired with a stale arg.
         if(defer_callbacks[i] != NULL && get_ticks_ms() > defer_sysclock[i]) {
-            //fprintf(stderr, "calling defer with sysclock %" PRIu32 " and actual %" PRIu32"\n", defer_sysclock[i], get_ticks_ms() );
-            mp_sched_schedule(defer_callbacks[i], defer_args[i]);
-            defer_callbacks[i] = NULL; defer_sysclock[i] = 0; defer_args[i] = NULL;
+            // Clear the slot ONLY when the scheduler accepted the entry
+            // (review F-3): mp_sched_schedule fails when the shared queue
+            // is full -- exactly when the MP task is stalled and deck code
+            // is leaning on defers. Dropping silently wedged the config
+            // write chain (all saves stopped), stuck preview notes, and
+            // half-completed Back navigation. A refused slot stays armed
+            // and retries next tick.
+            if (mp_sched_schedule(defer_callbacks[i], defer_args[i])) {
+                defer_callbacks[i] = NULL; defer_sysclock[i] = 0; defer_args[i] = NULL;
+            }
         }
     }
 

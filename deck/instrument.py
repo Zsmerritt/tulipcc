@@ -1,183 +1,432 @@
-# instrument.py -- pick the synth voice for the selected instance.
+# instrument.py -- the patch/preset picker for the active instrument.
 #
-# The instance selector at the top chooses which AMY we're editing: the internal
-# Tulip synth, or an attached AMYboard. The same controls (patch / voices /
-# channel) apply to whichever is selected. Tapping a patch sets it live,
-# previews a note, and saves it so boot.py restores it.
+# Used as a pushed sub-panel from the rack editor (Home > Instruments > edit >
+# Patch), and standalone from the REPL launcher. Tapping a patch sets it live on
+# the active instrument, saves it, and auditions it through the router
+# (forwarder.preview). Device/channel/voices/MPE live in the rack editor.
 
 import tulip
 import deckui as dk
 import deckcfg
+import kbmgr
 from patches import patches
 import lvgl as lv
 
-CATS = [("Juno-6", 0, 128, dk.ACCENT),
-        ("DX7", 128, 256, dk.PURPLE),
-        ("Piano", 256, 257, dk.GREEN)]
+# The instrument's TYPE (chosen in the editor) scopes the picker to one engine's
+# patches -- so we build a small list, not all 257. Drums use the pad editor.
+# ranges derive from catalog's boundaries (E-8: one owner)
+import catalog as _catalog
+_TYPE_RANGE = {'juno6': (0, _catalog.JUNO_END),
+               'dx7': (_catalog.JUNO_END, _catalog.DX_END),
+               'piano': (_catalog.DX_END, _catalog.DX_END + 1),
+               'gm': (0, 128), 'gm2': (0, 128)}
+_TYPE_NAME = {'juno6': 'Juno-6', 'dx7': 'DX7', 'piano': 'Piano',
+              'drums': 'Drums', 'gm': 'GM Bank', 'gm2': 'E-mu GM'}
+
+# GM "patches" are GM program numbers (0..127) resolved through gm.py/
+# gmbig.py, not entries in the AMY patches[] name table. Favorites are
+# namespaced (1000+/2000+) so a starred GM program never collides with a
+# Juno patch of the same number.
+_GM_FAV_BASE = {'gm': 1000, 'gm2': 2000}
+
+
+def _is_gm():
+    return _type() in _GM_FAV_BASE
+
+
+def _pname(n):
+    if _is_gm():
+        import gm
+        return gm.name(n)
+    return patches[n]
+
+
+def _fav_key(n):
+    base = _GM_FAV_BASE.get(_type())
+    return (base + n) if base is not None else n
 
 _s = {}
 
 
+def _mark_dead():
+    # Called from the content panel's LVGL DELETE event: the moment this panel
+    # is freed (Back, or a rebuild deleting the old content), flag it so any
+    # in-flight search debounce (_search_changed._do) bails instead of
+    # rebuilding the list against the freed scroll body -- a hard device crash
+    # (E-1). Re-armed to True at the end of _rebuild_content for the new panel.
+    _s['alive'] = False
+    # Drop our kbmgr close-listener so a keyboard close elsewhere can't relayout
+    # this freed panel (UX10-4). Re-registered in _rebuild_content.
+    try:
+        kbmgr.remove_close_listener(_on_kb_closed)
+    except Exception:
+        pass
+
+
+def _on_kb_closed():
+    # The keyboard closed -- possibly via its OWN hide key, which fires no panel
+    # event, so _kb_layout_cb (panel kb button + search-ta focus) never ran and
+    # the picker stayed stuck in the collapsed keyboard layout (UX10-4). kbmgr
+    # calls this on every close; relayout to expand the header/list again.
+    if _s.get('alive'):
+        _kb_layout_cb(None)
+
+
 def _inst():
-    return deckcfg.get_instance(deckcfg.active_index())
+    return deckcfg.get_instrument(deckcfg.active_instrument())
 
 
-def _preview():
-    inst = _inst()
-    ch = inst.get('channel', 1)
-    if inst.get('kind') == 'internal':
-        import midi
-        syn = midi.config.get_synth(ch)
-        if syn is not None:
-            try:
-                syn.note_on(60, 0.8)
-                tulip.defer(lambda x: syn.note_off(60), 0, 500)
-            except Exception:
-                pass
+def _type():
+    return (_inst() or {}).get('type', 'juno6')
+
+
+def _nums(favs):
+    """This instrument type's patch numbers, favorites first (or favorites only
+    when the filter is on). `favs` is the favorites SET, loaded once by the
+    caller -- calling deckcfg.is_favorite() per patch was a config load per
+    row."""
+    lo, hi = _TYPE_RANGE.get(_type(), (0, 128))
+    if _type() == 'gm2':
+        import gmbig
+        nums = gmbig.programs()     # this font covers a subset of GM
+    elif _is_gm():
+        nums = list(range(lo, hi))
     else:
-        c = (ch - 1) & 0x0F
-        try:
-            tulip.midi_out((0x90 | c, 60, 100))
-            tulip.defer(lambda x: tulip.midi_out((0x80 | c, 60, 0)), 0, 500)
-        except Exception:
-            pass
+        nums = [n for n in range(lo, hi) if 0 <= n < len(patches)]
+    if _s.get('fav_only'):
+        return [n for n in nums if _fav_key(n) in favs]
+    starred = [n for n in nums if _fav_key(n) in favs]
+    return starred + [n for n in nums if _fav_key(n) not in favs]
 
 
 def _select_patch(patch):
-    i = deckcfg.active_index()
-    deckcfg.set_instance(i, 'patch', patch)
-    deckcfg.apply_instance(i)
-    _s['name'].set_text(patches[patch])
-    _preview()
-    for b, n in _s['rows']:
+    iid = deckcfg.active_instrument()
+    deckcfg.set_instrument(iid, 'patch', patch)
+    deckcfg.apply_instrument(iid)   # O-5: patch swap rebuilds one synth
+    if _s.get('name') is not None:
+        _s['name'].set_text("current: " + _pname(patch))
+    try:
+        import forwarder
+        forwarder.preview(iid)
+    except Exception:
+        pass
+    if _s.get('shell') is not None:
+        try:
+            _s['shell'].refresh_chips()
+        except Exception:
+            pass
+    for b, n in _s.get('rows', []):
         b.set_style_bg_color(dk.c(dk.ACCENT if n == patch else dk.SURFACE), 0)
 
 
-def _voices_cb(e):
-    v = e.get_target_obj().get_value()
-    i = deckcfg.active_index()
-    _s['vlabel'].set_text("%d voices  -  MIDI channel %d"
-        % (v, _inst().get('channel', 1)))
-    deckcfg.set_instance(i, 'num_voices', v)
-    deckcfg.apply_instance(i)
+def _toggle_fav(n, icon):
+    fav = deckcfg.toggle_favorite(_fav_key(n))
+    try:
+        dk.star_set(icon, fav)
+    except Exception:
+        pass
+    if _s.get('fav_only'):
+        _build_list()      # an unstarred patch drops out of the favorites filter
 
 
-def _channel_cb(ch):
-    i = deckcfg.active_index()
-    deckcfg.set_instance(i, 'channel', ch)
-    _s['vlabel'].set_text("%d voices  -  MIDI channel %d"
-        % (_inst().get('num_voices', 10), ch))
-    deckcfg.apply_instance(i)
+def _row(body, n, cur, favs):
+    b = lv.button(body)
+    b.set_width(lv.pct(100))
+    b.set_height(56)
+    dk._flat(b, radius=12, bg=(dk.ACCENT if n == cur else dk.SURFACE))
+    lb = lv.label(b)
+    lb.set_text(_pname(n))
+    lb.set_style_text_color(dk.c(dk.TEXT), 0)
+    lb.set_style_text_font(dk.FONT_M, 0)
+    lb.align(lv.ALIGN.LEFT_MID, 12, 0)
+    b.add_event_cb((lambda pn: (lambda e: _select_patch(pn)
+                    if e.get_code() == lv.EVENT.CLICKED else None))(n),
+                   lv.EVENT.CLICKED, None)
+    # star toggles favorite (orange when starred). As a child button it captures
+    # its own taps, so starring doesn't also select the patch.
+    star = dk.button(b, "", w=48, h=44, bg=dk.SURFACE2)
+    icon = dk.star(star, _fav_key(n) in favs)
+    icon.center()
+    star.align(lv.ALIGN.RIGHT_MID, -8, 0)
+    star.add_event_cb((lambda pn, ic: (lambda e: _toggle_fav(pn, ic)
+                       if e.get_code() == lv.EVENT.CLICKED else None))(n, icon),
+                      lv.EVENT.CLICKED, None)
+    _s['rows'].append((b, n))
 
 
-def _build_list(body, lo, hi):
-    body.clean()
-    _s['rows'] = []
-    cur = _inst().get('patch', 0)
-    for n in range(lo, hi):
-        b = lv.button(body)
-        b.set_width(lv.pct(100))
-        b.set_height(56)
-        dk._flat(b, radius=12, bg=(dk.ACCENT if n == cur else dk.SURFACE))
-        lb = lv.label(b)
-        lb.set_text(patches[n])
-        lb.set_style_text_color(dk.c(dk.TEXT), 0)
-        lb.set_style_text_font(dk.FONT_M, 0)
-        lb.align(lv.ALIGN.LEFT_MID, 6, 0)
-        b.add_event_cb((lambda pn: (lambda e: _select_patch(pn)))(n), lv.EVENT.CLICKED, None)
-        _s['rows'].append((b, n))
+_WINDOW = 40   # rows built per batch -- building all ~130 at once was the
+               # relayout cost stacking into the keyboard-open tick (NEW-1)
+
+
+def _append_rows(body, cur, favs):
+    """Build the next window of result rows + a 'Show more' tail if needed."""
+    mb = _s.pop('morebtn', None)
+    if mb is not None:
+        try:
+            mb.delete()
+        except Exception:
+            pass
+    matches = _s.get('matches', [])
+    start = _s.get('shown', 0)
+    end = min(len(matches), start + _WINDOW)
+    for n in matches[start:end]:
+        _row(body, n, cur, favs)
+    _s['shown'] = end
+    left = len(matches) - end
+    if left > 0:
+        b = dk.button(body, "Show %d more..." % min(_WINDOW, left),
+                      w=lv.pct(100), h=56, bg=dk.SURFACE2, font=dk.FONT_S)
+
+        def _more(e):
+            if e.get_code() == lv.EVENT.CLICKED:
+                _append_rows(body, cur, favs)
+        b.add_event_cb(_more, lv.EVENT.CLICKED, None)
+        _s['morebtn'] = b
+
+
+def _build_list():
+    body = _s.get('listbody')
+    # Validity bail (E-1): never touch the body once the panel is torn down.
+    # `alive` is cleared by the content's DELETE handler, and the whole
+    # clean()+build is wrapped so a stale handle can't propagate a hard crash
+    # -- the same guarded shape rack.kit_panel._fill uses.
+    if body is None or not _s.get('alive'):
+        return
+    try:
+        body.clean()
+        _s['rows'] = []
+        _s['morebtn'] = None
+        cur = (_inst() or {}).get('patch', 0)
+        favs = set(deckcfg.favorites())      # loaded once for the whole list
+        q = _s.get('query', '').strip().lower()
+        _s['matches'] = [n for n in _nums(favs)
+                         if not q or q in _pname(n).lower()]
+        _s['shown'] = 0
+        if not _s['matches']:
+            if _s.get('fav_only') and not q:
+                msg = "No favorites in %s yet -- tap the star on a patch." % \
+                    _TYPE_NAME.get(_type(), '')
+            else:
+                msg = "No patches match \"%s\"." % _s.get('query', '')
+            dk.label(body, msg, color=dk.MUTED, font=dk.FONT_S)
+            return
+        _append_rows(body, cur, favs)
+    except Exception:
+        return                               # widget deleted mid-build
+
+
+def _toggle_favonly(btn):
+    _s['fav_only'] = not _s.get('fav_only')
+    try:
+        btn.set_style_bg_color(
+            dk.c(dk.ORANGE if _s['fav_only'] else dk.SURFACE2), 0)
+    except Exception:
+        pass
+    _build_list()
+
+
+def _kb_height():
+    """Height of the soft keyboard if it's on screen, else 0. kbmgr owns the
+    keyboard lifecycle and is the single source of truth for its height."""
+    return kbmgr.height()
+
+
+def _layout_list():
+    """Keyboard-aware layout: while the keyboard is up, COLLAPSE the header
+    (title/current/Favorites hidden, search lifted to the top) and size the
+    list to the remaining space -- otherwise live search shows a single row
+    (UX-REVIEW-7 NEW-5). Everything restores when the keyboard closes."""
+    body = _s.get('listbody')
+    if body is None:
+        return
+    w = tulip.screen_size()[0]
+    kb = _kb_height()
+    collapsed = kb > 0
+    if collapsed != _s.get('collapsed'):
+        _s['collapsed'] = collapsed
+        for k in ('title', 'name', 'favbtn'):
+            o = _s.get(k)
+            if o is not None:
+                try:
+                    if collapsed:
+                        o.add_flag(lv.obj.FLAG.HIDDEN)
+                    else:
+                        o.remove_flag(lv.obj.FLAG.HIDDEN)
+                except Exception:
+                    pass
+        sy = 8 if collapsed else 100        # search field y
+        ly = 80 if collapsed else 172       # list y
+        try:
+            _s['searchgrp'].set_pos(24, sy)
+            _s['kbbtn'].set_pos(w - 24 - 72, sy)
+            body.set_pos(24, ly)
+        except Exception:
+            pass
+        _s['list_y'] = ly
+    ly = _s.get('list_y', 172)
+    full = _s['ch'] - ly - 4
+    h = full
+    if kb:
+        top_abs = _s.get('top_base', 64) + ly
+        h = max(120, tulip.screen_size()[1] - kb - top_abs - 8)
+        if h > full:
+            h = full
+    if h == _s.get('list_h'):
+        return              # unchanged: a redundant set_height still relayouts
+    _s['list_h'] = h
+    try:
+        body.set_height(h)
+    except Exception:
+        pass
+
+
+def _kb_layout_cb(e):
+    # Relayout well after the open tick: keyboard build + render-mode switch
+    # already own that one, and the deferred restyle takes the next -- the
+    # resize (a full flex relayout of the list) gets its own slot (NEW-1).
+    try:
+        tulip.defer(lambda x: _layout_list(), 0, 180)
+    except Exception:
+        _layout_list()
+
+
+def _search_changed(e):
+    # Debounced: rebuilding ~130 rows (several hundred LVGL objects) per
+    # keystroke makes typing crawl. Rebuild once, shortly after typing pauses;
+    # the generation counter cancels rebuilds superseded by newer keystrokes.
+    ta = _s.get('searchta')
+    try:
+        _s['query'] = ta.get_text() if ta is not None else ''
+    except Exception:
+        _s['query'] = ''
+    _s['search_gen'] = _s.get('search_gen', 0) + 1
+    gen = _s['search_gen']
+
+    def _do(x):
+        # UAF guard (E-1): the panel can be torn down (Back) inside the 250ms
+        # debounce window. `alive` (cleared by the content's DELETE handler)
+        # survives that teardown -- the search_gen/listbody checks alone did
+        # not, since _s isn't cleared until the NEXT open, so the deleted
+        # listbody handle lingered and _build_list poked a freed widget.
+        if (_s.get('alive') and _s.get('search_gen') == gen
+                and _s.get('listbody') is not None):
+            _build_list()
+    try:
+        tulip.defer(_do, 0, 250)
+    except Exception:
+        _build_list()      # no defer (host): rebuild inline
 
 
 def _rebuild_content():
-    # tear down and rebuild the card + category buttons + patch list for the
-    # currently-active instance.
     if _s.get('content') is not None:
-        _s['content'].delete()
-    screen = _s['screen']
-    inst = _inst()
+        try:
+            _s['content'].delete()
+        except Exception:
+            pass
+        _s['content'] = None
+    base = _s['base']
+    ctop = _s['ctop']
+    chh = _s['ch']
+    w = tulip.screen_size()[0]
+    inst = _inst() or {}
     cur = inst.get('patch', 0)
-    ch = inst.get('channel', 1)
+    _s.setdefault('query', '')
+    _s.setdefault('fav_only', False)
 
-    content = lv.obj(screen.group)
-    content.set_pos(0, 150)
-    content.set_size(tulip.screen_size()[0], tulip.screen_size()[1] - 150)
+    content = lv.obj(base)
+    content.set_pos(0, ctop)
+    content.set_size(w, chh)
     dk._flat(content, bg=dk.BG)
     _s['content'] = content
+    # alive token for the search debounce (E-1): the DELETE handler flips it
+    # off the instant LVGL frees this panel (Back), so a pending _build_list
+    # bails instead of poking a freed scroll body. Armed True below, after any
+    # old-content delete above has already fired its DELETE (-> _mark_dead).
+    try:
+        content.add_event_cb(lambda e: _mark_dead(), lv.EVENT.DELETE, None)
+    except Exception:
+        pass
+    _s['alive'] = True
 
-    card = lv.obj(content)
-    card.set_pos(24, 4)
-    card.set_size(tulip.screen_size()[0] - 48, 132)
-    dk._flat(card, radius=16, bg=dk.SURFACE)
-    card.set_style_pad_all(16, 0)
-    _s['name'] = dk.label(card, patches[cur], 0, 2, color=dk.WHITE, font=dk.FONT_L)
-    _s['vlabel'] = dk.label(card,
-        "%d voices  -  MIDI channel %d" % (inst.get('num_voices', 10), ch),
-        0, 46, color=dk.MUTED, font=dk.FONT_S)
-    dk.label(card, "Voices", 0, 82, color=dk.MUTED, font=dk.FONT_S)
-    dk.slider(card, inst.get('num_voices', 10), 1, 16, w=300,
-        cb=_voices_cb, color=dk.GREEN).align(lv.ALIGN.LEFT_MID, 84, 32)
-    dk.stepper(card, ch, 1, 16, _channel_cb, fmt="Channel %d", w=230).align(
-        lv.ALIGN.TOP_RIGHT, -6, 8)
+    # STABLE title = the collection ("Juno-6 patches"); the current selection
+    # lives in the subtitle + highlighted row. The old selection-as-title
+    # duplicated the row and went stale under a search filter (UX-REVIEW-6 L2).
+    _s['title'] = dk.label(content, _TYPE_NAME.get(_type(), 'Patches')
+                           + " patches", 24, 6, color=dk.WHITE, font=dk.FONT_L)
+    _s['name'] = dk.label(content, "current: " + _pname(cur), 24, 52,
+                          color=dk.MUTED, font=dk.FONT_S)
+    # favorites filter (right)
+    favbtn = dk.button(content, "  Favorites", w=180, h=44, font=dk.FONT_S,
+                       bg=(dk.ORANGE if _s['fav_only'] else dk.SURFACE2))
+    ficon = dk.star(favbtn, True, size=22, on_color=dk.WHITE)
+    ficon.align(lv.ALIGN.LEFT_MID, 10, 0)
+    favbtn.set_pos(w - 24 - 180, 44)
+    favbtn.add_event_cb((lambda bt: (lambda e: _toggle_favonly(bt)
+                        if e.get_code() == lv.EVENT.CLICKED else None))(favbtn),
+                        lv.EVENT.CLICKED, None)
+    _s['favbtn'] = favbtn
 
-    # category buttons
-    _s['catbtns'] = []
-    x = 24
-    for name, lo, hi, accent in CATS:
-        active = lo <= cur < hi
-        b = dk.button(content, name, w=150, h=52,
-            bg=(accent if active else dk.SURFACE2), font=dk.FONT_M)
-        b.set_pos(x, 150)
-        _s['catbtns'].append(b)
-        b.add_event_cb((lambda l, h, a, bt: (lambda e: _pick_cat(l, h, a, bt)))(lo, hi, accent, b),
-                       lv.EVENT.CLICKED, None)
-        x += 162
+    # search field + on-screen keyboard button (filters the list live by name)
+    sw = w - 48 - 84
+    t = dk.text_field(content, text=_s.get('query', ''),
+                      placeholder="search patches", w=sw, h=60, font=dk.FONT_M)
+    t.group.set_pos(24, 100)
+    _s['searchta'] = t.ta
+    _s['searchgrp'] = t.group
+    _s['collapsed'] = False
+    try:
+        t.ta.add_event_cb(_search_changed, lv.EVENT.VALUE_CHANGED, None)
+        # keyboard covers the bottom half: shrink the results list while it's
+        # up so live search shows more than ONE row (UX-REVIEW-6 M4)
+        t.ta.add_event_cb(_kb_layout_cb, lv.EVENT.FOCUSED, None)
+        t.ta.add_event_cb(_kb_layout_cb, lv.EVENT.DEFOCUSED, None)
+    except Exception:
+        pass
+    _s['kbbtn'] = dk.button(content, tulip.lv.SYMBOL.KEYBOARD, w=72, h=60,
+                            bg=dk.SURFACE2,
+                            cb=lambda e: (kbmgr.toggle(_s['searchta'], echo=True),
+                                          _kb_layout_cb(e)))
+    _s['kbbtn'].set_pos(w - 24 - 72, 100)
 
     # patch list
-    body = dk.scroll_body(screen, top=0)
-    body.set_parent(content)
-    body.set_pos(24, 212)
-    body.set_size(tulip.screen_size()[0] - 48, tulip.screen_size()[1] - 150 - 224)
+    body = dk.scroll_col(content, w - 48, chh - 176)
+    body.set_pos(24, 172)
     _s['listbody'] = body
-    for name, lo, hi, accent in CATS:
-        if lo <= cur < hi:
-            _build_list(body, lo, hi)
-            break
+    _build_list()
+    # relayout when the keyboard closes by ANY path, including its own hide key
+    # (UX10-4). Registration is idempotent; _mark_dead removes it on teardown.
+    try:
+        kbmgr.add_close_listener(_on_kb_closed)
+    except Exception:
+        pass
 
 
-def _pick_cat(lo, hi, accent, btn):
-    for b in _s['catbtns']:
-        b.set_style_bg_color(dk.c(dk.SURFACE2), 0)
-    btn.set_style_bg_color(dk.c(accent), 0)
-    _build_list(_s['listbody'], lo, hi)
-
-
-def _select_instance(i):
-    deckcfg.set_active(i)
-    for idx, b in enumerate(_s['selbtns']):
-        b.set_style_bg_color(dk.c(dk.ACCENT if idx == i else dk.SURFACE2), 0)
+def panel(parent, shell=None):
+    import homeshell
+    _s.clear()
+    _s['shell'] = shell
+    _s['screen'] = None
+    _s['base'] = parent
+    _s['content'] = None
+    _s['ctop'] = 8
+    _s['ch'] = (tulip.screen_size()[1] - homeshell.BAR_H) - 8
+    # absolute screen y where the content area starts (keyboard-aware sizing)
+    _s['top_base'] = homeshell.BAR_H + _s['ctop']
+    _s['list_y'] = 172
     _rebuild_content()
 
 
-def _build_selector(screen):
-    insts = deckcfg.instances()
-    active = deckcfg.active_index()
-    _s['selbtns'] = []
-    x = 300
-    for i, inst in enumerate(insts):
-        b = dk.button(screen.group, inst.get('name', 'Inst %d' % i), w=150, h=44,
-            bg=(dk.ACCENT if i == active else dk.SURFACE2), font=dk.FONT_S)
-        b.set_pos(x, 30)
-        b.add_event_cb((lambda idx: (lambda e: _select_instance(idx)))(i),
-                       lv.EVENT.CLICKED, None)
-        _s['selbtns'].append(b)
-        x += 158
-
-
 def run(screen):
+    # Standalone (REPL launcher): pick the active instrument's patch.
     _s.clear()
+    _s['shell'] = None
     _s['screen'] = screen
+    _s['base'] = screen.group
     _s['content'] = None
-    dk.frame(screen, "Instrument", "select an instance, then pick its sound")
-    _build_selector(screen)
+    _s['ctop'] = 118
+    _s['ch'] = tulip.screen_size()[1] - 118
+    _s['top_base'] = _s['ctop']
+    _s['list_y'] = 172
+    dk.frame(screen, "Patch", "pick a sound for the active instrument")
     _rebuild_content()
     screen.present()

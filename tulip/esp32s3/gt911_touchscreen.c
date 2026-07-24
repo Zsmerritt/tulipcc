@@ -31,10 +31,27 @@ esp_err_t touch_init(uint8_t alternate) {
         .scl_pullup_en = GPIO_PULLUP_DISABLE,
         .master.clk_speed = I2C_CLK_FREQ,
     };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM, &i2c_conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM, i2c_conf.mode, 0, 0, 0));
-    
-    
+    // Install ONCE: the 0x14 fallback call re-enters here, and
+    // i2c_driver_install returns ESP_FAIL when the driver is already
+    // installed -- under ESP_ERROR_CHECK that aborted the whole boot
+    // instead of probing the alternate address. Errors are returned, not
+    // fatal: a bad touch cable must not brick the device.
+    static uint8_t i2c_installed = 0;
+    if(!i2c_installed) {
+        esp_err_t err = i2c_param_config(I2C_NUM, &i2c_conf);
+        if(err != ESP_OK) {
+            fprintf(stderr, "touch: i2c_param_config failed (%d)\n", (int)err);
+            return err;
+        }
+        err = i2c_driver_install(I2C_NUM, i2c_conf.mode, 0, 0, 0);
+        if(err != ESP_OK) {
+            fprintf(stderr, "touch: i2c_driver_install failed (%d)\n", (int)err);
+            return err;
+        }
+        i2c_installed = 1;
+    }
+
+
     esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
     uint8_t dev_addr = 0x5D;
@@ -122,6 +139,9 @@ void run_gt911(void *param) {
         delay_ms(500);
         if(touch_init(1) != ESP_OK) {
             fprintf(stderr, "Touchscreen could not be booted. Please try fixing the cable and restarting.\n");
+            // tp is NULL here: the read loop below would assert/LoadProhibited
+            // every 20ms forever. Degrade to "no touch", don't brick the boot.
+            touchscreen_ok = 0;
         } else {
             fprintf(stderr, "touchscreen OK at 0x14\n");
             touchscreen_ok = 1;

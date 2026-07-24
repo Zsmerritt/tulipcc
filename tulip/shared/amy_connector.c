@@ -49,10 +49,58 @@ void midi_out(uint8_t * bytes, uint16_t len) {
 // A queue to store the AMY midi messages coming IN
 uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];
 uint8_t last_midi_len[MIDI_QUEUE_DEPTH];
-extern mp_obj_t midi_callback;
+// midi_callback is a GC-rooted mp_state slot now -- the alias comes from
+// tsequencer.h (a plain extern here would collide with the macro).
+#include "tsequencer.h"
 
-int16_t midi_queue_head = 0;
-int16_t midi_queue_tail = 0;
+// volatile: ring shared between the writer task(s) and the MP task (reader)
+// on different cores -- the E-11 discipline promised the compiler was never
+// told about (review F-6). Push/pop protocols live in midi_in_ring.h (shared
+// with the host harness in tests/midi_input/ -- run it if you touch them).
+// Default build: SPSC int16_t indices, sole writer = the AMY MIDI task
+// (USB + midi_local funnel through amy_midi_inject). AMY_MIDI_MPSC build:
+// uint16_t monotonic counters, multi-writer CAS claim.
+#include "midi_in_ring.h"
+// amy_connector.h dimensions the ring; midi_in_ring.h's protocols hard-code
+// their own message width. They are separate headers by design (the harness
+// compiles the protocols standalone), so pin them together HERE -- the single
+// place both are in scope -- rather than trusting two 3s to stay equal.
+_Static_assert(MIDI_IN_RING_MSG_BYTES == MAX_MIDI_BYTES_PER_MESSAGE,
+               "midi_in_ring.h message width disagrees with the last_midi ring");
+#ifdef AMY_MIDI_MPSC
+volatile uint16_t midi_queue_head = 0;
+volatile uint16_t midi_queue_tail = 0;
+#else
+volatile int16_t midi_queue_head = 0;
+volatile int16_t midi_queue_tail = 0;
+#endif
+// Messages the ring refused because it was full (drop-newest). The silent
+// twin of amy_midi_inject_drops -- exposed with it via tulip.midi_in_drops()
+// so a stalled Python drain shows up as numbers, not as mystery-missing
+// notes. Logged on the same power-of-two schedule.
+volatile uint32_t tulip_midi_ring_drops = 0;
+
+// ---- C-side MIDI channel router (review O-2 / boundary sketch 1) ----
+// Python paid ~150-400us + ~3 heap allocs PER MESSAGE for routing that is
+// pure table lookup: which boards get this channel's bytes, and whether
+// any Python-routed (layered) internal instrument listens. deck/forwarder
+// uploads the table after each rebuild (tulip.midi_routes); the input
+// hook then forwards board bytes and drops Python entirely for channels
+// C fully owns. An MPE controller streaming CC/bend at 300 msg/s used to
+// cost 5-12% of the MP core and a GC-pause's worth of allocs per minute.
+#include "midi_router.h"
+void tulip_send_midi_out_device(uint8_t* buf, uint16_t len, int device);  // defined below
+tulip_midi_route_t tulip_midi_routes[17];      // index by channel 1..16
+volatile uint8_t tulip_midi_route_active = 0;  // table uploaded at least once
+volatile uint8_t tulip_midi_notify_all = 1;    // schedule Python per message
+                                               // (legacy default; midimon)
+volatile uint8_t tulip_midi_py_pending = 0;    // outstanding scheduler entry
+// Ring backlog at which the input hook re-drives a possibly-lost Python wakeup
+// even though py_pending is set (a reload can discard the queued callback while
+// this C global stays latched). Small: the healthy drain keeps occupancy ~0, so
+// reaching this many undrained messages means the wakeup was lost.
+#define TULIP_MIDI_PENDING_REDRIVE 8
+volatile uint32_t tulip_midi_activity = 0;     // messages seen (meter/UI poll)
 
 
 #ifdef ESP_PLATFORM
@@ -62,6 +110,28 @@ int16_t midi_queue_tail = 0;
 // Set from Python via amyboard.set_cv_out(channel, synth)
 #define MAX_CV_SYNTHS 32
 uint8_t cv_synth_map[MAX_CV_SYNTHS];
+// Global CV gate (review FW-7/O-8): with no CV mapped, every voice-owned
+// osc still paid the synth_for_osc scan (~130 cycles) per block. Setters
+// (modtulip tulip_set_cv_* / cv_local) recompute this; the render hook
+// early-outs on it. NOTE (documented, not yet implemented): when CV IS
+// active, the blocking I2C write below runs on the RENDER task with a
+// 10ms worst-case timeout -- an AMYboard mailbox + low-prio drain task is
+// the right fix, pending hardware to validate on.
+volatile uint8_t tulip_any_cv_active = 0;
+
+void tulip_recompute_cv_active(void) {
+    extern uint8_t * external_map;
+    uint8_t any = 0;
+    for (int i = 0; i < MAX_CV_SYNTHS; i++) {
+        if (cv_synth_map[i]) { any = 1; break; }
+    }
+    if (!any && external_map != NULL) {
+        for (uint16_t i = 0; i < amy_global.config.max_oscs; i++) {
+            if (external_map[i]) { any = 1; break; }
+        }
+    }
+    tulip_any_cv_active = any;
+}
 
 // Look up which synth owns this osc, return synth number or -1
 static int synth_for_osc(uint16_t osc) {
@@ -82,8 +152,11 @@ static int synth_for_osc(uint16_t osc) {
 
 // AMY render hook: route osc audio to CV DAC if its synth is mapped
 uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
-    // First check old per-osc map for backward compat
-    if(external_map[osc]>0) {
+    if (!tulip_any_cv_active) return 0;   // FW-7/O-8: nothing mapped
+    // First check old per-osc map for backward compat. external_map can be
+    // NULL (alloc failed in run_amy) while a synth-based CV map still holds
+    // the gate above open, so it must be checked here too.
+    if(external_map != NULL && external_map[osc]>0) {
         uint8_t cv_channel = external_map[osc] - 1;
 #ifdef AMYBOARD
         // AMYboard GP8413 DAC at address 88, channels 0x02/0x04
@@ -93,7 +166,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if (value_int > 0x7FFF) value_int = 0x7FFF;
         uint8_t reg = (cv_channel == 0) ? 0x02 : 0x04;
         uint8_t bytes[3] = { reg, value_int & 0xFF, (value_int >> 8) & 0xFF };
-        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, 1 /* tick: a wedged bus must not stall a render block (FW-7) */);
 #else
         // Tulip CC DAC (different address/format)
         float volts = S2F(buf[0])*2.5f + 2.5f;
@@ -107,7 +180,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if(cv_channel == 2) addr = 88;
         if(cv_channel == 3) {ch = 0x04; addr=88; }
         bytes[0] = ch;
-        i2c_master_write_to_device(I2C_NUM_0, addr, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, addr, bytes, 3, 1 /* tick (FW-7) */);
 #endif
         return 1;
     }
@@ -121,7 +194,7 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
         if (value_int > 0x7FFF) value_int = 0x7FFF;
         uint8_t reg = (cv_channel == 0) ? 0x02 : 0x04;
         uint8_t bytes[3] = { reg, value_int & 0xFF, (value_int >> 8) & 0xFF };
-        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, pdMS_TO_TICKS(10));
+        i2c_master_write_to_device(I2C_NUM_0, 88, bytes, 3, 1 /* tick: a wedged bus must not stall a render block (FW-7) */);
 #endif
         return 1;
     }
@@ -129,62 +202,132 @@ uint8_t external_cv_render(uint16_t osc, SAMPLE * buf, uint16_t len) {
 }
 #endif
 
-// defined in amy/src/midi_mappings.c — processes ic (MIDI CC mapping) commands
-// On web, AMY runs in a separate wasm worker so midi_msg_handler is not linkable
-#ifndef __EMSCRIPTEN__
-extern void midi_msg_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex, uint32_t time);
-#endif
-
 // I am called when AMY receives MIDI in, whether it has been processed (played in a instrument) or not
 // In tulip i just fill up the last_midi queue so that MIDI input is accessible to Python
-// I also process sysex if given, and dispatch CC mappings via midi_msg_handler
+// I also process sysex if given.
+// NOTE: this hook does NOT call midi_msg_handler. amy_event_midi_message_received()
+// (amy/src/amy_midi.c) already ran it on this exact data immediately before
+// calling us -- doing it again here dispatched every CC mapping and every
+// default-note mapping TWICE (double notes on unclaimed channels).
 void tulip_midi_input_hook(uint8_t * data, uint16_t len, uint8_t is_sysex) {
-    // Process ic (MIDI CC mapping) commands before queuing to Python
-    #ifndef __EMSCRIPTEN__
-    uint32_t time;
-    AMY_UNSET(time);
-    midi_msg_handler(data, len, is_sysex, time);
-    #endif
     if(is_sysex) {
-        // f0 and f7 are stripped on some platforms
+        // f0 and f7 are stripped on some platforms.
+        // memmove + clamp, NOT a forward byte loop: on internal-AMY builds
+        // `data` IS sysex_buffer (amy_midi.c passes it straight in), so the
+        // old copy smeared byte 0 across the whole message (F0 F0 F0 ...).
         if(data[0]!=0xf0) {
-            uint16_t c = 0;
-            sysex_buffer[c++] = 0xf0;
-            for(uint16_t i = 0; i< len; i++) {
-                sysex_buffer[c++] = data[i];
-            }
-            sysex_buffer[c++] = 0xf7;
-            sysex_len = c;
+            uint16_t n = len;
+            if(n > MAX_SYSEX_BYTES - 2) n = MAX_SYSEX_BYTES - 2;
+            memmove(sysex_buffer + 1, data, n);
+            sysex_buffer[0] = 0xf0;
+            sysex_buffer[n + 1] = 0xf7;
+            sysex_len = n + 2;
         } else {
-            for(uint16_t i = 0; i< len; i++) {
-                sysex_buffer[i] = data[i];
-            }
-            sysex_len = len;
+            uint16_t n = len;
+            if(n > MAX_SYSEX_BYTES) n = MAX_SYSEX_BYTES;
+            memmove(sysex_buffer, data, n);
+            sysex_len = n;
         }
         if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_true);
     } else {
-        for(uint32_t i = 0; i < (uint32_t)len; i++) {
-            if(i < MAX_MIDI_BYTES_PER_MESSAGE) {
-                //fprintf(stderr, "%02x ", data[i]);
-                last_midi[midi_queue_tail][i] = data[i];
+        tulip_midi_activity++;
+        // C router first (O-2): board forwarding + the "does Python even
+        // need to see this?" decision are table lookups, not Python.
+        if (len >= 1 && data[0] >= 0x80 && data[0] < 0xF0) {
+            tulip_midi_route_t *r = &tulip_midi_routes[(data[0] & 0x0F) + 1];
+            // Forward board bytes BEFORE the route_active gate (review C6):
+            // during the microsecond route-table rewrite route_active is 0,
+            // and Python's _route still sees c_router active so it also skips
+            // boards -- a board-directed message in that window used to be
+            // dropped. board_mask is a single 16-bit store, so reading it
+            // mid-rewrite yields the old or new mask, never a torn value.
+            // Before the first upload board_mask is 0, so this forwards
+            // nothing -- identical to the old skip-the-whole-block behavior.
+            uint16_t bm = r->board_mask;
+            for (int d = 0; bm; ++d, bm >>= 1) {
+                if (bm & 1) tulip_send_midi_out_device(data, len, d);
+            }
+            // The Python-skip decision still gates on route_active: only once
+            // the table is fully published do we trust flags/notify_all to
+            // drop Python entirely.
+            if (tulip_midi_route_active
+                    && !(r->flags & TULIP_MIDI_ROUTE_PY) && !tulip_midi_notify_all) {
+                return;   // fully handled in C: no queue, no scheduler, no GC
             }
         }
-        last_midi_len[midi_queue_tail] = (uint16_t)len;
-        midi_queue_tail = (midi_queue_tail + 1) % MIDI_QUEUE_DEPTH;
-        if (midi_queue_tail == midi_queue_head) {
-            // Queue wrap, drop oldest item.
-            midi_queue_head = (midi_queue_head + 1) % MIDI_QUEUE_DEPTH;
-            //fprintf(stderr, "dropped midi message\n");
+        // Ring push -- the discipline (SPSC drop-newest by default, MPSC
+        // claim/publish under AMY_MIDI_MPSC) lives in midi_in_ring.h with
+        // its spec; the harness in tests/midi_input/ tests exactly this
+        // code. A refused push is drop-newest by contract: COUNT it and say
+        // so (first drop + every power of two), because "the ring was full"
+        // used to be indistinguishable from "the note never arrived".
+#ifdef AMY_MIDI_MPSC
+        int pushed = midi_in_ring_push_mpsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_mpsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
+#else
+        int pushed = midi_in_ring_push_spsc(last_midi, last_midi_len,
+                &midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH, data, len);
+        int occ = midi_in_ring_occupancy_spsc(&midi_queue_head, &midi_queue_tail, MIDI_QUEUE_DEPTH);
+#endif
+        if (!pushed) {
+            // Drop-newest by contract (S4). COUNT it -- tulip.midi_in_drops()
+            // exposes tulip_midi_ring_drops -- but do NOT fprintf here. This
+            // runs on the AMY MIDI task; a console write can stall it for
+            // ~milliseconds, and with the ring wedged full (see below) that
+            // stall fired on EVERY dropped message, glitching the render while
+            // a keyboard played (soft notes exposed it, loud ones masked it --
+            // reproduced live). The counter is the signal; a stall is surfaced
+            // by the Python watchdog (deck/forwarder _watchdog) with one loud
+            // decklog line instead.
+            ++tulip_midi_ring_drops;
         }
 
-        // We tell Python that a MIDI message has been received
-        if(midi_callback!=NULL) mp_sched_schedule(midi_callback, mp_const_false);
+        // Tell Python -- COALESCED: one outstanding scheduler entry serves the
+        // whole backlog (the drain loops until midi_in empties, which clears
+        // the flag). A CC storm used to enqueue one scheduler entry per message.
+        //
+        // SELF-HEAL a LOST WAKEUP. tulip_midi_py_pending is a C global that
+        // SURVIVES a MicroPython soft-reset; the scheduler queue it refers to
+        // does NOT. If the app crashes/reloads between "schedule succeeded
+        // (pending=1)" and c_fired_midi_event running, the queued callback is
+        // discarded but pending stays latched at 1 -- and this hook, gating
+        // solely on !pending, would then NEVER schedule again: the ring fills
+        // and the Python MIDI path stays dead until reboot (reproduced live:
+        // ring full, 1023 stale messages, midi_in_drops climbing). Note the set
+        // below only latches pending when the schedule SUCCEEDS, so a transient
+        // full-scheduler-queue does NOT leak pending -- the discarded-callback
+        // reload window is the sole leak. Recover by force-scheduling whenever
+        // the ring has backed up past a small threshold even though pending is
+        // set: that can only mean the earlier wakeup was lost. A duplicate
+        // drain is harmless (it finds an empty ring and clears pending), and
+        // MIDI is ~1 msg/ms so at most a couple of extra entries queue before
+        // the drain runs.
+        if (midi_callback != NULL
+                && (!tulip_midi_py_pending || occ >= TULIP_MIDI_PENDING_REDRIVE)) {
+            if (mp_sched_schedule(midi_callback, mp_const_false)) {
+                tulip_midi_py_pending = 1;
+            }
+        }
     }
 }
 
 void midi_local(uint8_t * bytes, uint16_t len) {
 #ifndef AMY_IS_EXTERNAL
+#ifdef ESP_PLATFORM
+    // Runs on the MicroPython task (core 1). The stream parser and everything
+    // under it belong to the AMY MIDI task alone (per-stream parser state,
+    // MPE globals, the SPSC ring's single-writer discipline) -- hand the
+    // bytes over instead of parsing here. Costs one queue hop (<=~1ms, the
+    // MIDI task's poll period); a dropped hand-off is counted and logged
+    // (tulip.midi_in_drops()).
+    amy_midi_inject(AMY_MIDI_SOURCE_LOCAL, bytes, len);
+#else
+    // Desktop builds: no funnel task exists; keep the direct parse. (The
+    // macOS CoreMIDI-callback-vs-MP-thread overlap predates this code and is
+    // unchanged by it.)
     convert_midi_bytes_to_messages(bytes, len, 0);
+#endif
 #endif
 #ifdef __EMSCRIPTEN__
     for(uint16_t i=0;i<len;i++) {
@@ -227,6 +370,90 @@ void tulip_send_midi_out(uint8_t* buf, uint16_t len) {
 }
 
 #ifndef AMY_IS_EXTERNAL
+
+// ---- Debug audio-capture tap (router-tap-fix follow-up) --------------------
+// Capture the final int16 output block(s) into PSRAM so the host can pull
+// rendered PCM off the device over serial and diff it against the bit-clean
+// host render (chasing the ESP-only soft-note fold). amy_get_level() only
+// yields one peak per read; this yields the actual samples.
+//
+// Hook: amy_external_block_done_hook. It fires at the TOP of amy_fill_buffer,
+// at which point amy's `output_block` still points at the PREVIOUS, fully
+// mixed block that was already handed to I2S (the swap + new mix happen after
+// the hook returns) -- so we capture the true DAC output, one block late, and
+// touch amy not at all (it stays close to upstream). The hook runs ON THE
+// AUDIO TASK, which must never stall (we just fixed a bug caused by exactly
+// that): when armed it does a single memcpy of the block and nothing else, and
+// when unarmed it is one volatile read + branch.
+//
+// Output format (what the host reconstructs a WAV from): int16 little-endian,
+// AMY_NCHANS channels INTERLEAVED (stereo => L,R,L,R...), AMY_BLOCK_SIZE frames
+// per block, at AMY_SAMPLE_RATE (48000 on ESP). Note amy right-shifts the ESP
+// output by 1 bit before store (amy.c), so captured samples are that same
+// post-shift DAC value -- the host diff must account for it.
+#define TULIP_AUDIO_TAP_MAX_BLOCKS 256   // ~1.37 s @ 256 frames/block @ 48kHz.
+// PSRAM budget at the cap: 256 blocks * 256 frames * 2 ch * 2 B = 256 KB. This
+// MUST be PSRAM (MALLOC_CAP_SPIRAM): internal SRAM is critically full on this
+// device (largest free block ~31 KB), so a 256 KB internal alloc is impossible
+// and would brick the render task -- never allocate this internal.
+extern output_sample_type *output_block;   // amy.c: final DAC block, int16 LE
+static int16_t *tulip_audio_tap_buf = NULL;         // PSRAM: cap*frame int16
+static volatile uint16_t tulip_audio_tap_cap = 0;   // blocks allocated
+static volatile uint16_t tulip_audio_tap_want = 0;  // blocks still to capture
+static volatile uint16_t tulip_audio_tap_got = 0;   // blocks captured so far
+
+// AUDIO TASK. Zero cost unarmed (one volatile read + branch). Armed: one
+// memcpy of the block, no formatting, no printf, nothing that can stall.
+void tulip_audio_tap_block_done(void) {
+    if (tulip_audio_tap_want == 0) return;               // fast path: unarmed
+    int16_t *buf = tulip_audio_tap_buf;
+    uint16_t idx = tulip_audio_tap_got;
+    if (buf == NULL || idx >= tulip_audio_tap_cap) {     // safety: disarm
+        tulip_audio_tap_want = 0;
+        return;
+    }
+    const uint32_t block_int16 = (uint32_t)AMY_BLOCK_SIZE * AMY_NCHANS;
+    memcpy(buf + (uint32_t)idx * block_int16, output_block,
+           block_int16 * sizeof(int16_t));
+    tulip_audio_tap_got = (uint16_t)(idx + 1);
+    tulip_audio_tap_want = (uint16_t)(tulip_audio_tap_want - 1);
+}
+
+// MP TASK. Arm capture of the next n_blocks. Returns 0 ok, -1 over cap,
+// -2 PSRAM alloc failed. n_blocks==0 just disarms.
+int tulip_audio_tap_arm(uint16_t n_blocks) {
+    if (n_blocks == 0) { tulip_audio_tap_want = 0; return 0; }
+    if (n_blocks > TULIP_AUDIO_TAP_MAX_BLOCKS) return -1;   // reject, don't clamp
+    if (tulip_audio_tap_buf == NULL || tulip_audio_tap_cap < n_blocks) {
+        if (tulip_audio_tap_buf != NULL) {
+            free_caps(tulip_audio_tap_buf);
+            tulip_audio_tap_buf = NULL;
+            tulip_audio_tap_cap = 0;
+        }
+        size_t bytes = (size_t)n_blocks * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+#ifdef ESP_PLATFORM
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_SPIRAM);
+#else
+        int16_t *b = (int16_t *)malloc_caps(bytes, MALLOC_CAP_INTERNAL);
+#endif
+        if (b == NULL) return -2;
+        tulip_audio_tap_buf = b;
+        tulip_audio_tap_cap = n_blocks;
+    }
+    tulip_audio_tap_got = 0;
+    // Publish buf/cap/got=0 before arming: the audio task reads `want` first
+    // and only touches the rest when want>0.
+    __asm__ volatile("" ::: "memory");
+    tulip_audio_tap_want = n_blocks;
+    return 0;
+}
+
+uint16_t tulip_audio_tap_got_blocks(void) { return tulip_audio_tap_got; }
+uint8_t  tulip_audio_tap_is_armed(void)   { return tulip_audio_tap_want > 0; }
+const uint8_t *tulip_audio_tap_data(void) { return (const uint8_t *)tulip_audio_tap_buf; }
+uint32_t tulip_audio_tap_bytes(void) {
+    return (uint32_t)tulip_audio_tap_got * AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t);
+}
 
 #if (defined AMYBOARD) || (defined TULIP)
 #include "tulip_helpers.h"
@@ -398,6 +625,22 @@ void mp_reboot_hook(uint8_t mode) {
 #endif
 }
 
+#ifdef ESP_PLATFORM
+// Grow AMY's flash-fence window to cover every mmap'd PCM bank: renders from
+// [lo, hi) emit silence while amy_flash_fence is up (tulip.flash_fence), so
+// a flash program/erase can never race a mapped sample fetch -- one such
+// fetch during the cache-suspended write window hard-crashes the chip
+// (dual-core TG1WDT, reproduced live). PSRAM-fallback banks land outside the
+// window and keep sounding through writes.
+static void widen_flash_fence(const void *map, uint32_t size) {
+    if (amy_flash_fence_lo == NULL || map < amy_flash_fence_lo)
+        amy_flash_fence_lo = map;
+    const void *end = (const void *)((const uint8_t *)map + size);
+    if (end > amy_flash_fence_hi)
+        amy_flash_fence_hi = end;
+}
+#endif
+
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
 // Map the `drums` flash partition (raw drums.bin from the amy repo, flashed by
 // fs_create.py) into the data address space and hand it to AMY, which serves
@@ -411,14 +654,132 @@ static void mount_gamma9001_drums(void) {
         fprintf(stderr, "gamma9001: no drums partition, bank presets unavailable\n");
         return;
     }
+    // Map the real blob (AMY_GAMMA9001_PCM_BYTES, amy.h, compile-checked
+    // against pcm_gamma9001.h), not the partition slice: the S3 has only 256
+    // 64KB data-mmap pages total, and every page a slice rounds up past its
+    // blob is a page another bank can't map (see mount_gm_fonts*).
+    const uint32_t size = AMY_GAMMA9001_PCM_BYTES;
+    if (size > part->size) {
+        fprintf(stderr, "gamma9001: drums blob (%u) overruns partition (%u); bank unavailable\n",
+                (unsigned)size, (unsigned)part->size);
+        return;
+    }
     const void *map = NULL;
     esp_partition_mmap_handle_t handle;  // never unmapped; the samples live as long as AMY
-    esp_err_t err = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &handle);
+    esp_err_t err = esp_partition_mmap(part, 0, size, ESP_PARTITION_MMAP_DATA, &map, &handle);
     if (err != ESP_OK || map == NULL) {
         fprintf(stderr, "gamma9001: drums partition mmap failed (%d)\n", (int)err);
         return;
     }
+    widen_flash_fence(map, size);
     amy_set_gamma9001_pcm((const int16_t *)map);
+}
+#endif
+
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+// GM SoundFont banks: the `fonts` partition holds the GeneralUser bank at 0
+// and the big multi-font bank at 0x4B0000 (fs_create.py assembles them),
+// mapped separately (a single 12.5MB map needs contiguous vaddr the S3
+// doesn't have).
+// Must match GM_BIG_OFFSET in tulip/fs_create.py and the `fonts` partition
+// geometry in boards/N32R8/tulip-partitions-32MB.csv. The GeneralUser bank
+// grew past the old 0x300000 when its capped presets were rebaked with their
+// real length + loops (tools/gm/README.md); a stale value here reads the big
+// bank from the wrong offset and plays garbage.
+//
+// vaddr budget (the S3's dynamic flash-mmap pool is a hard 256 x 64KB pages;
+// the lower half of the 32MB data space is statically claimed by the PSRAM
+// aperture + the SPIRAM_FETCH_INSTRUCTIONS/RODATA relocations, measured
+// live). We map real blob sizes -- and for the big bank only the emu4
+// window, the single slice the deck reads (deck/gmbig.py) -- instead of the
+// partition slices, which needed 317 pages (184 + 58 + 75) and spilled the
+// GeneralUser bank into a 4.9MB PSRAM copy:
+//   GeneralUser  3,617,870 B @ part+0         -> 56 pages
+//   drums        3,735,788 B @ drums part+0   -> 58 pages
+//   big/emu4     1,295,010 B @ part+0xC61810  -> 20 pages (6,160 B page phase)
+// = 134 of 256 pages, everything zero-copy, 122 pages spare.
+#define GM_BIG_BYTE_OFFSET 0x4B0000
+static const void *map_or_load_partition(const esp_partition_t *part,
+                                     uint32_t off, uint32_t size,
+                                     const char *what) {
+    const void *map = NULL;
+    esp_partition_mmap_handle_t handle;  // never unmapped; lives as long as AMY
+    esp_err_t err = esp_partition_mmap(part, off, size,
+                                       ESP_PARTITION_MMAP_DATA, &map, &handle);
+    if (err == ESP_OK && map != NULL) {
+        widen_flash_fence(map, size);
+        return map;
+    }
+    // Should-not-happen safety net: the three maps above total 134 of the
+    // S3's 256 pages, so the mmap only fails if something else ate the pool.
+    // Fall back to a PSRAM copy of the same byte range -- for the big bank's
+    // emu4 window the copy stands in 1:1 for the map, so the window
+    // registration below stays correct either way.
+    void *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        fprintf(stderr, "gm: %s mmap failed (%d) and PSRAM alloc of %u failed; bank unavailable\n",
+                what, (int)err, (unsigned)size);
+        return NULL;
+    }
+    if (esp_partition_read(part, off, buf, size) != ESP_OK) {
+        free(buf);
+        fprintf(stderr, "gm: %s partition read failed; bank unavailable\n", what);
+        return NULL;
+    }
+    fprintf(stderr, "gm: %s vaddr pool full -> loaded %u bytes into PSRAM\n",
+            what, (unsigned)size);
+    return buf;
+}
+
+static void mount_gm_fonts(void) {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
+    if (part == NULL) {
+        fprintf(stderr, "gm: no fonts partition, GM presets unavailable\n");
+        return;
+    }
+    // Map ONLY the emu4 window of the big bank: the deck reads no other slice
+    // of it (deck/gmbig.py presets 1903..2060), and the full blob (152 pages)
+    // plus the other banks does not fit the 256-page pool. The window is
+    // published by amy.h in blob SAMPLES [FIRST, END); bytes are 2x that,
+    // offset from the bank's own base at GM_BIG_BYTE_OFFSET.
+    // esp_partition_mmap returns a pointer to byte `off` exactly (it maps the
+    // page-aligned covering range and adds the phase back in), so `emu4`
+    // points at blob sample AMY_GM_BIG_EMU4_FIRST_SAMPLE -- which is exactly
+    // what amy_set_gm_big_pcm_window declares. AMY resolves preset offsets
+    // relative to the window and silently refuses presets outside it.
+    const uint32_t off = GM_BIG_BYTE_OFFSET + AMY_GM_BIG_EMU4_FIRST_SAMPLE * 2u;
+    const uint32_t size =
+        (AMY_GM_BIG_EMU4_END_SAMPLE - AMY_GM_BIG_EMU4_FIRST_SAMPLE) * 2u;
+    if (off + size > part->size) {
+        fprintf(stderr, "gm: emu4 window (0x%x+%u) overruns fonts partition (%u); big bank unavailable\n",
+                (unsigned)off, (unsigned)size, (unsigned)part->size);
+        return;
+    }
+    const void *emu4 = map_or_load_partition(part, off, size, "big bank emu4 window");
+    if (emu4 != NULL)
+        amy_set_gm_big_pcm_window((const int16_t *)emu4,
+                                  AMY_GM_BIG_EMU4_FIRST_SAMPLE,
+                                  AMY_GM_BIG_EMU4_END_SAMPLE - AMY_GM_BIG_EMU4_FIRST_SAMPLE);
+}
+
+// The GeneralUser blob must live below the big bank's slice of the partition
+// image (fs_create.py packs it at 0 and errors past GM_BIG_OFFSET; mirror
+// that here so a bank rebake can't silently map overlapping ranges).
+#if AMY_GM_PCM_BYTES > GM_BIG_BYTE_OFFSET
+#error "GeneralUser blob overruns GM_BIG_BYTE_OFFSET; regrow the layout in fs_create.py + partitions csv first"
+#endif
+
+static void mount_gm_fonts_small(void) {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fonts");
+    if (part == NULL)
+        return;
+    // Real blob size (amy.h, compile-checked against pcm_gm.h), not the
+    // 0x4B0000 partition slice: the slice needed 75 pages, the blob 56.
+    const void *small = map_or_load_partition(part, 0, AMY_GM_PCM_BYTES, "GeneralUser bank");
+    if (small != NULL)
+        amy_set_gm_pcm((const int16_t *)small);
 }
 #endif
 
@@ -426,6 +787,7 @@ void run_amy(uint8_t midi_out_pin) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
     amy_config.amy_external_render_hook = external_cv_render;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     amy_config.amy_external_fopen_hook = mp_fopen_hook;
     amy_config.amy_external_fseek_hook = mp_fseek_hook;
     amy_config.amy_external_fclose_hook = mp_fclose_hook;
@@ -450,6 +812,10 @@ void run_amy(uint8_t midi_out_pin) {
     amy_config.midi = AMY_MIDI_IS_UART;
 #endif
     amy_config.features.default_synths = 0; // midi.py does this for us
+    // Synthesized drum kits store one RAM patch per hit (~19 per kit) at
+    // deterministic slots; the stock 32-slot pool can't hold two kits plus
+    // the deck's other patch_string synths.
+    amy_config.max_memory_patches = 128;
     amy_config.i2s_lrc = CONFIG_I2S_LRCLK;
     amy_config.i2s_bclk = CONFIG_I2S_BCLK;
     amy_config.i2s_dout = CONFIG_I2S_DOUT;
@@ -460,12 +826,30 @@ void run_amy(uint8_t midi_out_pin) {
 #ifndef AMYBOARD
     amy_config.features.startup_bleep = 1;
 #endif
+// The three maps (emu4 window 20 + drums 58 + GeneralUser 56 pages) total
+// 134 of the S3's 256, so mount order no longer decides who fits -- kept
+// as-is anyway; if the pool ever shrinks, the PSRAM fallback in
+// map_or_load_partition catches the loser instead of losing the bank.
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+    mount_gm_fonts();
+#endif
 #if defined(GAMMA9001) && defined(ESP_PLATFORM)
     mount_gamma9001_drums();
 #endif
+#if defined(GM_FONTS) && defined(ESP_PLATFORM)
+    mount_gm_fonts_small();
+#endif
     amy_start(amy_config);
     external_map = malloc_caps(amy_config.max_oscs, MALLOC_CAP_INTERNAL);
-    for(uint16_t i=0;i<amy_config.max_oscs;i++) external_map[i] = 0;
+    if(external_map == NULL) {
+        // unchecked, this NULL-deref'd in the init loop right below. Leave it
+        // NULL and keep booting: every reader gates on it, so the cost is
+        // per-osc CV out, not the device.
+        fprintf(stderr, "run_amy: external_map alloc of %u bytes FAILED -- per-osc CV out disabled\n",
+                (unsigned)amy_config.max_oscs);
+    } else {
+        for(uint16_t i=0;i<amy_config.max_oscs;i++) external_map[i] = 0;
+    }
     for(uint8_t i=0;i<MAX_CV_SYNTHS;i++) cv_synth_map[i] = 0;
 }
 
@@ -495,6 +879,7 @@ void amyboard_set_midi_out(uint8_t midi_out_pin) {
 void run_amy(uint8_t capture_device_id, uint8_t playback_device_id) {
     amy_config_t amy_config = amy_default_config();
     amy_config.amy_external_midi_input_hook = tulip_midi_input_hook;
+    amy_config.amy_external_block_done_hook = tulip_audio_tap_block_done;  // debug PCM capture
     extern void tulip_amy_sequencer_hook(uint32_t tick_count);
     amy_config.amy_external_sequencer_hook = tulip_amy_sequencer_hook;
     amy_config.features.default_synths = 0; // midi.py does this for us

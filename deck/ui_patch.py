@@ -14,7 +14,26 @@
 #   * The REPL keeps running (everything depends on it) as a normal switchable
 #     "Terminal" app, and gets a Home button on its task bar as a way back.
 #
+# Phase 1 navigation model (deck/PLAN-rework.md) -- every page has a Back, and
+# Back frees resources like the old quit did:
+#   * Standalone config/utility apps (settings, files, voices, wordpad, worldui,
+#     editor, keyboard, ...): the shuffle/app-switcher button is removed and the
+#     quit/power button becomes a labeled "< Back" (its action stays
+#     screen_quit_callback = free + return Home). Back = quit = free + Home.
+#   * Keep-alive apps (KEEP_ALIVE, e.g. the drum sequencer): keep BOTH a Back and
+#     a Power. Power quits (stops the beat + frees). Back consults a per-app
+#     "busy" probe: if busy, present Home but leave the app running (keeps
+#     playing in the background); if idle, quit it. The probes live here so the
+#     firmware apps stay untouched (survives tulip.upgrade()).
+#
 # Call ui_patch.apply() once at boot; call ui_patch.set_scale(px) to resize live.
+#
+# COUPLING NOTE: this module reaches into frozen ui.py internals (UIScreen
+# .draw_task_bar / .screen_quit_callback / the module-global repl_screen &
+# lv_launcher). Written against the ui.py shipped in this repo's firmware
+# (tulip/shared/py/ui.py on the deck-ui branch, July 2026). After a
+# tulip.upgrade() to a newer firmware, re-check those attribute names first if
+# task-bar buttons or quit-to-Home misbehave.
 
 import ui
 import tulip
@@ -30,12 +49,48 @@ except Exception:
 # the return target when any other app is quit -- so the REPL stops being "root".
 ROOT_APP = 'home'
 
+# Sound-producing apps that may keep running in the background after Back. They
+# get both a Back and a Power button; Back keeps them alive only while "busy".
+KEEP_ALIVE = {'drums'}
+
+# Per-app "busy" probes (kept here so the firmware apps stay untouched). Each
+# takes the app's UIScreen and returns truthy iff it is doing something worth
+# keeping alive. drums is busy iff its sequencer has any events. Guards missing
+# attributes so a firmware change can't crash the task bar.
+_BUSY_PROBE = {
+    'drums': lambda scr: bool(getattr(getattr(scr, 'drum_seq', None),
+                                      'events', None)),
+}
+
+# Back buttons use the deck accent blue (matching the in-shell panel Back) so a
+# Back reads differently from the red Power/quit button.
+try:
+    _BACK_BG = tulip.color(64, 132, 224)
+except Exception:
+    _BACK_BG = 36
+
 _installed = False
 
 
+def _log(msg):
+    # persistent breadcrumb for the "drops back to Home" glitch (decklog.py)
+    try:
+        import decklog
+        decklog.log(msg)
+    except Exception:
+        pass
+
+
+def _sym(name, fallback):
+    """An lv.SYMBOL glyph if this build has it, else an ASCII fallback."""
+    return getattr(lv.SYMBOL, name, fallback) if hasattr(lv, 'SYMBOL') else fallback
+
+
 def _should_hide_quit(name):
-    """The root app has no quit/power button -- you don't close the root."""
-    return name == ROOT_APP
+    """The root app has no quit/power button -- you don't close the root.
+    Welcome (first-boot onboarding) has nowhere to go Back to either: its
+    only exits are its own step cards / Get started (X-9)."""
+    return name == ROOT_APP or name == 'welcome'
 
 
 def _quit_target(name, running):
@@ -62,23 +117,44 @@ def _font_for(px):
 def _size_buttons(screen):
     px = _BTN
     w = int(px * 1.4)
+    wtext = int(px * 2.4)       # wider, for the labeled "< Back" buttons
     f = _font_for(px)
     a = getattr(screen, 'alttab_button', None)
     q = getattr(screen, 'quit_button', None)
     l = getattr(screen, 'launcher_button', None)
     h = getattr(screen, 'home_button', None)
-    for b in (a, q, l, h):
+    bk = getattr(screen, 'back_button', None)
+    quit_is_back = getattr(screen, '_quit_is_back', False)
+    for b, bw in ((a, w), (q, wtext if quit_is_back else w),
+                  (l, w), (h, w), (bk, wtext)):
         if b is not None:
-            b.set_width(w)
+            b.set_width(bw)
             b.set_height(px)
             lb = b.get_child(0)
             if lb is not None:
                 lb.set_style_text_font(f, 0)
                 lb.center()
+    # Back ALWAYS lives in the TOP-LEFT corner -- matching the in-shell panel
+    # Back (homeshell) -- so Back never flips corners between the shell and
+    # standalone apps (audit: "Back flips corners"). The Back is either a
+    # dedicated back_button (keep-alive apps) or the quit button repurposed as
+    # Back (quit_is_back).
+    back_btn = bk if bk is not None else (q if quit_is_back else None)
+    if back_btn is not None:
+        back_btn.align_to(screen.group, lv.ALIGN.TOP_LEFT, 0, 0)
+    # top-right cluster: shuffle (if any), then quit/power -- but only when the
+    # quit button is a real Power button, not the repurposed Back.
+    anchor = None
     if a is not None:
         a.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
-    if q is not None and a is not None:
-        q.align_to(a, lv.ALIGN.OUT_LEFT_MID, 0, 0)
+        anchor = a
+    if q is not None and not quit_is_back:
+        if anchor is not None:
+            q.align_to(anchor, lv.ALIGN.OUT_LEFT_MID, 0, 0)
+        else:
+            q.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
+        anchor = q
+    # bottom-right: launcher, then Home to its left
     if l is not None:
         l.align_to(screen.group, lv.ALIGN.BOTTOM_RIGHT, 0, 0)
     if h is not None and l is not None:
@@ -100,7 +176,6 @@ _MENU = [
     (lv.SYMBOL.HOME,      "Home"),
     (lv.SYMBOL.AUDIO,     "Instrument"),
     (lv.SYMBOL.SETTINGS,  "MPE"),
-    (lv.SYMBOL.LIST,      "Fleet"),
     (lv.SYMBOL.SETTINGS,  "Settings"),
     (lv.SYMBOL.DIRECTORY, "Files"),
     (lv.SYMBOL.AUDIO,     "Voices"),
@@ -114,7 +189,6 @@ _MENU = [
 ]
 
 _RUN = {"Home": "home", "Instrument": "instrument", "MPE": "mpe",
-        "Fleet": "fleet",
         "Settings": "settings", "Files": "files", "Voices": "voices",
         "Juno-6": "juno6", "Drums": "drums", "Wordpad": "wordpad",
         "Tulip World": "worldui"}
@@ -182,29 +256,297 @@ def _ensure_home_button(screen):
     screen.home_button = b
 
 
+# --- Phase 1: standalone-app task bar (Back = free + Home; keep-alive gets both) ---
+def _set_btn_label(btn, text):
+    try:
+        lb = btn.get_child(0)
+        if lb is not None:
+            lb.set_text(text)
+    except Exception:
+        pass
+
+
+def _set_btn_bg(btn, pal):
+    try:
+        btn.set_style_bg_color(ui.pal_to_lv(pal), lv.PART.MAIN)
+    except Exception:
+        pass
+
+
+def _go_home():
+    if ui.lv_launcher is not None:
+        try:
+            ui.lv_launcher.delete()
+        except Exception:
+            pass
+        ui.lv_launcher = None
+    # tulip.run presents Home if it's already running (leaving the current app in
+    # running_apps -- i.e. still alive), or launches it otherwise.
+    tulip.run(ROOT_APP)
+
+
+def _back_keeps_alive(name, screen):
+    """True iff Back on a keep-alive app should keep it running (it's busy)."""
+    probe = _BUSY_PROBE.get(name)
+    if probe is None:
+        return False
+    try:
+        return bool(probe(screen))
+    except Exception:
+        return False
+
+
+def _make_back_cb(screen):
+    def _cb(e):
+        if e.get_code() != lv.EVENT.CLICKED:
+            return
+        _log("Back tapped in app '%s'" % getattr(screen, 'name', '?'))
+        if _back_keeps_alive(screen.name, screen):
+            _go_home()                       # busy: leave it playing, show Home
+        else:
+            screen.screen_quit_callback(e)   # idle: quit == free + Home
+    return _cb
+
+
+def _ensure_back_button(screen):
+    if getattr(screen, 'back_button', None) is not None:
+        return
+    b = lv.button(screen.group)
+    b.set_style_bg_color(ui.pal_to_lv(_BACK_BG), lv.PART.MAIN)
+    b.set_style_radius(12, lv.PART.MAIN)   # match the shell's rounded Back
+    lb = lv.label(b)
+    lb.set_style_text_font(lv.font_montserrat_12, 0)
+    lb.set_text("%s Back" % _sym('LEFT', "<"))
+    lb.set_style_text_align(lv.TEXT_ALIGN.CENTER, 0)
+    b.align_to(screen.group, lv.ALIGN.TOP_RIGHT, 0, 0)
+    b.add_event_cb(_make_back_cb(screen), lv.EVENT.CLICKED, None)
+    screen.back_button = b
+
+
+def _apply_standalone_taskbar(screen):
+    # Remove the shuffle/app-switcher -- Back is the only nav these apps need.
+    a = getattr(screen, 'alttab_button', None)
+    if a is not None:
+        try:
+            a.delete()
+        except Exception:
+            pass
+        screen.alttab_button = None
+    if screen.name in KEEP_ALIVE:
+        # Keep the Power button (quit) and add a separate Back button.
+        _set_btn_label(getattr(screen, 'quit_button', None), _sym('POWER', "Off"))
+        screen._quit_is_back = False
+        try:
+            _ensure_back_button(screen)
+        except Exception:
+            pass
+    else:
+        # Repurpose the quit/power button as Back (action stays quit = free+Home).
+        qb = getattr(screen, 'quit_button', None)
+        _set_btn_label(qb, "%s Back" % _sym('LEFT', "<"))
+        _set_btn_bg(qb, _BACK_BG)
+        try:
+            qb.set_style_radius(12, lv.PART.MAIN)   # match the shell's Back
+        except Exception:
+            pass
+        screen._quit_is_back = True
+
+
+def _install_keyboard_partial():
+    """Restyle the soft keyboard the moment it opens. It used to also FORCE
+    PARTIAL render mode while the keyboard was up (tear-free but sluggish)
+    and unconditionally dropped to DIRECT on close -- stomping Settings >
+    Smooth UI for users who run partial full-time. The deck's repaint fixes
+    have cut flashing enough that the render mode now follows the Settings
+    switch alone; the keyboard no longer touches it in either direction.
+
+    Also filters the frozen ui.py key callback: with a TEXTAREA attached
+    (the deck's mode) LVGL's own keyboard handler already inserts the
+    character, but ui.py's callback STILL tulip.key_send()s it -- phantom
+    keystrokes into the REPL/console under the UI on every press. Only the
+    close key keeps its original behavior -- and it is spelled with TWO
+    different glyphs depending on the mode: LVGL's lowercase/special/number
+    keymaps label it SYMBOL.KEYBOARD but the uppercase (and Arabic) keymap
+    labels it SYMBOL.CLOSE. Match both, exactly as lv_keyboard.c's own
+    lv_keyboard_def_event_cb does, or the key is dead in those modes and the
+    user is stuck in a keyboard they cannot dismiss."""
+    try:
+        import ui
+        _orig_kb = ui.keyboard
+        _orig_cb = ui.lv_soft_kb_cb
+
+        def _filtered_cb(e):
+            kb = e.get_target_obj()
+            try:
+                btn = kb.get_selected_button()
+                text = kb.get_button_text(btn)
+            except Exception:
+                return _orig_cb(e)
+            if text and text in (lv.SYMBOL.KEYBOARD, lv.SYMBOL.CLOSE):
+                return _orig_cb(e)          # close key: original teardown
+            try:
+                ta = kb.get_textarea()
+            except Exception:
+                ta = None
+            if ta is not None:
+                return                      # LVGL already typed into the ta
+            return _orig_cb(e)              # legacy path (REPL screens)
+        ui.lv_soft_kb_cb = _filtered_cb     # ui.keyboard() resolves by name
+
+        def _kb():
+            was_up = getattr(ui, 'lv_soft_kb', None) is not None
+            _orig_kb()
+            now_up = getattr(ui, 'lv_soft_kb', None) is not None
+            try:
+                if now_up and not was_up:
+                    # same-tick restyle: it's ~7 style calls on one button
+                    # matrix (cheap); deferring it flashed the theme-black
+                    # keyboard for a beat before the deck palette landed
+                    import deckui
+                    deckui.style_keyboard()
+            except Exception:
+                pass
+        ui.keyboard = _kb
+        tulip.keyboard = _kb     # the deck calls tulip.keyboard() (same object)
+    except Exception:
+        pass
+
+
+# CCs whose ORDER is semantic (review F-9): bank select pairs with the
+# following program change, sustain transitions matter individually, and
+# 120-127 are channel-mode one-shots. Everything else (mod, breath, CC74
+# brightness, expression...) is a continuous stream where latest-wins.
+# RPN/NRPN are a SEQUENCE, not a latest-wins stream: a parameter is selected
+# by 99/98 (NRPN MSB/LSB) or 101/100 (RPN MSB/LSB) then written by 6/38 (data
+# entry MSB/LSB) or stepped by 96/97 (data inc/dec). Coalescing per (status,
+# controller) would drop the earlier value of a pair (e.g. an MPE bend-range
+# setup), so keep them all sequenced alongside bank-select/sustain (F-9).
+_NO_COALESCE = frozenset((0, 6, 32, 38, 64, 96, 97, 98, 99, 100, 101)
+                         + tuple(range(120, 128)))
+
+
+def _install_safe_midi_drain():
+    """Re-register tulip's MIDI drain with a FAULT-ISOLATED version.
+
+    The frozen midi.c_fired_midi_event aborts its whole drain loop if ANY
+    registered callback raises -- every message still in the C queue then
+    strands until the NEXT MIDI event schedules a new drain. On a chord that
+    reads as 'I pressed a key and had to press it again to register'. Each
+    callback is now isolated per message (first failure per callback is
+    logged), so the queue always drains."""
+    try:
+        import midi as _midi
+        _logged = []
+
+        def _drain(is_sysex):
+            if is_sysex:
+                if _midi.sysex_callback is not None:
+                    try:
+                        _midi.sysex_callback(tulip.sysex_in())
+                    except Exception:
+                        pass
+            # Read the WHOLE backlog first, COALESCING the high-rate streams:
+            # controllers emit pressure/bend/CC continuously while keys are
+            # held (visible in the MIDI monitor), and at Python per-message
+            # cost a chord's note-ons queued behind dozens of stale pressure
+            # values -- the reported 300ms 'router catching up' lag. Only the
+            # LATEST pressure/bend per channel (and CC per controller) in a
+            # backlog survives; notes always dispatch, in order.
+            batch = []
+            latest = {}
+            m = tulip.midi_in()
+            while m is not None and len(m) > 0:
+                st = m[0] & 0xF0
+                if st == 0xD0 or st == 0xE0:
+                    key = m[0]                      # status+channel
+                elif st == 0xA0 and len(m) > 1:
+                    key = (m[0], m[1])              # polytouch: per note
+                elif st == 0xB0 and len(m) > 1 and m[1] not in _NO_COALESCE:
+                    # CC: per controller -- EXCEPT order-sensitive ones
+                    # (review F-9): bank select must stay sequenced with
+                    # program changes, sustain down/up/down must not
+                    # collapse to "down" (hung notes), channel-mode
+                    # messages are one-shots
+                    key = (m[0], m[1])
+                else:
+                    key = None                      # notes etc: never coalesce
+                if key is not None:
+                    i = latest.get(key)
+                    if i is not None:
+                        batch[i] = m                # supersede in place
+                        m = tulip.midi_in()
+                        continue
+                    latest[key] = len(batch)
+                batch.append(m)
+                m = tulip.midi_in()
+            # snapshot the callback set ONCE per drain: the tuple() was inside
+            # the message loop, allocating one tuple per MIDI message on the
+            # note path (MicroPython GC pressure)
+            cbs = tuple(_midi.MIDI_CALLBACKS)
+            for msg in batch:
+                for c in cbs:
+                    try:
+                        c(msg)
+                    except Exception as e:
+                        if id(c) not in _logged:
+                            _logged.append(id(c))
+                            _log("midi callback raised: %r" % e)
+        tulip.midi_callback(_drain)
+    except Exception:
+        pass
+
+
 def apply():
     global _installed
     if _installed:
         return
     _installed = True
+    # Boot-time probe (review maintainability note): this module
+    # monkeypatches FROZEN firmware attributes -- a firmware bump that
+    # renames any of them must degrade VISIBLY in the log, not silently
+    # lose Home-as-root / keyboard behavior.
+    for owner, attrs in ((ui, ('UIScreen', 'running_apps', 'repl_screen',
+                               'keyboard', 'lv_soft_kb_cb')),
+                         (ui.UIScreen, ('draw_task_bar',
+                                        'screen_quit_callback'))):
+        for a in attrs:
+            if not hasattr(owner, a):
+                try:
+                    import decklog
+                    decklog.log("ui_patch: firmware drift -- %s lost %r; "
+                                "shell patches will misbehave"
+                                % (getattr(owner, '__name__', owner), a))
+                except Exception:
+                    pass
+    _install_keyboard_partial()
+    _install_safe_midi_drain()
     _orig_draw = ui.UIScreen.draw_task_bar
     _orig_quit = ui.UIScreen.screen_quit_callback
 
     def _patched_draw(self):
         _orig_draw(self)
-        # Home is the root: strip the quit/power button the firmware just drew.
         if _should_hide_quit(self.name):
-            qb = getattr(self, 'quit_button', None)
-            if qb is not None:
-                try:
-                    qb.delete()
-                except Exception:
-                    pass
-                self.quit_button = None
-        # The REPL/Terminal gets a Home button as its way back to the root.
-        if self.name == 'repl':
+            # Home is the root and owns its own top-bar nav (homeshell.py): strip
+            # every firmware task-bar button the firmware just drew.
+            for attr in ('quit_button', 'alttab_button', 'launcher_button'):
+                b = getattr(self, attr, None)
+                if b is not None:
+                    try:
+                        b.delete()
+                    except Exception:
+                        pass
+                    setattr(self, attr, None)
+        elif self.name == 'repl':
+            # The REPL/Terminal gets a Home button as its way back to the root.
             try:
                 _ensure_home_button(self)
+            except Exception:
+                pass
+        else:
+            # Every other standalone app: shuffle removed, quit becomes Back
+            # (keep-alive apps also get a Power button).
+            try:
+                _apply_standalone_taskbar(self)
             except Exception:
                 pass
         _size_buttons(self)
@@ -212,6 +554,7 @@ def apply():
     def _patched_quit(self, e):
         # control-Q and the power button both land here. Return to Home instead
         # of the REPL; refuse to quit the REPL or the root (would orphan Home).
+        _log("screen_quit_callback for app '%s'" % getattr(self, 'name', '?'))
         target = _quit_target(self.name, ui.running_apps)
         if target is None:
             return
