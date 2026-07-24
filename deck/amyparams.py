@@ -233,6 +233,118 @@ def curve_pos(d, value):
     return lo - 1 if (v_s * v_s <= below * above) else lo
 
 
+# --- piano partial detail: the units, and the legacy migration -------------
+#
+# WHAT WENT WRONG. The old 'piano_quality' slider (8..40, default 40) set
+# amy_partials_harmonic_limit, which is a harmonic INDEX cap, not a count of
+# partials. AMY's interp_partials.c drops some higher harmonics through a
+# static `use_this_partial_map`, and that map is SPARSE above harmonic 17 --
+# only 24 of its 40 slots are 1. So the number on the slider was not the
+# number of oscillators the piano rendered:
+#
+#     slider (harmonic limit):   8   15   20   24   29   40
+#     partials actually rendered:8   15   18   19   21   24
+#
+# Two lies in one control: "20" bought 18, and the top third of the travel
+# (35..40) did literally nothing because 24 is the ceiling.
+#
+# WHAT IT IS NOW. 'piano_detail' is the partial COUNT: 8..24, default 24
+# (full detail), one oscillator per step, every value distinct and reachable.
+# The forwarder converts it back to a harmonic limit through
+# tulip.piano_partials_count() -> amy_partials_limit_for_count(), which walks
+# the real map in C. The deck never mirrors the live map.
+PIANO_DETAIL_MIN = 8
+PIANO_DETAIL_MAX = 24        # == amy_partials_max_count() for today's map
+
+# LEGACY MIGRATION TABLE -- a FROZEN SNAPSHOT of the prefix sums of
+# amy/src/interp_partials.c's `use_this_partial_map` AS IT WAS when
+# 'piano_quality' was the stored unit. _LEGACY_PARTIALS_BELOW[h] is the number
+# of partials that a stored harmonic limit of h rendered, i.e. the count of 1s
+# in use_this_partial_map[0:h].
+#
+# THIS TABLE IS DELIBERATELY FROZEN and must NOT be regenerated when the AMY
+# map changes: it exists to reinterpret numbers that were WRITTEN under the old
+# map, and those numbers do not change retroactively. (If the map ever does
+# change, the LIVE path is unaffected -- it asks C -- and this table stays as
+# a historical record. test_deck.py asserts it still matches the shipped map,
+# which is the check that would flag such a change for a deliberate decision.)
+_LEGACY_PARTIALS_BELOW = (
+    0,                                            # limit 0 -> nothing
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,                # limits 1-10  (map all 1s)
+    11, 12, 13, 14, 15, 16, 17, 17, 18, 18,       # limits 11-20 (h18, h20 off)
+    18, 18, 19, 19, 20, 20, 20, 20, 21, 21,       # limits 21-30
+    22, 22, 22, 22, 23, 23, 24, 24, 24, 24,       # limits 31-40
+)                                                 # len 41: indices 0..40
+
+
+def piano_detail_from_legacy(limit):
+    """The 'piano_detail' partial COUNT equivalent to an old 'piano_quality'
+    harmonic LIMIT, so a preset saved before the units changed keeps sounding
+    exactly the same (40 -> 24, 24 -> 19, 20 -> 18, 15 -> 15, 8 -> 8).
+
+    Clamped into the slider's range: the old slider's own floor was 8 and its
+    ceiling rendered 24, so nothing real falls outside. Junk (None, a string,
+    a hand-edited 999) yields the full-detail default rather than raising --
+    a bad config value must never be able to stop a config from loading."""
+    try:
+        h = int(limit)
+    except (TypeError, ValueError):
+        return PIANO_DETAIL_MAX
+    if h < 0:
+        h = 0
+    if h > 40:
+        h = 40
+    n = _LEGACY_PARTIALS_BELOW[h]
+    if n < PIANO_DETAIL_MIN:
+        n = PIANO_DETAIL_MIN
+    if n > PIANO_DETAIL_MAX:
+        n = PIANO_DETAIL_MAX
+    return n
+
+
+def legacy_limit_for_detail(count):
+    """The harmonic LIMIT that renders `count` partials -- the inverse of
+    piano_detail_from_legacy(), and the OLD-FIRMWARE fallback path only.
+
+    On current firmware the forwarder calls tulip.piano_partials_count(), which
+    asks AMY to invert its own live map. This exists solely for a deck whose
+    Python has been updated ahead of its firmware, where only the old
+    tulip.piano_partials(harmonic_limit) binding exists; there the frozen table
+    is the best available answer and is exact for the map that firmware ships.
+    Returns the SMALLEST limit reaching the count, matching AMY's
+    amy_partials_limit_for_count()."""
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        return 40
+    if n < 1:
+        n = 1
+    for h in range(len(_LEGACY_PARTIALS_BELOW)):
+        if _LEGACY_PARTIALS_BELOW[h] >= n:
+            return h
+    return 40
+
+
+def migrate_params(params):
+    """Rewrite one stored per-instrument params dict in place from any retired
+    param names to their current ones, and return it.
+
+    Called on EVERY path that reads persisted params (deckcfg config load,
+    presets.load) so nothing downstream ever has to know the old names.
+    Idempotent: re-running it on already-migrated params is a no-op, and an
+    explicit new-units value always wins over a legacy one.
+
+    Today that is exactly 'piano_quality' (harmonic limit) -> 'piano_detail'
+    (partial count); see the units note above."""
+    if not isinstance(params, dict):
+        return params
+    if 'piano_quality' in params:
+        legacy = params.pop('piano_quality')
+        if 'piano_detail' not in params:
+            params['piano_detail'] = piano_detail_from_legacy(legacy)
+    return params
+
+
 # --- the parameter table (per-instrument synth params) ---
 PARAMS = [
     # Amp / dynamics
@@ -344,14 +456,17 @@ PARAMS = [
     _slider('reverb_send', 'FX', 'reverb send', 0.0, 1.0, 0.0, 'basic',
             {'kind': 'bus_send'}, scale=100, unit='%', truth=TRUTH_DECK),
 
-    # Piano partial detail (OPT-8): a sustained piano voice renders ~24
-    # partial oscillators (~14% of a core per held note). This caps the
-    # harmonic index the interp-partials engine uses -- lower trades subtle
-    # top-end air for real polyphony headroom. Device-global (the C engine
-    # has one limit); forwarder applies kind 'piano_quality' via
-    # tulip.piano_partials(); synth_send_calls skips it.
-    _slider('piano_quality', 'FX', 'partial detail', 8, 40, 40, 'advanced',
-            {'kind': 'piano_quality'}, truth=TRUTH_DECK),
+    # Piano partial detail (OPT-8): a sustained piano voice renders up to
+    # PIANO_DETAIL_MAX partial oscillators (~14% of a core per held note).
+    # The slider IS that count -- lower trades subtle top-end air for real
+    # polyphony headroom, and every step removes exactly one oscillator.
+    # Defaults to the MAX (full detail): the user drags DOWN to buy CPU.
+    # Device-global (the C engine has one limit); forwarder applies kind
+    # 'piano_detail' via tulip.piano_partials_count(); synth_send_calls skips
+    # it. See the units note above for why this replaced 'piano_quality'.
+    _slider('piano_detail', 'FX', 'partial detail',
+            PIANO_DETAIL_MIN, PIANO_DETAIL_MAX, PIANO_DETAIL_MAX, 'advanced',
+            {'kind': 'piano_detail'}, unit='partials', truth=TRUTH_DECK),
 
     # Piano SUSTAIN: how long the note rings. The interp-partials engine bakes
     # the decay as breakpoint TIMES; tulip.piano_sustain() time-stretches them
@@ -707,7 +822,7 @@ def patch_params_from_string(patch_string):
         if ap['kind'] == 'env':
             continue                    # composite bp strings: handled below
         if ap['kind'] != 'osc':
-            continue                    # bus_send / piano_quality: not in a patch
+            continue                    # bus_send / piano_detail: not in a patch
         # targets[0] for a _multi param (an LFO depth written to BOTH oscs):
         # they carry one value by construction, so osc A's is the value.
         osc, arg, coef = ap['targets'][0]
@@ -1118,7 +1233,7 @@ def synth_send_calls(params, penv=None):
             continue
         ap = d['apply']
         kind = ap['kind']
-        if kind in ('bus_send', 'piano_quality', 'piano_sustain'):
+        if kind in ('bus_send', 'piano_detail', 'piano_sustain'):
             continue        # router-applied kinds, not amy.send(synth=...)
         if kind == 'osc':
             for osc, arg, coef in ap['targets']:

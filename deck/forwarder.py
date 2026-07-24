@@ -299,13 +299,27 @@ def _apply_params(syn, params, instr=None):
             refresh_room()
         except Exception:
             pass
-    # piano partial-detail knob (OPT-8): device-global engine limit
-    pq = (params or {}).get('piano_quality')
-    if pq is not None:
+    # piano partial-detail knob (OPT-8): device-global engine limit. The
+    # stored value is a COUNT of partials (amyparams 'piano_detail', 8..24);
+    # piano_partials_count() converts it to the harmonic limit the engine
+    # wants, walking AMY's real partial map so the deck never mirrors it.
+    #
+    # OLDER FIRMWARE: the deck's Python is deployed independently of the
+    # firmware, so a deck can be running this file against a build that has
+    # only the old piano_partials(harmonic_limit) binding. Fall back to it
+    # with the count converted through the FROZEN legacy table read backwards
+    # (amyparams.legacy_limit_for_detail) -- an approximation of the same
+    # sound, rather than feeding a count into a harmonic-limit argument
+    # (which would have silently thinned every piano on old firmware).
+    pd = (params or {}).get('piano_detail')
+    if pd is not None:
         try:
             import tulip
-            if hasattr(tulip, 'piano_partials'):
-                tulip.piano_partials(int(pq))
+            if hasattr(tulip, 'piano_partials_count'):
+                tulip.piano_partials_count(int(pd))
+            elif hasattr(tulip, 'piano_partials'):
+                import amyparams
+                tulip.piano_partials(amyparams.legacy_limit_for_detail(pd))
         except Exception:
             pass
     # piano SUSTAIN (envelope time-stretch): device-global engine multiplier.

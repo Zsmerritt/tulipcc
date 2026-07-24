@@ -108,7 +108,8 @@ Note `board()` is stock and used only for DESKTOP-vs-device gating
 | `amy_send_batch` | batched AMY wire send | fork-only | `pr-tulipcc-amy-send-batch` | yes (`hasattr` + `amy.override_send`) | `forwarder.py:542,554` |
 | `amy_level` | output peak-level meter | fork-only | **NO PR** | yes (`hasattr` in homeshell; raw+try in deckcfg) | `homeshell.py:137,260,536`, `deckcfg.py:329` |
 | `flash_freq` | SPI-flash clock readback | fork-only | **NO PR** | yes (`getattr`) | `flashmode.py:56,79` |
-| `piano_partials` | piano partial-count tuning | fork-only | **NO PR** | yes (`hasattr`) | `forwarder.py:292`, `amyparams.py:352` |
+| `piano_partials` | piano harmonic-limit tuning (legacy units) | fork-only | **NO PR** | yes (`hasattr`) | `forwarder.py` `_apply_params` (old-firmware fallback only) |
+| `piano_partials_count` / `piano_partials_max` | piano partial-COUNT tuning (current units) | fork-only | **NO PR** | yes (`hasattr`, falls back to `piano_partials`) | `forwarder.py` `_apply_params`, `amyparams.py` `piano_detail` |
 
 Related fork bindings that exist in `modtulip.c` but the deck **does not call**
 from Python (no coupling): `audio_tap`, `audio_tap_read`, `eq_silent_skip`,
@@ -208,7 +209,7 @@ class Caps:
     flash_fence    = False   # tulip.flash_fence_auto
     flash_freq     = False   # tulip.flash_freq
     num_devices    = False   # tulip.num_midi_devices
-    piano_tuning   = False   # tulip.piano_partials
+    piano_tuning   = False   # tulip.piano_partials_count / piano_partials
     mpe            = False   # midi.configure_mpe
 
 CAPS = Caps()   # UI reads this to hide dead features instead of showing them
@@ -229,7 +230,7 @@ CAPS = Caps()   # UI reads this to hide dead features instead of showing them
 | `midi_in_drops()` | `tulip.midi_in_drops` | returns `0` |
 | `midi_routes(masks, py_mask, tap)` | `tulip.midi_routes` | returns `False`; forwarder switches to Python tap |
 | `has_c_router()` | presence of `midi_routes` | `False` |
-| `piano_partials(n)` | `tulip.piano_partials` | no-op |
+| `piano_partials_count(n)` | `tulip.piano_partials_count`, else `tulip.piano_partials` with the count converted to a harmonic limit | no-op |
 | `amy_send_batch(msgs)` / `batch()` ctx | `tulip.amy_send_batch` + `amy.override_send` | replays as per-message `amy.send()` |
 | `mpe_configure(members, bend, master)` | `midi.configure_mpe` | returns `False`; forwarder uses mono/poly path |
 
